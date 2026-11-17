@@ -13,7 +13,7 @@ The Docker socket grants Ferrix control of the host Docker daemon. Use a dedicat
 
 ## Publish before installing
 
-The installer URL and image are available only after these files are merged and an image is published. Create a version tag such as `v0.1.0` to trigger `.github/workflows/release.yaml`. Tags publish `ghcr.io/eci4ever/ferrix:0.1.0`, `latest` for stable releases, and a full commit SHA tag, for both amd64 and arm64. Manual workflow runs publish only the SHA tag. Ensure the GHCR package visibility is public so VPS hosts can pull without authentication. A version tag is not a GitHub Release by itself.
+The installer URL and image are available only after these files are merged and an image is published. Create a version tag such as `v0.1.0` to trigger `.github/workflows/release.yaml`. Tags publish `ghcr.io/eci4ever/ferrix:0.1.0`, `latest` for stable releases, and a full commit SHA tag, for both amd64 and arm64. The workflow builds amd64 and arm64 on separate native runners, then publishes a combined manifest only when both builds succeed. Manual workflow runs require an existing `release_tag` and rebuild exactly that tag's commit without moving it, publishing the same version and SHA tags. Ensure the GHCR package visibility is public so VPS hosts can pull without authentication. A version tag is not a GitHub Release by itself.
 
 ## Install
 
