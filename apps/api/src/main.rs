@@ -15,6 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bind: SocketAddr = std::env::var("FERRIX_BIND")
         .unwrap_or_else(|_| "127.0.0.1:8080".into())
         .parse()?;
+    let auth = std::sync::Arc::new(ferrix_api::auth::AuthConfig::from_env()?);
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .acquire_timeout(Duration::from_secs(3))
@@ -29,7 +30,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         router(AppState {
             pool: pool.clone(),
             docker,
-        }),
+            auth,
+        })
+        .into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown())
     .await?;

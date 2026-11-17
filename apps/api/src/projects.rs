@@ -1,4 +1,4 @@
-use crate::{ApiError, AppState};
+use crate::{ApiError, AppState, auth::Identity};
 use axum::{Json, extract::State, http::StatusCode};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -39,18 +39,23 @@ impl CreateProject {
     }
 }
 
-pub(crate) async fn list(State(state): State<AppState>) -> Result<Json<Vec<Project>>, ApiError> {
-    Ok(Json(sqlx::query_as::<_, Project>("SELECT id, name, description, created_at FROM projects ORDER BY created_at DESC, id DESC LIMIT 100")
-        .fetch_all(&state.pool).await?))
+pub(crate) async fn list(
+    State(state): State<AppState>,
+    id: Identity,
+) -> Result<Json<Vec<Project>>, ApiError> {
+    Ok(Json(sqlx::query_as::<_, Project>("SELECT id, name, description, created_at FROM projects WHERE organization_id=$1 ORDER BY created_at DESC, id DESC LIMIT 100")
+        .bind(id.organization_id).fetch_all(&state.pool).await?))
 }
 
 pub(crate) async fn create(
     State(state): State<AppState>,
+    id: Identity,
     Json(input): Json<CreateProject>,
 ) -> Result<(StatusCode, Json<Project>), ApiError> {
+    id.manager()?;
     let input = input.validate()?;
-    let project = sqlx::query_as::<_, Project>("INSERT INTO projects (id, name, description) VALUES ($1, $2, $3) RETURNING id, name, description, created_at")
-        .bind(Uuid::new_v4()).bind(input.name).bind(input.description)
+    let project = sqlx::query_as::<_, Project>("INSERT INTO projects (id, name, description, organization_id) VALUES ($1, $2, $3, $4) RETURNING id, name, description, created_at")
+        .bind(Uuid::new_v4()).bind(input.name).bind(input.description).bind(id.organization_id)
         .fetch_one(&state.pool).await?;
     Ok((StatusCode::CREATED, Json(project)))
 }
