@@ -10,11 +10,11 @@ Fresh `scripts/setup-dev.py` environments include unique secrets. For an existin
 python3 scripts/setup-auth-env.py
 ```
 
-Keep `.env` private. `FERRIX_AUTH_ORIGIN` must be the exact browser origin, without a trailing slash, e.g. `http://127.0.0.1:5173`. For deployment, configure an HTTPS origin, preserve a random 32-byte hex `FERRIX_AUTH_KEY`, and set a random `FERRIX_SETUP_TOKEN` of at least 32 characters. The API refuses missing/invalid configuration. Back up the encryption key with the database; losing it makes enrolled TOTP secrets unreadable. Do not rotate the key without migrating encrypted secrets.
+Keep `.env` private. `FERRIX_AUTH_ORIGIN` must be the exact browser origin, without a trailing slash, e.g. `http://127.0.0.1:5173`. For deployment, configure an HTTPS origin, preserve a random 32-byte hex `FERRIX_AUTH_KEY`. The API refuses missing/invalid configuration. Back up the encryption key with the database; losing it makes enrolled TOTP secrets unreadable. Do not rotate the key without migrating encrypted secrets.
 
-Start PostgreSQL and the API from the clone root, then the web app as described in development.md. API startup applies the new migrations. Open the configured origin. The first-run screen asks for the installation token from your local `.env`, a name, email and password. Do not paste that token into chat or commit it. A transaction with an installation lock permits exactly one first administrator and creates `My Organization` with an owner membership. Existing unassigned projects are attached to this initial organization. Public sign-up is then closed.
+Start PostgreSQL and the API from the clone root, then the web app as described in development.md. API startup applies the new migrations. Open the configured origin. The first-run screen asks only for a name, email and password. The first successful registration automatically becomes the platform administrator. A transaction with an installation lock permits exactly one first administrator and creates `My Organization` with an owner membership. Existing unassigned projects are attached to this initial organization. Public sign-up is then closed.
 
-The setup token is only for first-run installation and is not an admin recovery credential. No default user or password is installed.
+No installation token is required. Existing FERRIX_SETUP_TOKEN entries in older .env files are ignored and can be removed. No default user or password is installed.
 
 ## Roles and organizations
 
@@ -57,7 +57,7 @@ All paths below are under `/api/v1/auth`. Unsafe methods are POST and require th
 | Public endpoints | Purpose |
 | --- | --- |
 | GET `/setup` | Whether initial setup is required |
-| POST `/setup` | First administrator and organization; installation token required |
+| POST `/setup` | First registration automatically creates the platform administrator and organization |
 | POST `/sign-in` | Email/password and optional MFA code |
 | POST `/accept-invitation` | Invitation token, name/email/password and optional MFA code |
 | POST `/reset-password` | Reset token, new_password and optional MFA code |
@@ -96,4 +96,4 @@ Implemented: first owner, invitation-only additional accounts, system administra
 
 Not included: OAuth/social login, passkeys/WebAuthn, SSO/SCIM, API keys, custom dynamic roles, automatic email delivery/verification, impersonation, organization deletion and account deletion. These require separate workflows; no stub or bypass endpoint pretends to support them.
 
-Reference configuration reviewed: [Dokploy auth.ts on canary](https://github.com/Dokploy/dokploy/blob/canary/packages/server/src/lib/auth.ts), [Better Auth organization plugin](https://better-auth.com/docs/plugins/organization), [admin plugin](https://better-auth.com/docs/plugins/admin), and [OWASP session management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html). Dokploy uses bcrypt; Ferrix uses Argon2id. Dokploy self-hosted configuration disables Secure cookies; Ferrix instead requires them for HTTPS origins. The 30-day absolute session cap and installation bootstrap token are additional Ferrix controls.
+Reference configuration reviewed: [Dokploy auth.ts on canary](https://github.com/Dokploy/dokploy/blob/canary/packages/server/src/lib/auth.ts), [Better Auth organization plugin](https://better-auth.com/docs/plugins/organization), [admin plugin](https://better-auth.com/docs/plugins/admin), and [OWASP session management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html). Dokploy uses bcrypt; Ferrix uses Argon2id. Dokploy self-hosted configuration disables Secure cookies; Ferrix instead requires them for HTTPS origins. The 30-day absolute session cap is an additional Ferrix control.

@@ -18,7 +18,6 @@ pub struct AuthConfig {
     pub secure: bool,
     pub cookie_name: String,
     pub key: [u8; 32],
-    pub setup_token: String,
 }
 impl AuthConfig {
     pub fn from_env() -> Result<Self, Box<dyn std::error::Error>> {
@@ -37,10 +36,6 @@ impl AuthConfig {
         let key: [u8; 32] = hex::decode(std::env::var("FERRIX_AUTH_KEY")?)?
             .try_into()
             .map_err(|_| "FERRIX_AUTH_KEY must contain 32 hex-encoded bytes")?;
-        let setup_token = std::env::var("FERRIX_SETUP_TOKEN")?;
-        if setup_token.len() < 32 {
-            return Err("FERRIX_SETUP_TOKEN must contain at least 32 characters".into());
-        }
         let port = url.port_or_known_default().ok_or("Missing origin port")?;
         let cookie_name = format!(
             "{}ferrix_{port}_session",
@@ -51,7 +46,6 @@ impl AuthConfig {
             secure,
             cookie_name,
             key,
-            setup_token,
         })
     }
     pub fn cookie(&self, value: &str, age: i64) -> String {
