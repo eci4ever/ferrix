@@ -1,0 +1,10 @@
+import { Link } from '@tanstack/react-router'
+import { Check, ChevronsUpDown, Layers3, Settings2 } from 'lucide-react'
+import type { Identity, Organization } from '@/auth'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
+import { SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar } from '@/components/ui/sidebar'
+
+export function TeamSwitcher({ identity, organizations, busy, onSwitch }: { identity: Identity; organizations: Organization[]; busy: boolean; onSwitch: (id: string) => Promise<void> }) {
+  const { isMobile, setOpenMobile } = useSidebar()
+  return <SidebarMenu><SidebarMenuItem><DropdownMenu><DropdownMenuTrigger asChild><SidebarMenuButton size="lg" disabled={busy} tooltip={identity.organization_name} aria-label="Switch organization"><div className="flex aspect-square size-8 items-center justify-center rounded-lg bg-sidebar-accent text-sidebar-accent-foreground"><Layers3 /></div><div className="grid flex-1 text-left text-sm leading-tight"><span className="truncate font-semibold">{identity.organization_name}</span><span className="truncate text-xs">Ferrix</span></div><ChevronsUpDown className="ml-auto" /></SidebarMenuButton></DropdownMenuTrigger><DropdownMenuContent align="start" side={isMobile ? 'bottom' : 'right'} sideOffset={4}><DropdownMenuLabel>Organizations</DropdownMenuLabel><DropdownMenuGroup>{organizations.map(org => <DropdownMenuItem key={org.id} disabled={busy || org.id === identity.organization_id} onSelect={() => { void onSwitch(org.id) }}><Layers3 /><span>{org.name}</span>{org.id === identity.organization_id ? <Check className="ml-auto" /> : null}</DropdownMenuItem>)}</DropdownMenuGroup><DropdownMenuSeparator /><DropdownMenuGroup><DropdownMenuItem asChild><Link to="/organization" onClick={() => setOpenMobile(false)}><Settings2 />Manage organization</Link></DropdownMenuItem></DropdownMenuGroup></DropdownMenuContent></DropdownMenu></SidebarMenuItem></SidebarMenu>
+}

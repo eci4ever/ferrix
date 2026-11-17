@@ -112,3 +112,5 @@ Rujukan: [Dokploy](https://docs.dokploy.com/docs/core), [Axum](https://docs.rs/a
 ## UI
 
 Susun atur dashboard merujuk Dokploy: navigasi sisi dan header ringkas. Tema menggunakan token neutral asal shadcn/ui. Gunakan komponen shadcn serta utiliti Tailwind dengan token semantik; jangan tambah palet atau stylesheet komponen tersuai.
+
+Dashboard menggunakan pola shadcn `sidebar-07`: Home di `/`, projek di `/projects`, sidebar mod ikon/mobile, pilihan organisasi dan menu akaun. Tema gelap ialah lalai; tukar tema melalui menu akaun. Ringkasan Home menggunakan data API sebenar; statistik deployment belum tersedia.

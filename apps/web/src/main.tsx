@@ -1,8 +1,8 @@
-import { StrictMode, useRef, useState } from 'react'
+import { StrictMode, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { createRoot } from 'react-dom/client'
-import { createRootRoute, createRoute, createRouter, RouterProvider, Outlet, Link, useRouter } from '@tanstack/react-router'
-import { Box, Layers3, Server, RefreshCw, Plus, Folder, CheckCircle2, CircleAlert } from 'lucide-react'
+import { createRootRoute, createRoute, createRouter, RouterProvider, Outlet, Link, useRouter, useRouterState } from '@tanstack/react-router'
+import { Box, Layers3, ArrowRight, RefreshCw, Plus, Folder, CheckCircle2, CircleAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -15,6 +15,12 @@ import { load, request } from '@/lib/api'
 import type { Project, SystemStatus, Container } from '@/lib/api'
 import { LoginPage, SecurityPage, TeamPage, AdminPage } from './auth'
 import type { Identity, Security, Session, Audit, Organization, Member, Invitation, User } from './auth'
+import { AppSidebar } from '@/components/app-sidebar'
+import { SidebarProvider, SidebarInset, SidebarTrigger } from '@/components/ui/sidebar'
+import { TooltipProvider } from '@/components/ui/tooltip'
+import { Breadcrumb, BreadcrumbList, BreadcrumbItem, BreadcrumbLink, BreadcrumbPage, BreadcrumbSeparator } from '@/components/ui/breadcrumb'
+import { Separator } from '@/components/ui/separator'
+import { Card, CardHeader, CardTitle, CardDescription, CardAction, CardContent } from '@/components/ui/card'
 import './index.css'
 
 function ErrorNotice({ message }: { message: string }) {
@@ -22,51 +28,74 @@ function ErrorNotice({ message }: { message: string }) {
 }
 
 function Shell() {
-  const { status, account, setup } = rootRoute.useLoaderData()
+  const { status, account, setup, organizations } = rootRoute.useLoaderData()
   const router = useRouter()
+  const pathname = useRouterState({ select: state => state.location.pathname })
   const [refreshing, setRefreshing] = useState(false)
+  const [accountBusy, setAccountBusy] = useState(false)
   const [refreshError, setRefreshError] = useState('')
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    try { return localStorage.getItem('ferrix-theme') === 'light' ? 'light' : 'dark' } catch { return 'dark' }
+  })
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', theme === 'dark')
+    document.documentElement.style.colorScheme = theme
+    try { localStorage.setItem('ferrix-theme', theme) } catch { /* Storage can be unavailable in private contexts. */ }
+  }, [theme])
   async function refresh() {
-    setRefreshing(true)
-    setRefreshError('')
+    setRefreshing(true); setRefreshError('')
     try { await router.invalidate() }
     catch { setRefreshError('Refresh failed. Please try again.') }
     finally { setRefreshing(false) }
+  }
+  async function accountAction(path: string, body = {}) {
+    setAccountBusy(true); setRefreshError('')
+    try {
+      await request(`/auth/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      await router.invalidate()
+    } catch (error) { setRefreshError(error instanceof Error ? error.message : 'Account operation failed.') }
+    finally { setAccountBusy(false) }
   }
   if (!account.data) {
     if (setup.data === null) return <main className="mx-auto max-w-md p-6"><ErrorNotice message={setup.error} /><Button onClick={refresh} disabled={refreshing}>Retry</Button></main>
     return <LoginPage setupRequired={setup.data.setup_required} refresh={() => router.invalidate()} />
   }
-  return <div className="min-h-svh bg-background text-foreground md:grid md:grid-cols-[240px_minmax(0,1fr)]">
+  const pageNames: Record<string, string> = { '/': 'Home', '/projects': 'Projects', '/containers': 'Docker', '/security': 'Security', '/organization': 'Organization', '/admin': 'Users' }
+  return <TooltipProvider><SidebarProvider>
     <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:bg-background focus:p-4">Skip to content</a>
-    <aside className="flex flex-col gap-6 border-b bg-sidebar p-4 text-sidebar-foreground md:border-r md:border-b-0">
-      <Link to="/" className="flex items-center gap-2 px-2 text-lg font-semibold" aria-label="Ferrix home"><span className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground [&_svg]:size-5"><Layers3 aria-hidden="true" /></span>ferrix</Link>
-      <p className="px-2 text-xs font-medium text-muted-foreground">Workspace</p>
-      <nav aria-label="Main navigation" className="flex gap-2 md:flex-col">
-        <Button variant="ghost" asChild className="justify-start"><Link to="/" activeOptions={{ exact: true }} activeProps={{ className: "bg-sidebar-accent text-sidebar-accent-foreground" }}><Folder data-icon="inline-start" />Projects</Link></Button>
-        <Button variant="ghost" asChild className="justify-start"><Link to="/containers" activeProps={{ className: "bg-sidebar-accent text-sidebar-accent-foreground" }}><Box data-icon="inline-start" />Containers</Link></Button>
-        <Button variant="ghost" asChild className="justify-start"><Link to="/security">Security</Link></Button>
-        <Button variant="ghost" asChild className="justify-start"><Link to="/organization">Organization</Link></Button>
-        {account.data.system_role === 'admin' ? <Button variant="ghost" asChild className="justify-start"><Link to="/admin">Users</Link></Button> : null}
-      </nav>
-      <div className="flex flex-col gap-2 px-2 text-sm"><span>{account.data.name}</span><span className="text-xs text-muted-foreground">{account.data.organization_name} ({account.data.role})</span><Button variant="outline" onClick={async () => { try { await request('/auth/sign-out', { method: 'POST' }); await router.invalidate() } catch (error) { setRefreshError(error instanceof Error ? error.message : 'Sign out failed.') } }}>Sign out</Button></div>
-      <div className="mt-auto hidden items-center gap-2 px-2 py-4 text-sm text-muted-foreground md:flex [&_svg]:size-4 [&_strong]:block [&_span]:block [&_span]:text-xs"><Server aria-hidden="true" /><div><strong>Local server</strong><span>Development workspace</span></div></div>
-    </aside>
-    <div className="flex min-w-0 flex-col">
-      <header className="flex h-16 items-center justify-between gap-4 border-b px-4 text-sm md:px-6"><span>Local workspace <span className="text-muted-foreground">/ Ferrix</span></span><Button variant="outline" onClick={refresh} disabled={refreshing}><RefreshCw data-icon="inline-start" />{refreshing ? 'Refreshing…' : 'Refresh'}</Button></header>
-      <main id="main" className="mx-auto flex w-full max-w-7xl flex-col gap-6 p-4 md:p-6" tabIndex={-1}>
-        {status.data === null ? <ErrorNotice message={status.error} /> : <div className="flex flex-wrap items-center gap-3 text-sm [&>span:first-child]:flex [&>span:first-child]:items-center [&>span:first-child]:gap-2 [&>span:first-child]:text-muted-foreground [&_svg]:size-4" aria-label="Service connections">
-          <span><Server aria-hidden="true" />Connected services</span>
-          <Connection name="PostgreSQL" connected={status.data.database} />
-          <Connection name="Docker" connected={status.data.docker} />
-          <span className="ml-auto text-xs text-muted-foreground">v{status.data.version}</span>
-        </div>}
+    <AppSidebar identity={account.data} organizations={organizations.data ?? []} theme={theme} busy={accountBusy} onSwitch={id => accountAction('organizations/switch', { organization_id: id })} onSignOut={() => accountAction('sign-out')} onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} version={status.data?.version} />
+    <SidebarInset id="main" tabIndex={-1}>
+      <header className="flex h-16 shrink-0 items-center justify-between gap-2 px-4 transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12 motion-reduce:transition-none">
+        <div className="flex min-w-0 items-center gap-2"><SidebarTrigger className="-ml-1" /><Separator orientation="vertical" className="mr-2 data-[orientation=vertical]:h-4" /><Breadcrumb><BreadcrumbList><BreadcrumbItem className="hidden md:block"><BreadcrumbLink asChild><Link to="/organization">{account.data.organization_name}</Link></BreadcrumbLink></BreadcrumbItem><BreadcrumbSeparator className="hidden md:block" /><BreadcrumbItem><BreadcrumbPage>{pageNames[pathname] ?? 'Page not found'}</BreadcrumbPage></BreadcrumbItem></BreadcrumbList></Breadcrumb></div>
+        <Button variant="outline" onClick={refresh} disabled={refreshing} aria-label="Refresh workspace"><RefreshCw data-icon="inline-start" /><span className="hidden sm:inline">{refreshing ? 'Refreshing…' : 'Refresh'}</span></Button>
+      </header>
+      <div className="flex min-w-0 flex-1 flex-col gap-6 p-4 pt-2 md:p-6 md:pt-2">
         {refreshError ? <ErrorNotice message={refreshError} /> : null}
+        {organizations.error ? <ErrorNotice message={organizations.error} /> : null}
         <Outlet />
-      </main>
-      <footer className="mt-auto flex flex-wrap justify-between gap-3 p-6 text-xs text-muted-foreground">Ferrix <span>Self-hosted deployment workspace</span></footer>
-    </div>
-  </div>
+      </div>
+    </SidebarInset>
+  </SidebarProvider></TooltipProvider>
+}
+
+function HomePage() {
+  const { projects } = homeRoute.useLoaderData()
+  const { account, status } = rootRoute.useLoaderData()
+  if (!account.data) return null
+  const recent: Project[] = projects.data ?? []
+  return <Card className="flex-1">
+    <CardHeader><CardTitle><h1 className="text-2xl font-semibold tracking-tight md:text-3xl">Welcome back, {account.data.name}</h1></CardTitle><CardDescription>Your deployment workspace at a glance.</CardDescription><CardAction><Button asChild variant="secondary"><Link to="/projects">Go to projects<ArrowRight data-icon="inline-end" /></Link></Button></CardAction></CardHeader>
+    <CardContent className="flex flex-col gap-6">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        <Card><CardHeader><CardTitle>Projects</CardTitle><CardDescription>In this organization</CardDescription></CardHeader><CardContent><p className="text-3xl font-semibold">{projects.error ? 'Unavailable' : recent.length === 100 ? '100+' : recent.length}</p><p className="mt-2 text-xs text-muted-foreground">{recent.length === 100 ? 'Showing the 100 most recent' : 'Ready to organize your applications'}</p></CardContent></Card>
+        <Card><CardHeader><CardTitle>Organization</CardTitle><CardDescription>Current workspace</CardDescription></CardHeader><CardContent><p className="truncate font-semibold">{account.data.organization_name}</p><Badge variant="secondary" className="mt-3">{account.data.role}</Badge></CardContent></Card>
+        <Card><CardHeader><CardTitle>Deployments</CardTitle><CardDescription>Deployment history</CardDescription></CardHeader><CardContent><p className="text-xl font-semibold">Not configured</p><p className="mt-2 text-xs text-muted-foreground">Deployment support is coming next</p></CardContent></Card>
+        <Card><CardHeader><CardTitle>Status</CardTitle><CardDescription>Connected services</CardDescription></CardHeader><CardContent className="flex flex-col items-start gap-3">{status.data ? <><Connection name="PostgreSQL" connected={status.data.database} /><Connection name="Docker" connected={status.data.docker} /></> : <p className="text-sm text-muted-foreground">Unable to check connections</p>}</CardContent></Card>
+      </div>
+      {status.error ? <ErrorNotice message={status.error} /> : null}
+      <Card><CardHeader><CardTitle>Recent projects</CardTitle><CardDescription>Your most recently created projects</CardDescription><CardAction><Button asChild variant="ghost"><Link to="/projects">View all<ArrowRight data-icon="inline-end" /></Link></Button></CardAction></CardHeader><CardContent>{projects.error ? <ErrorNotice message={projects.error} /> : recent.length ? <Table><TableHeader><TableRow><TableHead>Project</TableHead><TableHead>Created</TableHead><TableHead>Stage</TableHead></TableRow></TableHeader><TableBody>{recent.slice(0, 5).map(project => <TableRow key={project.id}><TableCell><p className="font-medium">{project.name}</p><p className="mt-1 max-w-sm truncate text-xs text-muted-foreground">{project.description || 'No description'}</p></TableCell><TableCell>{new Date(project.created_at).toLocaleDateString()}</TableCell><TableCell><Badge variant="outline">Created</Badge></TableCell></TableRow>)}</TableBody></Table> : <Empty><EmptyHeader><EmptyMedia variant="icon"><Folder /></EmptyMedia><EmptyTitle>No projects yet</EmptyTitle><EmptyDescription>Create your first project to start organizing your applications.</EmptyDescription></EmptyHeader><Button asChild variant="outline"><Link to="/projects">Go to projects</Link></Button></Empty>}</CardContent></Card>
+    </CardContent>
+  </Card>
 }
 
 function Connection({ name, connected }: { name: string; connected: boolean }) {
@@ -129,12 +158,13 @@ function Pending() {
 
 const rootRoute = createRootRoute({
   component: Shell,
-  loader: async () => { const [status, account, setup] = await Promise.all([load<SystemStatus>('/status'), load<Identity>('/auth/session'), load<{ setup_required: boolean }>('/auth/setup')]); return { status, account, setup } },
+  loader: async () => { const [status, account, setup] = await Promise.all([load<SystemStatus>('/status'), load<Identity>('/auth/session'), load<{ setup_required: boolean }>('/auth/setup')]); const organizations = account.data ? await load<Organization[]>('/auth/organizations') : { data: [] as Organization[], error: null }; return { status, account, setup, organizations } },
   pendingComponent: Pending,
-  notFoundComponent: () => <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 p-4 md:p-6"><h1>Page not found</h1><Link to="/">Back to projects</Link></div>,
+  notFoundComponent: () => <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 p-4 md:p-6"><h1>Page not found</h1><Link to="/projects">Back to projects</Link></div>,
   errorComponent: () => <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 p-4 md:p-6"><ErrorNotice message="The workspace could not load. Refresh the page to try again." /></div>,
 })
-const projectsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/', component: ProjectsPage, loader: async () => ({ projects: await load<Project[]>('/projects') }) })
+const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: '/', component: HomePage, loader: async () => ({ projects: await load<Project[]>('/projects') }) })
+const projectsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects', component: ProjectsPage, loader: async () => ({ projects: await load<Project[]>('/projects') }) })
 const containersRoute = createRoute({ getParentRoute: () => rootRoute, path: '/containers', component: ContainersPage, loader: async () => ({ containers: await load<Container[]>('/containers') }) })
 const securityRoute = createRoute({ getParentRoute: () => rootRoute, path: '/security', loader: async () => {
   const [sessions, security, audit] = await Promise.all([load<Session[]>('/auth/sessions'), load<Security>('/auth/security'), load<Audit[]>('/auth/audit')]); return { sessions, security, audit }
@@ -143,7 +173,7 @@ const teamRoute = createRoute({ getParentRoute: () => rootRoute, path: '/organiz
   const [organizations, members, invitations] = await Promise.all([load<Organization[]>('/auth/organizations'), load<Member[]>('/auth/members'), load<Invitation[]>('/auth/invitations')]); return { organizations, members, invitations }
 }, component: function OrganizationSettings() { const { organizations, members, invitations } = teamRoute.useLoaderData(); const { account } = rootRoute.useLoaderData(); const router = useRouter(); return account.data && organizations.data && members.data ? <TeamPage identity={account.data} organizations={organizations.data} members={members.data} invitations={invitations.data ?? []} refresh={() => router.invalidate()} /> : <ErrorNotice message="Could not load organization settings." /> } })
 const adminRoute = createRoute({ getParentRoute: () => rootRoute, path: '/admin', loader: () => load<User[]>('/auth/admin/users'), component: function UserAdministration() { const users = adminRoute.useLoaderData(); const router = useRouter(); return users.data ? <AdminPage users={users.data} refresh={() => router.invalidate()} /> : <ErrorNotice message={users.error} /> } })
-const router = createRouter({ routeTree: rootRoute.addChildren([projectsRoute, containersRoute, securityRoute, teamRoute, adminRoute]), defaultPendingMs: 150, defaultPendingMinMs: 200 })
+const router = createRouter({ routeTree: rootRoute.addChildren([homeRoute, projectsRoute, containersRoute, securityRoute, teamRoute, adminRoute]), defaultPendingMs: 150, defaultPendingMinMs: 200 })
 declare module '@tanstack/react-router' { interface Register { router: typeof router } }
 
 createRoot(document.getElementById('root')!).render(<StrictMode><RouterProvider router={router} /></StrictMode>)
