@@ -142,3 +142,6 @@ impl IntoResponse for ApiError {
         (self.0, Json(serde_json::json!({"error":self.1}))).into_response()
     }
 }
+
+// Temporary branch-protection test: deliberately unformatted Rust.
+fn branch_protection_test( )->bool{true}
