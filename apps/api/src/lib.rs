@@ -1,3 +1,4 @@
+// Temporary passing-CI branch protection verification.
 pub mod auth;
 mod projects;
 mod server_time;
