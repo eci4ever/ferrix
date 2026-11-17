@@ -15,7 +15,6 @@ fn config() -> Arc<AuthConfig> {
         secure: false,
         cookie_name: "ferrix_test_session".into(),
         key: [42; 32],
-        setup_token: "test-installation-token-with-enough-entropy".into(),
     })
 }
 fn app(pool: sqlx::PgPool) -> axum::Router {
@@ -132,7 +131,7 @@ async fn postgres_auth_security_and_tenant_isolation() {
     let app = app(pool.clone());
     let (_, setup, _) = get(&app, "/api/v1/auth/setup", "").await;
     assert_eq!(setup["setup_required"], true);
-    let registration = json!({"name":"Owner","email":" OWNER@example.com ","password":PASSWORD,"setup_token":config().setup_token});
+    let registration = json!({"name":"Owner","email":" OWNER@example.com ","password":PASSWORD});
     assert_eq!(
         call(
             &app,
@@ -170,6 +169,16 @@ async fn postgres_auth_security_and_tenant_isolation() {
     assert_eq!(identity["email"], "owner@example.com");
     assert_eq!(identity["role"], "owner");
     assert_eq!(identity["system_role"], "admin");
+    let admin_count: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM auth_users WHERE system_role='admin'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(admin_count, 1);
+    assert_eq!(
+        get(&app, "/api/v1/auth/setup", "").await.1["setup_required"],
+        false
+    );
     let stored: String =
         sqlx::query_scalar("SELECT password_hash FROM auth_users WHERE email='owner@example.com'")
             .fetch_one(&pool)
@@ -291,6 +300,7 @@ async fn postgres_auth_security_and_tenant_isolation() {
         StatusCode::UNAUTHORIZED
     );
     let (_, member_id, _) = get(&app, "/api/v1/auth/session", &member).await;
+    assert_eq!(member_id["system_role"], "user");
     let member_id = member_id["user_id"].as_str().unwrap();
     let projects = get(&app, "/api/v1/projects", &member).await.1;
     assert_eq!(projects.as_array().unwrap().len(), 1);

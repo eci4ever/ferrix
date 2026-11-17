@@ -1,7 +1,7 @@
 import { StrictMode, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { createRoot } from 'react-dom/client'
-import { createRootRoute, createRoute, createRouter, RouterProvider, Outlet, Link, useRouter, useRouterState } from '@tanstack/react-router'
+import { createRootRoute, createRoute, createRouter, RouterProvider, Outlet, Link, Navigate, useRouter, useRouterState } from '@tanstack/react-router'
 import { Box, Layers3, ArrowRight, RefreshCw, Plus, Folder, CheckCircle2, CircleAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -21,6 +21,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { Breadcrumb, BreadcrumbList, BreadcrumbItem, BreadcrumbLink, BreadcrumbPage, BreadcrumbSeparator } from '@/components/ui/breadcrumb'
 import { Separator } from '@/components/ui/separator'
 import { Card, CardHeader, CardTitle, CardDescription, CardAction, CardContent } from '@/components/ui/card'
+import { LandingPage } from './landing'
 import './index.css'
 
 function ErrorNotice({ message }: { message: string }) {
@@ -56,11 +57,14 @@ function Shell() {
     } catch (error) { setRefreshError(error instanceof Error ? error.message : 'Account operation failed.') }
     finally { setAccountBusy(false) }
   }
-  if (!account.data) {
+  if (pathname === '/') return <Outlet />
+  if (pathname === '/login' || pathname === '/signup') {
+    if (account.data) return <Navigate to="/dashboard" replace />
     if (setup.data === null) return <main className="mx-auto max-w-md p-6"><ErrorNotice message={setup.error} /><Button onClick={refresh} disabled={refreshing}>Retry</Button></main>
-    return <LoginPage setupRequired={setup.data.setup_required} refresh={() => router.invalidate()} />
+    return <LoginPage key={pathname} setupRequired={pathname === '/signup' && setup.data.setup_required} initialMode={pathname === '/signup' ? 'signup' : 'login'} refresh={() => router.invalidate()} />
   }
-  const pageNames: Record<string, string> = { '/': 'Home', '/projects': 'Projects', '/containers': 'Docker', '/security': 'Security', '/organization': 'Organization', '/admin': 'Users' }
+  if (!account.data) return <Navigate to="/login" replace />
+  const pageNames: Record<string, string> = { '/dashboard': 'Home', '/projects': 'Projects', '/containers': 'Docker', '/security': 'Security', '/organization': 'Organization', '/admin': 'Users' }
   return <TooltipProvider><SidebarProvider>
     <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:bg-background focus:p-4">Skip to content</a>
     <AppSidebar identity={account.data} organizations={organizations.data ?? []} theme={theme} busy={accountBusy} onSwitch={id => accountAction('organizations/switch', { organization_id: id })} onSignOut={() => accountAction('sign-out')} onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} version={status.data?.version} />
@@ -163,7 +167,10 @@ const rootRoute = createRootRoute({
   notFoundComponent: () => <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 p-4 md:p-6"><h1>Page not found</h1><Link to="/projects">Back to projects</Link></div>,
   errorComponent: () => <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 p-4 md:p-6"><ErrorNotice message="The workspace could not load. Refresh the page to try again." /></div>,
 })
-const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: '/', component: HomePage, loader: async () => ({ projects: await load<Project[]>('/projects') }) })
+const landingRoute = createRoute({ getParentRoute: () => rootRoute, path: '/', component: LandingPage })
+const loginRoute = createRoute({ getParentRoute: () => rootRoute, path: '/login' })
+const signupRoute = createRoute({ getParentRoute: () => rootRoute, path: '/signup' })
+const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: '/dashboard', component: HomePage, loader: async () => ({ projects: await load<Project[]>('/projects') }) })
 const projectsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects', component: ProjectsPage, loader: async () => ({ projects: await load<Project[]>('/projects') }) })
 const containersRoute = createRoute({ getParentRoute: () => rootRoute, path: '/containers', component: ContainersPage, loader: async () => ({ containers: await load<Container[]>('/containers') }) })
 const securityRoute = createRoute({ getParentRoute: () => rootRoute, path: '/security', loader: async () => {
@@ -173,7 +180,7 @@ const teamRoute = createRoute({ getParentRoute: () => rootRoute, path: '/organiz
   const [organizations, members, invitations] = await Promise.all([load<Organization[]>('/auth/organizations'), load<Member[]>('/auth/members'), load<Invitation[]>('/auth/invitations')]); return { organizations, members, invitations }
 }, component: function OrganizationSettings() { const { organizations, members, invitations } = teamRoute.useLoaderData(); const { account } = rootRoute.useLoaderData(); const router = useRouter(); return account.data && organizations.data && members.data ? <TeamPage identity={account.data} organizations={organizations.data} members={members.data} invitations={invitations.data ?? []} refresh={() => router.invalidate()} /> : <ErrorNotice message="Could not load organization settings." /> } })
 const adminRoute = createRoute({ getParentRoute: () => rootRoute, path: '/admin', loader: () => load<User[]>('/auth/admin/users'), component: function UserAdministration() { const users = adminRoute.useLoaderData(); const router = useRouter(); return users.data ? <AdminPage users={users.data} refresh={() => router.invalidate()} /> : <ErrorNotice message={users.error} /> } })
-const router = createRouter({ routeTree: rootRoute.addChildren([homeRoute, projectsRoute, containersRoute, securityRoute, teamRoute, adminRoute]), defaultPendingMs: 150, defaultPendingMinMs: 200 })
+const router = createRouter({ routeTree: rootRoute.addChildren([landingRoute, loginRoute, signupRoute, homeRoute, projectsRoute, containersRoute, securityRoute, teamRoute, adminRoute]), defaultPendingMs: 150, defaultPendingMinMs: 200 })
 declare module '@tanstack/react-router' { interface Register { router: typeof router } }
 
 createRoot(document.getElementById('root')!).render(<StrictMode><RouterProvider router={router} /></StrictMode>)

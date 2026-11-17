@@ -106,12 +106,6 @@ pub struct Registration {
     #[serde(default)]
     pub code: String,
 }
-#[derive(Deserialize)]
-pub struct Setup {
-    #[serde(flatten)]
-    account: Registration,
-    setup_token: String,
-}
 pub async fn setup_status(
     State(state): State<AppState>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -123,19 +117,12 @@ pub async fn setup_status(
 pub async fn setup(
     State(state): State<AppState>,
     headers: HeaderMap,
-    Json(input): Json<Setup>,
+    Json(input): Json<Registration>,
 ) -> Result<Response, ApiError> {
     throttle(&state.pool, "setup", 10).await?;
-    // Constant-time verification of a random installation token prevents first-run takeover.
-    if !super::security::equal(
-        digest(&input.setup_token).as_bytes(),
-        digest(&state.auth.setup_token).as_bytes(),
-    ) {
-        return Err(forbidden());
-    }
-    let email = email(&input.account.email)?;
-    let name = name(&input.account.name)?;
-    let hash = hash(input.account.password).await?;
+    let email = email(&input.email)?;
+    let name = name(&input.name)?;
+    let hash = hash(input.password).await?;
     let mut tx = state.pool.begin().await?;
     sqlx::query("SELECT pg_advisory_xact_lock(74781001)")
         .execute(&mut *tx)

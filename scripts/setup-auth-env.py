@@ -19,7 +19,6 @@ def main():
     defaults = {
         'FERRIX_AUTH_ORIGIN': f"http://127.0.0.1:{values.get('FERRIX_WEB_PORT', '5173')}",
         'FERRIX_AUTH_KEY': secrets.token_hex(32),
-        'FERRIX_SETUP_TOKEN': secrets.token_hex(32),
     }
     added = []
     for key, value in defaults.items():

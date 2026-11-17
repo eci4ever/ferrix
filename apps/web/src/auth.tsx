@@ -1,5 +1,9 @@
 import { useId, useState } from 'react'
+import { Link } from '@tanstack/react-router'
 import type { FormEvent } from 'react'
+import { Eye, EyeOff, Layers3 } from 'lucide-react'
+import { InputGroup, InputGroupInput, InputGroupAddon, InputGroupButton } from '@/components/ui/input-group'
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
@@ -24,29 +28,56 @@ function data(event: FormEvent<HTMLFormElement>): Record<string, string> { event
 function errorText(error: unknown) { return error instanceof Error ? error.message : 'Account operation failed.' }
 const panel = 'flex flex-col gap-4 rounded-xl border bg-card p-6 text-card-foreground'
 
-export function LoginPage({ setupRequired, refresh }: { setupRequired: boolean; refresh: Refresh }) {
-  const [invitation, setInvitation] = useState(false)
+function LoginPassword({ name, label, newPassword }: { name: string; label: string; newPassword: boolean }) {
+  const id = useId()
+  const [visible, setVisible] = useState(false)
+  return <Field>
+    <FieldLabel htmlFor={id}>{label}</FieldLabel>
+    <InputGroup>
+      <InputGroupInput id={id} name={name} type={visible ? 'text' : 'password'} autoComplete={newPassword ? 'new-password' : 'current-password'} required maxLength={1024} minLength={newPassword ? 12 : undefined} />
+      <InputGroupAddon align="inline-end"><InputGroupButton type="button" size="icon-sm" aria-label={visible ? 'Hide password' : 'Show password'} aria-pressed={visible} onClick={() => setVisible(!visible)}>{visible ? <EyeOff /> : <Eye />}</InputGroupButton></InputGroupAddon>
+    </InputGroup>
+  </Field>
+}
+
+export function LoginPage({ setupRequired, refresh, initialMode = 'login' }: { setupRequired: boolean; refresh: Refresh; initialMode?: 'login' | 'signup' }) {
+  const [invitation, setInvitation] = useState(initialMode === 'signup' && !setupRequired)
   const [reset, setReset] = useState(false)
+  const [showCode, setShowCode] = useState(false)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
+  const mode = setupRequired ? 'setup' : reset ? 'reset' : invitation ? 'invitation' : 'login'
+  const title = setupRequired ? 'Create your account' : reset ? 'Reset password' : invitation ? 'Accept invitation' : 'Sign in'
+  const description = setupRequired ? 'The first account becomes the platform administrator.' : reset ? 'Use the reset token provided by your administrator.' : invitation ? 'Enter your invitation details to join your organization.' : 'Enter your email and password to sign in'
   async function submit(event: FormEvent<HTMLFormElement>) {
     const values = data(event); setBusy(true); setMessage('')
-    try { await request(`/auth/${setupRequired ? 'setup' : reset ? 'reset-password' : invitation ? 'accept-invitation' : 'sign-in'}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) }); if (reset) { setReset(false); setMessage('Password reset. Sign in with your new password.') } await refresh() }
-    catch (error) { setMessage(errorText(error)) } finally { setBusy(false) }
+    try {
+      await request(`/auth/${setupRequired ? 'setup' : reset ? 'reset-password' : invitation ? 'accept-invitation' : 'sign-in'}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) })
+      if (reset) { setReset(false); setMessage('Password reset. Sign in with your new password.') }
+      await refresh()
+    } catch (error) { setMessage(errorText(error)) } finally { setBusy(false) }
   }
-  return <main className="flex min-h-svh items-center justify-center bg-background p-4"><section className={`${panel} w-full max-w-md`}>
-    <div><p className="text-sm font-medium text-muted-foreground">Ferrix</p><h1 className="mt-2 text-2xl font-semibold">{setupRequired ? 'Set up your workspace' : reset ? 'Reset your password' : invitation ? 'Accept an invitation' : 'Sign in'}</h1><p className="mt-2 text-sm text-muted-foreground">{setupRequired ? 'Create the installation administrator and your first organization.' : 'Use your account to access your deployment workspace.'}</p></div>
-    <Message message={message} />
-    <form onSubmit={submit} className="flex flex-col gap-6"><fieldset disabled={busy}><FieldGroup>
-      {setupRequired || invitation ? <TextField name="name" label="Name" autoComplete="name" /> : null}
-      {!reset ? <TextField name="email" label="Email" type="email" autoComplete="username" /> : null}
-      <TextField name={reset ? "new_password" : "password"} label={reset ? "New password" : invitation ? 'Password (existing account password, or a new password)' : 'Password'} type="password" autoComplete={setupRequired || reset ? 'new-password' : 'current-password'} />
-      {setupRequired ? <TextField name="setup_token" label="Installation token (from your server .env)" type="password" autoComplete="off" /> : <TextField name="code" label="Authenticator or recovery code (if enabled)" required={false} autoComplete="one-time-code" />}
-      {invitation || reset ? <TextField name="token" label={reset ? "Password reset token" : "Invitation token"} type="password" autoComplete="off" /> : null}
-    </FieldGroup></fieldset><Button type="submit" disabled={busy}>{busy ? 'Please wait…' : setupRequired ? 'Create workspace' : reset ? 'Reset password' : invitation ? 'Accept invitation' : 'Sign in'}</Button></form>
-    {!setupRequired ? <Button variant="link" disabled={busy} onClick={() => { setInvitation(!invitation); setReset(false); setMessage('') }}>{invitation ? 'Back to sign in' : 'Have an invitation?'}</Button> : null}
-    {!setupRequired ? <Button variant="link" disabled={busy} onClick={() => { setReset(!reset); setInvitation(false); setMessage('') }}>{reset ? 'Back to sign in' : 'Reset password with an admin token'}</Button> : null}
-  </section></main>
+  return <main className="flex min-h-svh items-center justify-center bg-background px-6 py-12">
+    <section className="flex w-full max-w-lg flex-col gap-8" aria-labelledby="login-heading">
+      <header className="flex flex-col items-center gap-5 text-center">
+        <div className="flex items-center justify-center gap-3"><Layers3 className="size-6 shrink-0" aria-hidden="true" /><h1 id="login-heading" className="text-xl font-semibold tracking-tight">{title}</h1></div>
+        <p className="text-base text-muted-foreground">{description}</p>
+      </header>
+      <Message message={message} />
+      <form key={mode} onSubmit={submit} className="flex flex-col gap-6">
+        <fieldset disabled={busy}><FieldGroup>
+          {setupRequired || invitation ? <Field><FieldLabel htmlFor="login-name">Name</FieldLabel><Input id="login-name" name="name" required maxLength={80} autoComplete="name"  /></Field> : null}
+          {!reset ? <Field><FieldLabel htmlFor="login-email">Email</FieldLabel><Input id="login-email" name="email" required type="email" maxLength={254} autoComplete="username"  /></Field> : null}
+          <LoginPassword name={reset ? 'new_password' : 'password'} label={reset ? 'New password' : invitation ? 'Password (existing account password, or a new password)' : 'Password'} newPassword={setupRequired || reset} />
+          {invitation || reset ? <TextField name="token" label={reset ? 'Password reset token' : 'Invitation token'} type="password" autoComplete="off" /> : null}
+          {!setupRequired ? <Collapsible open={showCode} onOpenChange={setShowCode}><CollapsibleTrigger asChild><Button type="button" variant="link">{showCode ? 'Hide verification code' : 'Use an authenticator or recovery code'}</Button></CollapsibleTrigger><CollapsibleContent className="pt-4"><TextField name="code" label="Authenticator or recovery code" required={false} autoComplete="one-time-code" /></CollapsibleContent></Collapsible> : null}
+        </FieldGroup></fieldset>
+        <Button type="submit" className="w-full" disabled={busy}>{busy ? 'Please wait…' : setupRequired ? 'Create account' : reset ? 'Reset password' : invitation ? 'Accept invitation' : 'Login'}</Button>
+      </form>
+      {!setupRequired ? <div className="flex flex-wrap justify-center gap-x-4 gap-y-2"><Button variant="link" disabled={busy} onClick={() => { setInvitation(!invitation); setReset(false); setMessage('') }}>{invitation ? 'Back to sign in' : 'Have an invitation?'}</Button><Button variant="link" disabled={busy} onClick={() => { setReset(!reset); setInvitation(false); setMessage('') }}>{reset ? 'Back to sign in' : 'Reset password with an admin token'}</Button></div> : null}
+      <div className="flex flex-wrap justify-center gap-2"><Button asChild variant="link"><Link to="/">Back to home</Link></Button><Button asChild variant="link"><Link to={initialMode === 'signup' ? '/login' : '/signup'}>{initialMode === 'signup' ? 'Login' : 'Sign up'}</Link></Button></div>
+    </section>
+  </main>
 }
 
 export function SecurityPage({ sessions, security, audit, refresh }: { sessions: Session[]; security: Security; audit: Audit[]; refresh: Refresh }) {

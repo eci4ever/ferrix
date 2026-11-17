@@ -22,7 +22,6 @@ FERRIX_BIND=127.0.0.1:{api}
 FERRIX_WEB_PORT={web}
 FERRIX_AUTH_ORIGIN=http://127.0.0.1:{web}
 FERRIX_AUTH_KEY={secrets.token_hex(32)}
-FERRIX_SETUP_TOKEN={secrets.token_hex(32)}
 RUST_LOG=ferrix_api=info,tower_http=info
 """
     socket = Path.home() / ".orbstack/run/docker.sock"
