@@ -25,14 +25,33 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let docker = bollard::Docker::connect_with_defaults()?;
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(address = %listener.local_addr()?, "Ferrix API ready");
+    let mut app = router(AppState {
+        pool: pool.clone(),
+        docker,
+        auth,
+    });
+    if let Ok(directory) = std::env::var("FERRIX_STATIC_DIR") {
+        let index = std::path::Path::new(&directory).join("index.html");
+        if !index.is_file() {
+            return Err("FERRIX_STATIC_DIR must contain index.html".into());
+        }
+        app = app
+            .route(
+                "/api",
+                axum::routing::any(|| async { axum::http::StatusCode::NOT_FOUND }),
+            )
+            .route(
+                "/api/{*unmatched}",
+                axum::routing::any(|| async { axum::http::StatusCode::NOT_FOUND }),
+            )
+            .fallback_service(
+                tower_http::services::ServeDir::new(directory)
+                    .fallback(tower_http::services::ServeFile::new(index)),
+            );
+    }
     axum::serve(
         listener,
-        router(AppState {
-            pool: pool.clone(),
-            docker,
-            auth,
-        })
-        .into_make_service_with_connect_info::<SocketAddr>(),
+        app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown())
     .await?;
