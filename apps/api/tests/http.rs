@@ -84,6 +84,10 @@ async fn liveness_and_unauthenticated_access() {
         .unwrap());
     assert_eq!(get(&app, "/health", "").await.0, StatusCode::OK);
     assert_eq!(
+        get(&app, "/api/v1/server-time", "").await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
         get(&app, "/api/v1/projects", "").await.0,
         StatusCode::UNAUTHORIZED
     );
@@ -465,6 +469,33 @@ async fn postgres_auth_security_and_tenant_isolation() {
     );
     // A session renewed after a day does not extend its authentication freshness.
     sqlx::query("UPDATE auth_sessions SET updated_at=now()-interval '2 days',expires_at=now()+interval '1 hour' WHERE user_id=$1").bind(owner_id.parse::<uuid::Uuid>().unwrap()).execute(&pool).await.unwrap();
+    let before: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT expires_at FROM auth_sessions WHERE user_id=$1")
+            .bind(owner_id.parse::<uuid::Uuid>().unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    let (clock_status, clock, clock_cookie) = get(&app, "/api/v1/server-time", &owner).await;
+    assert_eq!(clock_status, StatusCode::OK);
+    assert!(clock_cookie.is_empty());
+    assert!(
+        (clock["unix_ms"].as_i64().unwrap() - chrono::Utc::now().timestamp_millis()).abs() < 5000
+    );
+    assert!(
+        clock["timezone"]
+            .as_str()
+            .unwrap()
+            .parse::<chrono_tz::Tz>()
+            .is_ok()
+    );
+    assert!(clock["utc_offset"].as_str().unwrap().starts_with("UTC"));
+    let after: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT expires_at FROM auth_sessions WHERE user_id=$1")
+            .bind(owner_id.parse::<uuid::Uuid>().unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(before, after, "clock polling must not renew idle sessions");
     assert_eq!(
         get(&app, "/api/v1/projects", &owner).await.0,
         StatusCode::OK

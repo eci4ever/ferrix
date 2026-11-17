@@ -15,6 +15,7 @@ import { load, request } from '@/lib/api'
 import type { Project, SystemStatus, Container } from '@/lib/api'
 import { LoginPage, SecurityPage, TeamPage, AdminPage } from './auth'
 import type { Identity, Security, Session, Audit, Organization, Member, Invitation, User } from './auth'
+import { ServerClock } from '@/components/server-clock'
 import { AppSidebar } from '@/components/app-sidebar'
 import { SidebarProvider, SidebarInset, SidebarTrigger } from '@/components/ui/sidebar'
 import { TooltipProvider } from '@/components/ui/tooltip'
@@ -71,7 +72,7 @@ function Shell() {
     <SidebarInset id="main" tabIndex={-1}>
       <header className="flex h-16 shrink-0 items-center justify-between gap-2 px-4 transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12 motion-reduce:transition-none">
         <div className="flex min-w-0 items-center gap-2"><SidebarTrigger className="-ml-1" /><Separator orientation="vertical" className="mr-2 data-[orientation=vertical]:h-4" /><Breadcrumb><BreadcrumbList><BreadcrumbItem className="hidden md:block"><BreadcrumbLink asChild><Link to="/organization">{account.data.organization_name}</Link></BreadcrumbLink></BreadcrumbItem><BreadcrumbSeparator className="hidden md:block" /><BreadcrumbItem><BreadcrumbPage>{pageNames[pathname] ?? 'Page not found'}</BreadcrumbPage></BreadcrumbItem></BreadcrumbList></Breadcrumb></div>
-        <Button variant="outline" onClick={refresh} disabled={refreshing} aria-label="Refresh workspace"><RefreshCw data-icon="inline-start" /><span className="hidden sm:inline">{refreshing ? 'Refreshing…' : 'Refresh'}</span></Button>
+        <div className="ml-auto flex shrink-0 items-center gap-2"><ServerClock /><Button variant="outline" onClick={refresh} disabled={refreshing} aria-label="Refresh workspace"><RefreshCw data-icon="inline-start" /><span className="hidden sm:inline">{refreshing ? 'Refreshing…' : 'Refresh'}</span></Button></div>
       </header>
       <div className="flex min-w-0 flex-1 flex-col gap-6 p-4 pt-2 md:p-6 md:pt-2">
         {refreshError ? <ErrorNotice message={refreshError} /> : null}
