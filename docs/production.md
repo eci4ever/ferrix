@@ -4,7 +4,7 @@ Ferrix runs as three Compose services: Ferrix (Rust API and compiled React front
 
 ## Requirements
 
-- Linux amd64 or arm64 with a DNS domain pointing to the VPS.
+- Linux amd64 (Intel/AMD 64-bit) with a DNS domain pointing to the VPS.
 - Inbound TCP 80 and 443 available, including the host/provider firewall.
 - Root access, curl, openssl, util-linux and zoneinfo data.
 - Docker Engine with Compose v2. Automatic Docker installation is limited to Debian/Ubuntu, via Docker's installation script. Existing Docker installations are retained.
@@ -13,7 +13,7 @@ The Docker socket grants Ferrix control of the host Docker daemon. Use a dedicat
 
 ## Publish before installing
 
-The installer URL and image are available only after these files are merged and an image is published. Create a version tag such as `v0.1.0` to trigger `.github/workflows/release.yaml`. Tags publish `ghcr.io/eci4ever/ferrix:0.1.0`, `latest` for stable releases, and a full commit SHA tag, for both amd64 and arm64. The workflow builds amd64 and arm64 on separate native runners, then publishes a combined manifest only when both builds succeed. Manual workflow runs require an existing `release_tag` and rebuild exactly that tag's commit without moving it, publishing the same version and SHA tags. Ensure the GHCR package visibility is public so VPS hosts can pull without authentication. A version tag is not a GitHub Release by itself.
+The installer URL and image are available only after these files are merged and an image is published. Create a version tag such as `v0.1.0` to trigger `.github/workflows/release.yaml`. Tags publish `ghcr.io/eci4ever/ferrix:0.1.0`, `latest` for stable releases, and a full commit SHA tag, for amd64 only. The workflow builds only `linux/amd64` on a native amd64 runner. ARM64 release images are not published. Manual workflow runs require an existing `release_tag` and rebuild exactly that tag's commit without moving it, publishing the same version and SHA tags. Ensure the GHCR package visibility is public so VPS hosts can pull without authentication. A version tag is not a GitHub Release by itself.
 
 ## Install
 

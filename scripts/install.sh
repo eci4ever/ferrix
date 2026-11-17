@@ -6,7 +6,7 @@ trap 'echo "Installation failed. Existing data is preserved; inspect /opt/ferrix
 fail() { echo "Error: $*" >&2; exit 1; }
 [[ ${EUID} -eq 0 ]] || fail 'Run as root (sudo bash).'
 [[ $(uname -s) == Linux ]] || fail 'Only Linux VPS hosts are supported.'
-case $(uname -m) in x86_64|aarch64|arm64) ;; *) fail 'Requires amd64 or arm64.' ;; esac
+case $(uname -m) in x86_64) ;; *) fail 'Requires an amd64 (Intel/AMD 64-bit) VPS.' ;; esac
 
 # Set FERRIX_REF to a release tag; all installation files come from that revision.
 ref=${FERRIX_REF:-main}

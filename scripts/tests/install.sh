@@ -3,6 +3,10 @@
 set -Eeuo pipefail
 [[ -e /.dockerenv && ${FERRIX_INSTALL_TEST:-} == 1 ]] || exit 1
 mkdir /mocks
+cat > /mocks/uname <<'MOCK'
+#!/bin/bash
+if [[ ${1:-} == -m ]]; then echo "${TEST_MACHINE_ARCH:-x86_64}"; else /usr/bin/uname "$@"; fi
+MOCK
 cat > /mocks/docker <<'MOCK'
 #!/bin/bash
 set -eu
@@ -31,6 +35,9 @@ printf '\n'
 MOCK
 chmod +x /mocks/*
 export PATH=/mocks:$PATH FERRIX_DOMAIN=deploy.example.com FERRIX_TIMEZONE=UTC
+# Unsupported ARM hosts fail before installation.
+if TEST_MACHINE_ARCH=aarch64 bash /src/scripts/install.sh >/tmp/result 2>&1; then exit 1; fi
+[[ ! -e /opt/ferrix/.env ]]
 # Pull failures leave no installation credentials.
 if FAIL_PULL=1 bash /src/scripts/install.sh >/tmp/result 2>&1; then exit 1; fi
 [[ ! -e /opt/ferrix/.env ]]
