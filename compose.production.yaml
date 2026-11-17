@@ -1,0 +1,57 @@
+name: ferrix
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ferrix
+      POSTGRES_DB: ferrix
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Missing POSTGRES_PASSWORD}
+    volumes:
+      - postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U ferrix -d ferrix']
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  ferrix:
+    image: ${FERRIX_IMAGE:?Missing FERRIX_IMAGE}
+    restart: unless-stopped
+    init: true
+    environment:
+      DATABASE_URL: postgres://ferrix:${POSTGRES_PASSWORD:?Missing POSTGRES_PASSWORD}@postgres:5432/ferrix
+      FERRIX_AUTH_ORIGIN: https://${FERRIX_DOMAIN:?Missing FERRIX_DOMAIN}
+      FERRIX_AUTH_KEY: ${FERRIX_AUTH_KEY:?Missing FERRIX_AUTH_KEY}
+      DOCKER_HOST: unix:///var/run/docker.sock
+      TZ: ${TZ:-UTC}
+    group_add:
+      - ${DOCKER_GID:?Missing DOCKER_GID}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      postgres:
+        condition: service_healthy
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      FERRIX_DOMAIN: ${FERRIX_DOMAIN:?Missing FERRIX_DOMAIN}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      ferrix:
+        condition: service_healthy
+volumes:
+  postgres:
+  caddy_data:
+  caddy_config:

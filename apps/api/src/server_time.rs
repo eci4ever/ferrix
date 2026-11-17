@@ -20,12 +20,20 @@ impl ServerTime {
     }
 }
 
-pub(crate) async fn get() -> Json<ServerTime> {
-    let timezone = iana_time_zone::get_timezone()
-        .ok()
+fn resolve_timezone(configured: Option<&str>, system: Option<&str>) -> Tz {
+    configured
         .and_then(|name| name.parse::<Tz>().ok())
-        .unwrap_or(chrono_tz::UTC);
-    Json(ServerTime::at(Utc::now(), timezone))
+        .or_else(|| system.and_then(|name| name.parse::<Tz>().ok()))
+        .unwrap_or(chrono_tz::UTC)
+}
+
+pub(crate) async fn get() -> Json<ServerTime> {
+    let configured = std::env::var("TZ").ok();
+    let system = iana_time_zone::get_timezone().ok();
+    Json(ServerTime::at(
+        Utc::now(),
+        resolve_timezone(configured.as_deref(), system.as_deref()),
+    ))
 }
 
 #[cfg(test)]
@@ -42,6 +50,19 @@ mod tests {
         assert_eq!(kl.unix_ms, now.timestamp_millis());
         let kathmandu = ServerTime::at(now, chrono_tz::Asia::Kathmandu);
         assert_eq!(kathmandu.utc_offset, "UTC+05:45");
+    }
+
+    #[test]
+    fn configured_container_timezone_takes_precedence() {
+        assert_eq!(
+            resolve_timezone(Some("Asia/Kuala_Lumpur"), Some("Etc/UTC")),
+            chrono_tz::Asia::Kuala_Lumpur
+        );
+        assert_eq!(
+            resolve_timezone(Some("invalid"), Some("Europe/London")),
+            chrono_tz::Europe::London
+        );
+        assert_eq!(resolve_timezone(None, None), chrono_tz::UTC);
     }
 
     #[test]

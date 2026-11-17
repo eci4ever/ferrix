@@ -17,6 +17,8 @@ Authentication setup and security behavior: [Auth guide](docs/auth.md).
 | Routing | TanStack Router |
 | UI | shadcn/ui, Tailwind CSS |
 
+Production VPS installation and release workflow: [Production guide](docs/production.md).
+
 ## Jalankan secara tempatan
 
 Keperluan: Rust stable, Node.js 24 LTS, npm, Docker dengan Compose.

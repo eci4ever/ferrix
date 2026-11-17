@@ -1,0 +1,4 @@
+{$FERRIX_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy ferrix:8080
+}
