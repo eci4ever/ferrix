@@ -1,5 +1,6 @@
 pub mod auth;
 mod projects;
+mod server_time;
 
 use axum::{
     Json, Router,
@@ -33,7 +34,14 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             auth::sessions::protect,
         ));
+    let clock = Router::new()
+        .route("/api/v1/server-time", get(server_time::get))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::sessions::identify,
+        ));
     Router::new()
+        .merge(clock)
         .merge(protected)
         .nest("/api/v1/auth", auth::routes(state.clone()))
         .layer(axum::middleware::from_fn_with_state(

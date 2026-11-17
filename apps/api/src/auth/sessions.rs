@@ -122,6 +122,17 @@ pub(super) async fn resolve(state: &AppState, headers: &HeaderMap) -> Result<Ide
     sqlx::query_as::<_,Identity>("SELECT s.id session_id,u.id user_id,u.name,u.email,u.system_role,s.active_organization_id organization_id,o.name organization_name,m.role,s.authenticated_at,s.expires_at FROM auth_sessions s JOIN auth_users u ON u.id=s.user_id JOIN auth_members m ON m.user_id=u.id AND m.organization_id=s.active_organization_id JOIN auth_organizations o ON o.id=m.organization_id WHERE s.token_hash=$1 AND s.expires_at>now() AND s.absolute_expires_at>now() AND NOT u.banned")
  .bind(digest(&t)).fetch_optional(&state.pool).await?.ok_or_else(invalid)
 }
+// Background clock polling authenticates without extending session inactivity expiry.
+pub async fn identify(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
+    match resolve(&state, req.headers()).await {
+        Ok(id) => {
+            req.extensions_mut().insert(id);
+            next.run(req).await
+        }
+        Err(error) => error.into_response(),
+    }
+}
+
 pub async fn protect(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
     let mut id = match resolve(&state, req.headers()).await {
         Ok(id) => id,

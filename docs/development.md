@@ -46,3 +46,7 @@ git config --global --add safe.directory "/Users/Shared/Workspace/TS/$(id -un)/f
 ```
 
 Do not use a wildcard safe.directory. Existing GitHub credentials and commit identity remain unchanged. Install frontend dependencies using `npm ci` in `apps/web` from each user's login. Setup changes are present locally in each clone and have not been committed or pushed; nmfairus should integrate the canonical setup once, then the other users can reconcile their identical setup changes before starting feature branches.
+
+### Dashboard server clock
+
+The dashboard reads authenticated `GET /api/v1/server-time` for the server timestamp, IANA timezone and current UTC offset. It ticks locally between synchronizations every 60 seconds and synchronizes again when the tab becomes visible. Clock requests validate the session without extending its inactivity expiry. The timezone follows the server OS, falling back to UTC if unavailable.
