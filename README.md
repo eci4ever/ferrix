@@ -2,6 +2,8 @@
 
 Ferrix ialah asas platform deployment kendiri yang dibina menggunakan Rust. Sasaran MVP ialah mengurus aplikasi Docker pada satu server melalui dashboard web.
 
+For three-user setup and assigned ports, see [development setup](docs/development.md).
+
 ## Stack
 
 | Bahagian | Teknologi |
@@ -18,7 +20,7 @@ Ferrix ialah asas platform deployment kendiri yang dibina menggunakan Rust. Sasa
 Keperluan: Rust stable, Node.js 24 LTS, npm, Docker dengan Compose.
 
 ```sh
-cp .env.example .env
+python3 scripts/setup-dev.py
 docker compose up -d postgres --wait
 cargo run -p ferrix-api
 ```

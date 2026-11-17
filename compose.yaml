@@ -1,17 +1,17 @@
-name: ferrix
+name: ${COMPOSE_PROJECT_NAME:?Run python3 scripts/setup-dev.py first}
 services:
   postgres:
     image: postgres:17-alpine
     environment:
       POSTGRES_USER: ferrix
       POSTGRES_PASSWORD: ferrix
-      POSTGRES_DB: ferrix
+      POSTGRES_DB: ${POSTGRES_DB:?Missing POSTGRES_DB}
     ports:
-      - "127.0.0.1:5433:5432"
+      - "127.0.0.1:${POSTGRES_PORT:?Missing POSTGRES_PORT}:5432"
     volumes:
       - ferrix_postgres:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ferrix -d ferrix"]
+      test: ["CMD-SHELL", "pg_isready -U ferrix -d $$POSTGRES_DB"]
       interval: 3s
       timeout: 3s
       retries: 10
