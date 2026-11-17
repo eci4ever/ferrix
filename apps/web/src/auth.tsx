@@ -1,0 +1,87 @@
+import { useId, useState } from 'react'
+import type { FormEvent } from 'react'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert'
+import { Badge } from '@/components/ui/badge'
+import { Table, TableHeader, TableHead, TableBody, TableRow, TableCell } from '@/components/ui/table'
+import { request } from '@/lib/api'
+
+export type Identity = { session_id: string; user_id: string; name: string; email: string; system_role: string; organization_id: string; organization_name: string; role: string }
+export type Session = { id: string; created_at: string; expires_at: string; user_agent: string; ip_address: string; current: boolean }
+export type Member = { id: string; name: string; email: string; role: string }
+export type Organization = { id: string; name: string; role: string }
+export type Invitation = { id: string; email: string; role: string; expires_at: string }
+export type User = { id: string; name: string; email: string; system_role: string; banned: boolean }
+export type Security = { two_factor_enabled: boolean; recovery_codes_remaining: number; fresh_until: string }
+export type Audit = { id: string; action: string; created_at: string }
+type Refresh = () => Promise<void>
+
+function Message({ message }: { message: string }) { return message ? <Alert><AlertTitle>Account notice</AlertTitle><AlertDescription>{message}</AlertDescription></Alert> : null }
+function TextField({ name, label, type = 'text', required = true, autoComplete }: { name: string; label: string; type?: string; required?: boolean; autoComplete?: string }) { const id = useId(); return <Field><FieldLabel htmlFor={id}>{label}</FieldLabel><Input id={id} name={name} type={type} required={required} autoComplete={autoComplete} maxLength={type === 'password' ? 1024 : 254} /></Field> }
+function data(event: FormEvent<HTMLFormElement>): Record<string, string> { event.preventDefault(); return Object.fromEntries(new FormData(event.currentTarget).entries()) as Record<string, string> }
+function errorText(error: unknown) { return error instanceof Error ? error.message : 'Account operation failed.' }
+const panel = 'flex flex-col gap-4 rounded-xl border bg-card p-6 text-card-foreground'
+
+export function LoginPage({ setupRequired, refresh }: { setupRequired: boolean; refresh: Refresh }) {
+  const [invitation, setInvitation] = useState(false)
+  const [reset, setReset] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+  async function submit(event: FormEvent<HTMLFormElement>) {
+    const values = data(event); setBusy(true); setMessage('')
+    try { await request(`/auth/${setupRequired ? 'setup' : reset ? 'reset-password' : invitation ? 'accept-invitation' : 'sign-in'}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) }); if (reset) { setReset(false); setMessage('Password reset. Sign in with your new password.') } await refresh() }
+    catch (error) { setMessage(errorText(error)) } finally { setBusy(false) }
+  }
+  return <main className="flex min-h-svh items-center justify-center bg-background p-4"><section className={`${panel} w-full max-w-md`}>
+    <div><p className="text-sm font-medium text-muted-foreground">Ferrix</p><h1 className="mt-2 text-2xl font-semibold">{setupRequired ? 'Set up your workspace' : reset ? 'Reset your password' : invitation ? 'Accept an invitation' : 'Sign in'}</h1><p className="mt-2 text-sm text-muted-foreground">{setupRequired ? 'Create the installation administrator and your first organization.' : 'Use your account to access your deployment workspace.'}</p></div>
+    <Message message={message} />
+    <form onSubmit={submit} className="flex flex-col gap-6"><fieldset disabled={busy}><FieldGroup>
+      {setupRequired || invitation ? <TextField name="name" label="Name" autoComplete="name" /> : null}
+      {!reset ? <TextField name="email" label="Email" type="email" autoComplete="username" /> : null}
+      <TextField name={reset ? "new_password" : "password"} label={reset ? "New password" : invitation ? 'Password (existing account password, or a new password)' : 'Password'} type="password" autoComplete={setupRequired || reset ? 'new-password' : 'current-password'} />
+      {setupRequired ? <TextField name="setup_token" label="Installation token (from your server .env)" type="password" autoComplete="off" /> : <TextField name="code" label="Authenticator or recovery code (if enabled)" required={false} autoComplete="one-time-code" />}
+      {invitation || reset ? <TextField name="token" label={reset ? "Password reset token" : "Invitation token"} type="password" autoComplete="off" /> : null}
+    </FieldGroup></fieldset><Button type="submit" disabled={busy}>{busy ? 'Please wait…' : setupRequired ? 'Create workspace' : reset ? 'Reset password' : invitation ? 'Accept invitation' : 'Sign in'}</Button></form>
+    {!setupRequired ? <Button variant="link" disabled={busy} onClick={() => { setInvitation(!invitation); setReset(false); setMessage('') }}>{invitation ? 'Back to sign in' : 'Have an invitation?'}</Button> : null}
+    {!setupRequired ? <Button variant="link" disabled={busy} onClick={() => { setReset(!reset); setInvitation(false); setMessage('') }}>{reset ? 'Back to sign in' : 'Reset password with an admin token'}</Button> : null}
+  </section></main>
+}
+
+export function SecurityPage({ sessions, security, audit, refresh }: { sessions: Session[]; security: Security; audit: Audit[]; refresh: Refresh }) {
+  const [message, setMessage] = useState(''); const [busy, setBusy] = useState(false)
+  const [enrollment, setEnrollment] = useState<{ secret: string; otpauth_url: string } | null>(null)
+  const [codes, setCodes] = useState<string[]>([])
+  async function action(path: string, body = {}) { setBusy(true); setMessage(''); try { const result = await request<unknown>(`/auth/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); await refresh(); return result } catch (error) { setMessage(errorText(error)); return null } finally { setBusy(false) } }
+  async function enroll(event: FormEvent<HTMLFormElement>) { const values = data(event); const result = await action('mfa/enroll', values); if (result) setEnrollment(result as { secret: string; otpauth_url: string }) }
+  async function confirm(event: FormEvent<HTMLFormElement>) { const result = await action('mfa/confirm', data(event)); if (result) { setCodes((result as { recovery_codes: string[] }).recovery_codes); setEnrollment(null) } }
+  return <div className="flex flex-col gap-6"><h1 className="text-2xl font-semibold">Security and sessions</h1><Message message={message} />
+    <section className={panel}><h2 className="font-semibold">Verify your identity</h2><p className="text-sm text-muted-foreground">Sensitive actions need a password verification within the last 15 minutes. Authenticator codes can be used only once per time step.</p><form className="flex flex-col gap-4" onSubmit={async e => { await action('reauthenticate', data(e)) }}><FieldGroup><TextField name="password" label="Current password" type="password" autoComplete="current-password" /><TextField name="code" label="Authenticator or recovery code (if enabled)" required={false} autoComplete="one-time-code" /></FieldGroup><Button type="submit" disabled={busy}>Verify identity</Button></form></section>
+    <section className={panel}><h2 className="font-semibold">Active sessions</h2><p className="text-sm text-muted-foreground">Sessions expire after three days of inactivity, with an absolute limit of 30 days.</p><Table><TableHeader><TableRow><TableHead>Device</TableHead><TableHead>Expires</TableHead><TableHead>Action</TableHead></TableRow></TableHeader><TableBody>{sessions.map(s => <TableRow key={s.id}><TableCell><p className="max-w-sm truncate">{s.user_agent || 'Unknown device'}</p><span className="text-xs text-muted-foreground">{s.ip_address}</span>{s.current ? <Badge variant="secondary">Current</Badge> : null}</TableCell><TableCell>{new Date(s.expires_at).toLocaleString()}</TableCell><TableCell><Button variant="outline" disabled={busy} onClick={() => action(`sessions/${s.id}/revoke`)}>Revoke</Button></TableCell></TableRow>)}</TableBody></Table><Button variant="outline" disabled={busy} onClick={() => action('sessions/revoke-others')}>Revoke other sessions</Button></section>
+    <section className={panel}><h2 className="font-semibold">Two-factor authentication</h2><p className="text-sm text-muted-foreground">{security.two_factor_enabled ? `Enabled. ${security.recovery_codes_remaining} recovery codes remain.` : 'Add an authenticator app to protect your account.'}</p>
+      <form className="flex flex-col gap-4" onSubmit={security.two_factor_enabled ? async e => { await action('mfa/disable', data(e)) } : enroll}><FieldGroup><TextField name="password" label="Confirm password" type="password" autoComplete="current-password" />{security.two_factor_enabled ? <TextField name="code" label="Authenticator or recovery code" autoComplete="one-time-code" /> : null}</FieldGroup><Button type="submit" variant="outline" disabled={busy}>{security.two_factor_enabled ? 'Disable two-factor authentication' : 'Set up authenticator'}</Button></form>
+      {enrollment ? <div className="flex flex-col gap-4"><p className="text-sm">Enter this setup key in your authenticator app. Enrollment expires in 10 minutes.</p><code className="break-all rounded-md bg-muted p-3">{enrollment.secret}</code><form onSubmit={confirm} className="flex flex-col gap-4"><FieldGroup><TextField name="code" label="Code from authenticator" autoComplete="one-time-code" /></FieldGroup><Button type="submit" disabled={busy}>Enable two-factor authentication</Button></form></div> : null}
+      {codes.length ? <Alert><AlertTitle>Save your recovery codes now</AlertTitle><AlertDescription><p>Each code works once. These codes will not be shown again.</p><pre className="max-w-full overflow-auto py-3">{codes.join('\n')}</pre><Button variant="outline" onClick={() => setCodes([])}>I saved my codes</Button></AlertDescription></Alert> : null}
+    </section>
+    <section className={panel}><h2 className="font-semibold">Change password</h2><p className="text-sm text-muted-foreground">Use at least 12 characters. Changing your password signs out every session, including this one.</p><form onSubmit={async e => { await action('change-password', data(e)) }} className="flex flex-col gap-4"><FieldGroup><TextField name="password" label="Existing password" type="password" autoComplete="current-password" /><TextField name="new_password" label="New password" type="password" autoComplete="new-password" /><TextField name="code" label="Authenticator or recovery code (if enabled)" required={false} autoComplete="one-time-code" /></FieldGroup><Button disabled={busy} type="submit">Change password and sign out</Button></form></section>
+    {audit.length ? <section className={panel}><h2 className="font-semibold">Organization security activity</h2>{audit.map(item => <p key={item.id} className="text-sm">{new Date(item.created_at).toLocaleString()} — {item.action}</p>)}</section> : null}
+  </div>
+}
+
+export function TeamPage({ identity, organizations, members, invitations, refresh }: { identity: Identity; organizations: Organization[]; members: Member[]; invitations: Invitation[]; refresh: Refresh }) {
+  const [message, setMessage] = useState(''); const [token, setToken] = useState(''); const [busy, setBusy] = useState(false)
+  async function action(path: string, body = {}) { setBusy(true); setMessage(''); try { const result = await request<{ token?: string }>(`/auth/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); if (result?.token) setToken(result.token); await refresh() } catch (error) { setMessage(errorText(error)) } finally { setBusy(false) } }
+  const manager = identity.role === 'owner' || identity.role === 'admin'
+  return <div className="flex flex-col gap-6"><h1 className="text-2xl font-semibold">Organization</h1><Message message={message} />
+    <section className={panel}><h2 className="font-semibold">Your organizations</h2><div className="flex flex-wrap gap-2">{organizations.map(org => <Button key={org.id} variant={org.id === identity.organization_id ? 'secondary' : 'outline'} disabled={busy || org.id === identity.organization_id} onClick={() => action('organizations/switch', { organization_id: org.id })}>{org.name} ({org.role})</Button>)}</div>{identity.system_role === 'admin' ? <form onSubmit={async e => { await action('organizations', data(e)) }} className="flex flex-col gap-4"><FieldGroup><TextField name="name" label="New organization name" /></FieldGroup><Button type="submit" disabled={busy}>Create organization</Button></form> : null}</section>
+    <section className={panel}><h2 className="font-semibold">Members</h2><Table><TableHeader><TableRow><TableHead>Name</TableHead><TableHead>Role</TableHead>{manager ? <TableHead>Actions</TableHead> : null}</TableRow></TableHeader><TableBody>{members.map(member => <TableRow key={member.id}><TableCell>{member.name}<p className="text-xs text-muted-foreground">{member.email}</p></TableCell><TableCell>{member.role}</TableCell>{manager ? <TableCell><div className="flex flex-wrap gap-2">{identity.role === 'owner' ? ['owner', 'admin', 'member'].filter(role => role !== member.role).map(role => <Button key={role} size="sm" variant="outline" disabled={busy} onClick={() => action(`members/${member.id}/role`, { role })}>Make {role}</Button>) : null}<Button size="sm" variant="outline" disabled={busy} onClick={() => action(`members/${member.id}/remove`)}>Remove</Button></div></TableCell> : null}</TableRow>)}</TableBody></Table></section>
+    {manager ? <section className={panel}><h2 className="font-semibold">Invite a member</h2><p className="text-sm text-muted-foreground">Share the generated token privately. It expires in two days and is bound to this email address.</p><form onSubmit={async e => { const values = data(e); const submitter = (e.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null; await action('invitations', { ...values, role: submitter?.value || 'member' }) }} className="flex flex-col gap-4"><FieldGroup><TextField name="email" label="Invitation email" type="email" /></FieldGroup><div className="flex gap-2"><Button type="submit" value="member" disabled={busy}>Invite member</Button>{identity.role === 'owner' ? <Button type="submit" value="admin" variant="outline" disabled={busy}>Invite admin</Button> : null}</div></form>{token ? <Alert><AlertTitle>Invitation token</AlertTitle><AlertDescription><code className="break-all">{token}</code></AlertDescription></Alert> : null}{invitations.map(invite => <div key={invite.id} className="flex flex-wrap items-center justify-between gap-2 text-sm"><span>{invite.email} ({invite.role})</span><Button variant="outline" disabled={busy} onClick={() => action(`invitations/${invite.id}/revoke`)}>Revoke invitation</Button></div>)}</section> : null}
+  </div>
+}
+
+export function AdminPage({ users, refresh }: { users: User[]; refresh: Refresh }) {
+  const [message, setMessage] = useState(''); const [busy, setBusy] = useState(false); const [resetToken, setResetToken] = useState('')
+  async function action(user: User, path: string, body = {}) { setBusy(true); setMessage(''); try { const result = await request<{ token?: string }>(`/auth/admin/users/${user.id}/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); if (result?.token) setResetToken(result.token); await refresh() } catch (error) { setMessage(errorText(error)) } finally { setBusy(false) } }
+  return <div className="flex flex-col gap-6"><h1 className="text-2xl font-semibold">User administration</h1><Message message={message} />{resetToken ? <Alert><AlertTitle>Password reset token</AlertTitle><AlertDescription><p>Share privately with the account owner. Expires in 15 minutes; two-factor authentication remains required.</p><code className="break-all">{resetToken}</code><Button variant="outline" onClick={() => setResetToken('')}>Dismiss token</Button></AlertDescription></Alert> : null}<section className={panel}><Table><TableHeader><TableRow><TableHead>User</TableHead><TableHead>Role</TableHead><TableHead>Status</TableHead><TableHead>Actions</TableHead></TableRow></TableHeader><TableBody>{users.map(user => <TableRow key={user.id}><TableCell>{user.name}<p className="text-xs text-muted-foreground">{user.email}</p></TableCell><TableCell>{user.system_role}</TableCell><TableCell>{user.banned ? 'Banned' : 'Active'}</TableCell><TableCell><div className="flex flex-wrap gap-2">{user.system_role !== 'admin' ? <Button variant="outline" disabled={busy} onClick={() => action(user, 'ban', { banned: !user.banned })}>{user.banned ? 'Unban' : 'Ban'}</Button> : null}<Button variant="outline" disabled={busy} onClick={() => action(user, 'revoke-sessions')}>Revoke sessions</Button><Button variant="outline" disabled={busy || user.banned} onClick={() => action(user, 'password-reset')}>Issue password reset</Button></div></TableCell></TableRow>)}</TableBody></Table></section></div>
+}

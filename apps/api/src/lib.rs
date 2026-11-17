@@ -1,3 +1,4 @@
+pub mod auth;
 mod projects;
 
 use axum::{
@@ -17,20 +18,32 @@ use tower_http::trace::TraceLayer;
 pub struct AppState {
     pub pool: PgPool,
     pub docker: Docker,
+    pub auth: std::sync::Arc<auth::AuthConfig>,
 }
 
 pub fn router(state: AppState) -> Router {
-    Router::new()
-        .route(
-            "/health",
-            get(|| async { Json(serde_json::json!({"service":"ferrix", "status":"ok"})) }),
-        )
+    let protected = Router::new()
         .route("/api/v1/status", get(status))
         .route(
             "/api/v1/projects",
             get(projects::list).post(projects::create),
         )
         .route("/api/v1/containers", get(containers))
+        .route_layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::sessions::protect,
+        ));
+    Router::new()
+        .merge(protected)
+        .nest("/api/v1/auth", auth::routes(state.clone()))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            auth::sessions::guard,
+        ))
+        .route(
+            "/health",
+            get(|| async { Json(serde_json::json!({"service":"ferrix", "status":"ok"})) }),
+        )
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
@@ -63,7 +76,11 @@ struct Container {
     status: String,
 }
 
-async fn containers(State(state): State<AppState>) -> Result<Json<Vec<Container>>, ApiError> {
+async fn containers(
+    State(state): State<AppState>,
+    id: auth::Identity,
+) -> Result<Json<Vec<Container>>, ApiError> {
+    id.admin()?;
     let result = tokio::time::timeout(
         Duration::from_secs(5),
         state.docker.list_containers(Some(
@@ -100,7 +117,7 @@ async fn containers(State(state): State<AppState>) -> Result<Json<Vec<Container>
     ))
 }
 
-pub(crate) struct ApiError(StatusCode, &'static str);
+pub struct ApiError(StatusCode, &'static str);
 
 impl From<sqlx::Error> for ApiError {
     fn from(error: sqlx::Error) -> Self {

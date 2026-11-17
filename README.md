@@ -4,6 +4,8 @@ Ferrix ialah asas platform deployment kendiri yang dibina menggunakan Rust. Sasa
 
 For three-user setup and assigned ports, see [development setup](docs/development.md).
 
+Authentication setup and security behavior: [Auth guide](docs/auth.md).
+
 ## Stack
 
 | Bahagian | Teknologi |
@@ -42,7 +44,7 @@ Jika Docker menggunakan socket selain laluan biasa, tetapkan `DOCKER_HOST` dalam
 DOCKER_HOST=unix:///Users/NAMA_ANDA/.orbstack/run/docker.sock
 ```
 
-Port PostgreSQL pembangunan ialah `5433`, dengan volume `ferrix_postgres`. Kelayakan dalam Compose adalah untuk pembangunan tempatan sahaja. API mengikat `127.0.0.1` secara lalai. Asas ini belum mempunyai autentikasi; kekalkan akses tempatan sehingga autentikasi dilaksanakan.
+Port PostgreSQL pembangunan ialah `5433`, dengan volume `ferrix_postgres`. Kelayakan dalam Compose adalah untuk pembangunan tempatan sahaja. API mengikat `127.0.0.1` secara lalai. Auth menggunakan sesi cookie dan organisasi; lihat panduan auth sebelum menjalankan API.
 
 ## Fungsi sekarang
 
@@ -66,6 +68,8 @@ Projek ialah kumpulan aplikasi. Mencipta projek belum melancarkan container atau
 
 ```sh
 curl -X POST http://127.0.0.1:8080/api/v1/projects \
+  -H 'Origin: http://127.0.0.1:5173' \
+  -b cookies.txt \
   -H 'Content-Type: application/json' \
   -d '{"name":"My app","description":"Production services"}'
 ```
@@ -88,13 +92,13 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 # Dengan PostgreSQL pembangunan berjalan, termasuk ujian persistence:
-FERRIX_TEST_DATABASE_URL=postgres://ferrix:ferrix@127.0.0.1:5433/ferrix cargo test --workspace
+FERRIX_TEST_DATABASE_URL=postgres://ferrix:ferrix@127.0.0.1:5433/ferrix_nmfairus cargo test --workspace -- --include-ignored
 cd apps/web && npm run build
 ```
 
 ## Urutan pembangunan seterusnya
 
-1. Autentikasi pemilik, sesi dan kawalan akses.
+1. Auth pemilik, sesi dan kawalan akses tersedia dalam branch auth; lengkapkan review sebelum deployment.
 2. Aplikasi di bawah projek: image Docker, environment dan konfigurasi port.
 3. Worker deployment dengan rekod persisten, status queued/running/succeeded/failed, log dan pemulihan selepas restart.
 4. Pull image, cipta/start container dan semakan kesihatan melalui Bollard.

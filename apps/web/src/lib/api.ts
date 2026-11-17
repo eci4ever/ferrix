@@ -13,6 +13,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const body = await response.json().catch(() => null)
     throw new Error(body?.error ?? `Request failed (${response.status}). Check that the API is running.`)
   }
+  if (response.status === 204) return undefined as T
   return response.json()
 }
 

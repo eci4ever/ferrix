@@ -13,6 +13,8 @@ import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from '@/
 import { Skeleton } from '@/components/ui/skeleton'
 import { load, request } from '@/lib/api'
 import type { Project, SystemStatus, Container } from '@/lib/api'
+import { LoginPage, SecurityPage, TeamPage, AdminPage } from './auth'
+import type { Identity, Security, Session, Audit, Organization, Member, Invitation, User } from './auth'
 import './index.css'
 
 function ErrorNotice({ message }: { message: string }) {
@@ -20,7 +22,7 @@ function ErrorNotice({ message }: { message: string }) {
 }
 
 function Shell() {
-  const { status } = rootRoute.useLoaderData()
+  const { status, account, setup } = rootRoute.useLoaderData()
   const router = useRouter()
   const [refreshing, setRefreshing] = useState(false)
   const [refreshError, setRefreshError] = useState('')
@@ -31,6 +33,10 @@ function Shell() {
     catch { setRefreshError('Refresh failed. Please try again.') }
     finally { setRefreshing(false) }
   }
+  if (!account.data) {
+    if (setup.data === null) return <main className="mx-auto max-w-md p-6"><ErrorNotice message={setup.error} /><Button onClick={refresh} disabled={refreshing}>Retry</Button></main>
+    return <LoginPage setupRequired={setup.data.setup_required} refresh={() => router.invalidate()} />
+  }
   return <div className="min-h-svh bg-background text-foreground md:grid md:grid-cols-[240px_minmax(0,1fr)]">
     <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:bg-background focus:p-4">Skip to content</a>
     <aside className="flex flex-col gap-6 border-b bg-sidebar p-4 text-sidebar-foreground md:border-r md:border-b-0">
@@ -39,7 +45,11 @@ function Shell() {
       <nav aria-label="Main navigation" className="flex gap-2 md:flex-col">
         <Button variant="ghost" asChild className="justify-start"><Link to="/" activeOptions={{ exact: true }} activeProps={{ className: "bg-sidebar-accent text-sidebar-accent-foreground" }}><Folder data-icon="inline-start" />Projects</Link></Button>
         <Button variant="ghost" asChild className="justify-start"><Link to="/containers" activeProps={{ className: "bg-sidebar-accent text-sidebar-accent-foreground" }}><Box data-icon="inline-start" />Containers</Link></Button>
+        <Button variant="ghost" asChild className="justify-start"><Link to="/security">Security</Link></Button>
+        <Button variant="ghost" asChild className="justify-start"><Link to="/organization">Organization</Link></Button>
+        {account.data.system_role === 'admin' ? <Button variant="ghost" asChild className="justify-start"><Link to="/admin">Users</Link></Button> : null}
       </nav>
+      <div className="flex flex-col gap-2 px-2 text-sm"><span>{account.data.name}</span><span className="text-xs text-muted-foreground">{account.data.organization_name} ({account.data.role})</span><Button variant="outline" onClick={async () => { try { await request('/auth/sign-out', { method: 'POST' }); await router.invalidate() } catch (error) { setRefreshError(error instanceof Error ? error.message : 'Sign out failed.') } }}>Sign out</Button></div>
       <div className="mt-auto hidden items-center gap-2 px-2 py-4 text-sm text-muted-foreground md:flex [&_svg]:size-4 [&_strong]:block [&_span]:block [&_span]:text-xs"><Server aria-hidden="true" /><div><strong>Local server</strong><span>Development workspace</span></div></div>
     </aside>
     <div className="flex min-w-0 flex-col">
@@ -101,7 +111,7 @@ function ProjectsPage() {
         <div className="flex justify-end gap-2"><Button variant="outline" type="button" onClick={closeForm} disabled={saving}>Cancel</Button><Button type="submit" disabled={saving}>{saving ? 'Creating…' : 'Create project'}</Button></div>
       </form>
     </section> : null}
-    {projects.data === null ? <ErrorNotice message={projects.error} /> : projects.data.length === 0 ? <section className="overflow-hidden rounded-xl border bg-card text-card-foreground [&>[data-slot=empty]]:min-h-72 [&_[data-slot=table-caption]]:p-4"><Empty><EmptyHeader><EmptyMedia variant="icon"><Folder /></EmptyMedia><EmptyTitle>Your first deployment starts here</EmptyTitle><EmptyDescription>Create a project to organise your applications. This workspace is ready for a fresh start.</EmptyDescription></EmptyHeader>{!creating ? <Button variant="outline" onClick={() => setCreating(true)}><Plus data-icon="inline-start" />Create your first project</Button> : null}</Empty></section> : <section className="overflow-hidden rounded-xl border bg-card text-card-foreground [&>[data-slot=empty]]:min-h-72 [&_[data-slot=table-caption]]:p-4" aria-label="Project list"><Table><TableCaption>Up to 100 most recent projects. Deployment support is coming next.</TableCaption><TableHeader><TableRow><TableHead>Project</TableHead><TableHead>Created</TableHead><TableHead>Stage</TableHead></TableRow></TableHeader><TableBody>{projects.data.map(project => <TableRow key={project.id}><TableCell><div className="flex items-center gap-3 [&_p]:mt-1 [&_p]:max-w-sm [&_p]:whitespace-normal [&_p]:text-xs [&_p]:text-muted-foreground"><span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted [&_svg]:size-4"><Folder aria-hidden="true" /></span><div><strong>{project.name}</strong><p>{project.description || 'No description'}</p></div></div></TableCell><TableCell><time dateTime={project.created_at}>{new Date(project.created_at).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}</time></TableCell><TableCell><Badge variant="outline">Created</Badge></TableCell></TableRow>)}</TableBody></Table></section>}
+    {projects.data === null ? <ErrorNotice message={projects.error} /> : projects.data.length === 0 ? <section className="overflow-hidden rounded-xl border bg-card text-card-foreground [&>[data-slot=empty]]:min-h-72 [&_[data-slot=table-caption]]:p-4"><Empty><EmptyHeader><EmptyMedia variant="icon"><Folder /></EmptyMedia><EmptyTitle>Your first deployment starts here</EmptyTitle><EmptyDescription>Create a project to organise your applications. This workspace is ready for a fresh start.</EmptyDescription></EmptyHeader>{!creating ? <Button variant="outline" onClick={() => setCreating(true)}><Plus data-icon="inline-start" />Create your first project</Button> : null}</Empty></section> : <section className="overflow-hidden rounded-xl border bg-card text-card-foreground [&>[data-slot=empty]]:min-h-72 [&_[data-slot=table-caption]]:p-4" aria-label="Project list"><Table><TableCaption>Up to 100 most recent projects. Deployment support is coming next.</TableCaption><TableHeader><TableRow><TableHead>Project</TableHead><TableHead>Created</TableHead><TableHead>Stage</TableHead></TableRow></TableHeader><TableBody>{projects.data.map((project: Project) => <TableRow key={project.id}><TableCell><div className="flex items-center gap-3 [&_p]:mt-1 [&_p]:max-w-sm [&_p]:whitespace-normal [&_p]:text-xs [&_p]:text-muted-foreground"><span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted [&_svg]:size-4"><Folder aria-hidden="true" /></span><div><strong>{project.name}</strong><p>{project.description || 'No description'}</p></div></div></TableCell><TableCell><time dateTime={project.created_at}>{new Date(project.created_at).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}</time></TableCell><TableCell><Badge variant="outline">Created</Badge></TableCell></TableRow>)}</TableBody></Table></section>}
     <div className="flex max-w-xl items-start gap-3 text-sm text-muted-foreground [&>svg]:size-5 [&>svg]:shrink-0 [&_h2]:font-medium [&_h2]:text-foreground [&_p]:mt-1"><Layers3 aria-hidden="true" /><div><h2>Built for your own infrastructure</h2><p>Projects are the first step. Application deployment, domains and build logs are planned next.</p></div></div>
   </>
 }
@@ -109,7 +119,7 @@ function ProjectsPage() {
 function ContainersPage() {
   const { containers } = containersRoute.useLoaderData()
   return <><div className="flex flex-wrap items-center justify-between gap-4 [&_h1]:text-2xl [&_h1]:font-semibold [&_h1]:tracking-tight [&_p]:mt-1 [&_p]:text-sm [&_p]:text-muted-foreground"><div><h1>Containers</h1><p>A live view of containers on your connected Docker server.</p></div><Badge variant="outline">Read only</Badge></div>
-    {containers.data === null ? <ErrorNotice message={containers.error} /> : containers.data.length === 0 ? <section className="overflow-hidden rounded-xl border bg-card text-card-foreground [&>[data-slot=empty]]:min-h-72 [&_[data-slot=table-caption]]:p-4"><Empty><EmptyHeader><EmptyMedia variant="icon"><Box /></EmptyMedia><EmptyTitle>No containers found</EmptyTitle><EmptyDescription>Containers on this Docker server will appear here. Use Refresh to check again.</EmptyDescription></EmptyHeader></Empty></section> : <section className="overflow-hidden rounded-xl border bg-card text-card-foreground [&>[data-slot=empty]]:min-h-72 [&_[data-slot=table-caption]]:p-4"><Table><TableCaption>All containers on the connected Docker server, including services outside Ferrix.</TableCaption><TableHeader><TableRow><TableHead>Container</TableHead><TableHead>Image</TableHead><TableHead>State</TableHead><TableHead>Status</TableHead></TableRow></TableHeader><TableBody>{containers.data.map(container => <TableRow key={container.id}><TableCell><strong>{container.name || container.id.slice(0, 12)}</strong></TableCell><TableCell>{container.image}</TableCell><TableCell><Badge variant={container.state === 'running' ? 'secondary' : 'outline'}>{container.state || 'Unknown'}</Badge></TableCell><TableCell>{container.status}</TableCell></TableRow>)}</TableBody></Table></section>}
+    {containers.data === null ? <ErrorNotice message={containers.error} /> : containers.data.length === 0 ? <section className="overflow-hidden rounded-xl border bg-card text-card-foreground [&>[data-slot=empty]]:min-h-72 [&_[data-slot=table-caption]]:p-4"><Empty><EmptyHeader><EmptyMedia variant="icon"><Box /></EmptyMedia><EmptyTitle>No containers found</EmptyTitle><EmptyDescription>Containers on this Docker server will appear here. Use Refresh to check again.</EmptyDescription></EmptyHeader></Empty></section> : <section className="overflow-hidden rounded-xl border bg-card text-card-foreground [&>[data-slot=empty]]:min-h-72 [&_[data-slot=table-caption]]:p-4"><Table><TableCaption>All containers on the connected Docker server, including services outside Ferrix.</TableCaption><TableHeader><TableRow><TableHead>Container</TableHead><TableHead>Image</TableHead><TableHead>State</TableHead><TableHead>Status</TableHead></TableRow></TableHeader><TableBody>{containers.data.map((container: Container) => <TableRow key={container.id}><TableCell><strong>{container.name || container.id.slice(0, 12)}</strong></TableCell><TableCell>{container.image}</TableCell><TableCell><Badge variant={container.state === 'running' ? 'secondary' : 'outline'}>{container.state || 'Unknown'}</Badge></TableCell><TableCell>{container.status}</TableCell></TableRow>)}</TableBody></Table></section>}
   </>
 }
 
@@ -119,14 +129,21 @@ function Pending() {
 
 const rootRoute = createRootRoute({
   component: Shell,
-  loader: async () => ({ status: await load<SystemStatus>('/status') }),
+  loader: async () => { const [status, account, setup] = await Promise.all([load<SystemStatus>('/status'), load<Identity>('/auth/session'), load<{ setup_required: boolean }>('/auth/setup')]); return { status, account, setup } },
   pendingComponent: Pending,
   notFoundComponent: () => <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 p-4 md:p-6"><h1>Page not found</h1><Link to="/">Back to projects</Link></div>,
   errorComponent: () => <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 p-4 md:p-6"><ErrorNotice message="The workspace could not load. Refresh the page to try again." /></div>,
 })
 const projectsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/', component: ProjectsPage, loader: async () => ({ projects: await load<Project[]>('/projects') }) })
 const containersRoute = createRoute({ getParentRoute: () => rootRoute, path: '/containers', component: ContainersPage, loader: async () => ({ containers: await load<Container[]>('/containers') }) })
-const router = createRouter({ routeTree: rootRoute.addChildren([projectsRoute, containersRoute]), defaultPendingMs: 150, defaultPendingMinMs: 200 })
+const securityRoute = createRoute({ getParentRoute: () => rootRoute, path: '/security', loader: async () => {
+  const [sessions, security, audit] = await Promise.all([load<Session[]>('/auth/sessions'), load<Security>('/auth/security'), load<Audit[]>('/auth/audit')]); return { sessions, security, audit }
+}, component: function AccountSecurity() { const { sessions, security, audit } = securityRoute.useLoaderData(); const router = useRouter(); return sessions.data && security.data ? <SecurityPage sessions={sessions.data} security={security.data} audit={audit.data ?? []} refresh={() => router.invalidate()} /> : <ErrorNotice message={sessions.error ?? security.error ?? 'Could not load security settings.'} /> } })
+const teamRoute = createRoute({ getParentRoute: () => rootRoute, path: '/organization', loader: async () => {
+  const [organizations, members, invitations] = await Promise.all([load<Organization[]>('/auth/organizations'), load<Member[]>('/auth/members'), load<Invitation[]>('/auth/invitations')]); return { organizations, members, invitations }
+}, component: function OrganizationSettings() { const { organizations, members, invitations } = teamRoute.useLoaderData(); const { account } = rootRoute.useLoaderData(); const router = useRouter(); return account.data && organizations.data && members.data ? <TeamPage identity={account.data} organizations={organizations.data} members={members.data} invitations={invitations.data ?? []} refresh={() => router.invalidate()} /> : <ErrorNotice message="Could not load organization settings." /> } })
+const adminRoute = createRoute({ getParentRoute: () => rootRoute, path: '/admin', loader: () => load<User[]>('/auth/admin/users'), component: function UserAdministration() { const users = adminRoute.useLoaderData(); const router = useRouter(); return users.data ? <AdminPage users={users.data} refresh={() => router.invalidate()} /> : <ErrorNotice message={users.error} /> } })
+const router = createRouter({ routeTree: rootRoute.addChildren([projectsRoute, containersRoute, securityRoute, teamRoute, adminRoute]), defaultPendingMs: 150, defaultPendingMinMs: 200 })
 declare module '@tanstack/react-router' { interface Register { router: typeof router } }
 
 createRoot(document.getElementById('root')!).render(<StrictMode><RouterProvider router={router} /></StrictMode>)
