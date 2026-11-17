@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust checks and PostgreSQL tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: ferrix
+          POSTGRES_PASSWORD: ferrix
+          POSTGRES_DB: ferrix_ci
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ferrix -d ferrix_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      CARGO_TERM_COLOR: always
+      FERRIX_TEST_DATABASE_URL: postgres://ferrix:ferrix@127.0.0.1:5432/ferrix_ci
+    steps:
+      - uses: actions/checkout@v7
+      - name: Install Rust toolchain
+        run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
+      - name: Check formatting
+        run: cargo +stable fmt --all --check
+      - name: Clippy
+        run: cargo +stable clippy --locked --workspace --all-targets -- -D warnings
+      - name: Rust tests including PostgreSQL integration
+        run: cargo +stable test --locked --workspace -- --include-ignored
+
+  frontend:
+    name: Frontend build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install npm
+        run: npm install --global npm@12.2.2
+      - name: Install dependencies
+        run: npm ci
+      - name: Build frontend
+        run: npm run build

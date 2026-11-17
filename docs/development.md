@@ -50,3 +50,16 @@ Do not use a wildcard safe.directory. Existing GitHub credentials and commit ide
 ### Dashboard server clock
 
 The dashboard reads authenticated `GET /api/v1/server-time` for the server timestamp, IANA timezone and current UTC offset. It ticks locally between synchronizations every 60 seconds and synchronizes again when the tab becomes visible. Clock requests validate the session without extending its inactivity expiry. The timezone follows a valid `TZ` environment override (for containers), otherwise the server OS, falling back to UTC if unavailable.
+
+## Pull request CI
+
+The `CI` GitHub Actions workflow runs on every pull request, including updates,
+and can also be started manually. Its independent jobs check Rust formatting,
+Clippy with warnings denied, all Rust tests (including ignored PostgreSQL
+integration tests), and the frontend production build. Rust uses the stable
+toolchain; the frontend uses Node.js 24 and npm 12.2.2 with the committed lockfile.
+
+Each Rust job gets a temporary PostgreSQL 17 service and its own `ferrix_ci`
+database. No developer `.env`, external database or repository secrets are needed.
+The integration test applies migrations in an isolated schema. New commits cancel
+an older CI run for the same pull request.
