@@ -34,7 +34,7 @@ jobs:
       CARGO_TERM_COLOR: always
       FERRIX_TEST_DATABASE_URL: postgres://ferrix:ferrix@127.0.0.1:5432/ferrix_ci
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       - name: Check formatting
@@ -52,8 +52,8 @@ jobs:
       run:
         working-directory: apps/web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
           cache: npm
