@@ -1,0 +1,20 @@
+name: ferrix
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ferrix
+      POSTGRES_PASSWORD: ferrix
+      POSTGRES_DB: ferrix
+    ports:
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - ferrix_postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ferrix -d ferrix"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+volumes:
+  ferrix_postgres:
+
