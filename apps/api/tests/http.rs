@@ -84,6 +84,10 @@ async fn liveness_and_unauthenticated_access() {
         .unwrap());
     assert_eq!(get(&app, "/health", "").await.0, StatusCode::OK);
     assert_eq!(
+        get(&app, "/api/v1/monitoring", "").await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
         get(&app, "/api/v1/server-time", "").await.0,
         StatusCode::UNAUTHORIZED
     );
@@ -173,6 +177,11 @@ async fn postgres_auth_security_and_tenant_isolation() {
     assert_eq!(identity["email"], "owner@example.com");
     assert_eq!(identity["role"], "owner");
     assert_eq!(identity["system_role"], "admin");
+    let (monitor_status, monitoring, _) = get(&app, "/api/v1/monitoring", &owner).await;
+    assert_eq!(monitor_status, StatusCode::OK);
+    assert_eq!(monitoring["interval_seconds"], 5);
+    assert!(monitoring["samples"].as_array().unwrap().len() <= 180);
+    assert!(monitoring["scope"].as_str().unwrap().contains("namespace"));
     let admin_count: i64 =
         sqlx::query_scalar("SELECT count(*) FROM auth_users WHERE system_role='admin'")
             .fetch_one(&pool)
@@ -305,6 +314,10 @@ async fn postgres_auth_security_and_tenant_isolation() {
     );
     let (_, member_id, _) = get(&app, "/api/v1/auth/session", &member).await;
     assert_eq!(member_id["system_role"], "user");
+    assert_eq!(
+        get(&app, "/api/v1/monitoring", &member).await.0,
+        StatusCode::FORBIDDEN
+    );
     let member_id = member_id["user_id"].as_str().unwrap();
     let projects = get(&app, "/api/v1/projects", &member).await.1;
     assert_eq!(projects.as_array().unwrap().len(), 1);

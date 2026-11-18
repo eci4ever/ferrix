@@ -63,3 +63,37 @@ Each Rust job gets a temporary PostgreSQL 17 service and its own `ferrix_ci`
 database. No developer `.env`, external database or repository secrets are needed.
 The integration test applies migrations in an isolated schema. New commits cancel
 an older CI run for the same pull request.
+
+### Host monitoring
+
+System administrators can open **Monitoring** (`/monitoring`). `GET /api/v1/monitoring`
+is session protected and checks the system administrator role; organization owners
+without that role cannot access host data.
+
+One background OS collector samples CPU, memory, root filesystem capacity, mounted
+block-device throughput and non-loopback network throughput every five seconds.
+The cache keeps 180 samples (15 minutes) in memory and resets on API restart.
+Requests read the cache without running probes. OS collection runs on one dedicated
+thread so a slow probe cannot block HTTP requests or create an unbounded queue.
+Docker storage uses the configured Docker connection, a three-second timeout and
+a separate 60-second cache. Failed probes retain the last reading with an error
+and timestamp. The page flags host readings older than 20 seconds.
+
+CPU and memory are the API's OS view, not cgroup limit accounting. Filesystem
+capacity is the root mount's total minus available bytes; on APFS this reflects
+shared capacity consumption rather than just the read-only system snapshot.
+Block I/O deduplicates mounted devices by name; virtual interfaces and layered
+block devices can still overlap. The first CPU/rate sample and reset counters
+have gaps. Docker storage includes all objects on the connected daemon, including
+other projects. It is separate from API-host storage and does not measure Docker
+VM disk allocation. Image layers are deduplicated by Docker; build cache remains
+separate because it can share image layers. Unsupported volume sizes stay unknown.
+
+Docker storage reads the raw `/system/df` response with a dedicated HTTP client,
+leaving the existing Bollard dependency and deployment code unchanged. Bollard
+0.20's generated storage model discards the legacy fields still returned by Docker.
+The probe honors `DOCKER_HOST` Unix sockets and HTTP/TCP endpoints (defaulting to
+`unix:///var/run/docker.sock` like the API). Proxies and redirects are disabled;
+responses are capped at 8 MiB and three seconds. Unsupported transports report
+unavailable. An HTTP fixture test protects legacy storage-field compatibility.
+No database migration is required.
