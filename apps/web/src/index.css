@@ -16,6 +16,10 @@
     --color-sidebar-primary: var(--sidebar-primary);
     --color-sidebar-foreground: var(--sidebar-foreground);
     --color-sidebar: var(--sidebar);
+    --color-series-primary: var(--series-primary);
+    --color-status-success: var(--status-success);
+    --color-status-warning: var(--status-warning);
+    --color-status-neutral: var(--status-neutral);
     --color-chart-5: var(--chart-5);
     --color-chart-4: var(--chart-4);
     --color-chart-3: var(--chart-3);
@@ -49,6 +53,23 @@
 }
 
 :root {
+    /* Only steps consumed by the monitoring and status roles are defined. */
+    --blue-400: oklch(0.78 0.09 255);
+    --blue-500: oklch(0.68 0.12 255);
+    --blue-600: oklch(0.58 0.14 255);
+    --blue-700: oklch(0.48 0.13 255);
+    --gray-400: oklch(0.708 0 0);
+    --gray-500: oklch(0.556 0 0);
+    --green-400: oklch(0.70 0.12 150);
+    --green-600: oklch(0.48 0.115 150);
+    --amber-400: oklch(0.78 0.12 80);
+    --amber-700: oklch(0.50 0.10 80);
+    --series-primary: var(--blue-700);
+    --series-secondary: var(--blue-600);
+    --series-neutral: var(--gray-500);
+    --status-success: var(--green-600);
+    --status-warning: var(--amber-700);
+    --status-neutral: var(--gray-500);
     --background: oklch(1 0 0);
     --foreground: oklch(0.145 0 0);
     --card: oklch(1 0 0);
@@ -67,9 +88,9 @@
     --border: oklch(0.922 0 0);
     --input: oklch(0.922 0 0);
     --ring: oklch(0.708 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
+    --chart-1: var(--series-primary);
+    --chart-2: var(--series-secondary);
+    --chart-3: var(--series-neutral);
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
     --radius: 0.625rem;
@@ -84,6 +105,12 @@
 }
 
 .dark {
+    --series-primary: var(--blue-500);
+    --series-secondary: var(--blue-400);
+    --series-neutral: var(--gray-400);
+    --status-success: var(--green-400);
+    --status-warning: var(--amber-400);
+    --status-neutral: var(--gray-400);
     --background: oklch(0.145 0 0);
     --foreground: oklch(0.985 0 0);
     --card: oklch(0.205 0 0);
@@ -102,9 +129,9 @@
     --border: oklch(1 0 0 / 10%);
     --input: oklch(1 0 0 / 15%);
     --ring: oklch(0.556 0 0);
-    --chart-1: oklch(0.87 0 0);
-    --chart-2: oklch(0.556 0 0);
-    --chart-3: oklch(0.439 0 0);
+    --chart-1: var(--series-primary);
+    --chart-2: var(--series-secondary);
+    --chart-3: var(--series-neutral);
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
     --sidebar: oklch(0.205 0 0);

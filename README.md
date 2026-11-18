@@ -17,7 +17,7 @@ Authentication setup and security behavior: [Auth guide](docs/auth.md).
 | Routing | TanStack Router |
 | UI | shadcn/ui, Tailwind CSS |
 
-Environment, Application, PostgreSQL and Compose deployment flow: [Deployment guide](docs/deployments.md).
+Environment, Application, databases and Compose deployment flow: [Deployment guide](docs/deployments.md).
 
 Production VPS installation and release workflow: [Production guide](docs/production.md).
 
@@ -59,7 +59,7 @@ Port PostgreSQL pembangunan ialah `5433`, dengan volume `ferrix_postgres`. Kelay
 - Dashboard dengan navigasi Projects dan Containers, keadaan kosong, ralat dan borang projek.
 - Log permintaan dan graceful shutdown untuk Ctrl+C/SIGTERM.
 
-Projek ialah kumpulan aplikasi. Buka projek untuk mengurus environment dan pilih Create Service untuk Application, PostgreSQL atau Compose; simpan konfigurasi dan deploy melalui worker queue. Data UI datang daripada API sebenar, tanpa data contoh.
+Projek ialah kumpulan aplikasi. Buka projek untuk mengurus environment dan pilih Create Service untuk Application, database (PostgreSQL, MongoDB, MariaDB, Redis) atau Compose; simpan konfigurasi dan deploy melalui worker queue. Data UI datang daripada API sebenar, tanpa data contoh.
 
 ## API
 

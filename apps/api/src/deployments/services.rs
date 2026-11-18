@@ -2,12 +2,15 @@ use super::*;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 pub(super) mod compose;
+mod control;
 pub(super) mod database;
 mod removal;
 
 pub(super) fn routes(state: AppState) -> Router<AppState> {
     Router::new()
         .route("/environments/{id}/services", get(list))
+        .route("/environments/{id}/service-status", get(control::statuses))
+        .route("/services/{id}/environment", get(control::environment))
         .route("/services/{id}", get(application))
         .route("/services/{id}/configuration", get(configuration))
         .route("/services/{id}/runtime", get(super::runtime))
@@ -22,6 +25,11 @@ pub(super) fn routes(state: AppState) -> Router<AppState> {
                 .route("/environments/{id}/services", post(create))
                 .route("/services/{id}/configuration", post(save))
                 .route("/services/{id}/deploy", post(deploy))
+                .route("/services/{id}/control", post(control::change))
+                .route(
+                    "/services/{id}/environment",
+                    post(control::save_environment),
+                )
                 .route("/services/{id}", axum::routing::delete(removal::remove))
                 .route_layer(axum::middleware::from_fn_with_state(
                     state,
@@ -29,25 +37,106 @@ pub(super) fn routes(state: AppState) -> Router<AppState> {
                 )),
         )
 }
+#[derive(Clone, Copy, Default, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum DatabaseEngine {
+    #[default]
+    Postgres,
+    Mongodb,
+    Mariadb,
+    Redis,
+}
+impl DatabaseEngine {
+    pub(super) fn image(self) -> &'static str {
+        match self {
+            Self::Postgres => "postgres:17-alpine",
+            Self::Mongodb => "mongo:8",
+            Self::Mariadb => "mariadb:11.4",
+            Self::Redis => "redis:8-alpine",
+        }
+    }
+    pub(super) fn port(self) -> i32 {
+        match self {
+            Self::Postgres => 5432,
+            Self::Mongodb => 27017,
+            Self::Mariadb => 3306,
+            Self::Redis => 6379,
+        }
+    }
+    pub(super) fn scheme(self) -> &'static str {
+        match self {
+            Self::Postgres => "postgresql",
+            Self::Mongodb => "mongodb",
+            Self::Mariadb => "mysql",
+            Self::Redis => "redis",
+        }
+    }
+    pub(super) fn reserved(self, key: &str) -> bool {
+        match self {
+            Self::Postgres => key.starts_with("POSTGRES_") || key.starts_with("PG"),
+            Self::Mongodb => key.starts_with("MONGO"),
+            Self::Mariadb => key.starts_with("MARIADB_") || key.starts_with("MYSQL_"),
+            Self::Redis => key.starts_with("REDIS"),
+        }
+    }
+}
+fn random_password() -> String {
+    let mut random = [0u8; 32];
+    rand::rngs::OsRng.fill_bytes(&mut random);
+    hex::encode(random)
+}
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub(super) struct DatabaseConfig {
+    #[serde(default)]
+    pub engine: DatabaseEngine,
+    #[serde(default)]
+    pub root_password: Option<String>,
     pub database_name: String,
     pub username: String,
     pub password: String,
 }
 impl DatabaseConfig {
     fn validate(&self) -> Result<(), ApiError> {
-        for value in [&self.database_name, &self.username] {
-            if value.is_empty()
-                || value.len() > 63
-                || !value.bytes().enumerate().all(|(i, b)| {
-                    b == b'_' || b.is_ascii_alphabetic() || (i > 0 && b.is_ascii_digit())
-                })
-            {
+        if self.engine == DatabaseEngine::Redis {
+            if self.database_name != "0" || self.username != "default" {
                 return Err(invalid(
-                    "Database and username must use 1–63 letters, digits or underscores, starting with a letter or underscore.",
+                    "Redis uses database 0 and the default authenticated user.",
                 ));
             }
+        } else {
+            for value in [&self.database_name, &self.username] {
+                if value.is_empty()
+                    || value.len() > 63
+                    || !value.bytes().enumerate().all(|(i, b)| {
+                        b == b'_' || b.is_ascii_alphabetic() || (i > 0 && b.is_ascii_digit())
+                    })
+                {
+                    return Err(invalid(
+                        "Database and username must use 1–63 letters, digits or underscores, starting with a letter or underscore.",
+                    ));
+                }
+            }
+        }
+        if self.engine == DatabaseEngine::Mariadb
+            && (self.username.eq_ignore_ascii_case("root") || self.username.len() > 32)
+        {
+            return Err(invalid(
+                "MariaDB application user must not be root and must use at most 32 characters.",
+            ));
+        }
+        if self.engine == DatabaseEngine::Mariadb
+            && !self.root_password.as_ref().is_some_and(|v| {
+                v.len() >= 16 && v.len() <= 128 && !v.chars().any(char::is_control)
+            })
+        {
+            return Err(invalid(
+                "MariaDB requires a root password of 16–128 bytes without control characters.",
+            ));
+        }
+        if self.engine != DatabaseEngine::Mariadb && self.root_password.is_some() {
+            return Err(invalid(
+                "A separate root password is only supported for MariaDB.",
+            ));
         }
         if self.password.len() < 16
             || self.password.len() > 128
@@ -117,6 +206,8 @@ enum NewService {
     },
     Database {
         name: String,
+        #[serde(default)]
+        engine: DatabaseEngine,
         #[serde(default = "default_database")]
         database_name: String,
         #[serde(default = "default_database")]
@@ -152,22 +243,31 @@ async fn create(
         }
         NewService::Database {
             name: label,
+            engine,
             database_name,
             username,
         } => {
-            let mut random = [0u8; 32];
-            rand::rngs::OsRng.fill_bytes(&mut random);
             let config = DatabaseConfig {
-                database_name,
-                username,
-                password: hex::encode(random),
+                engine,
+                database_name: if engine == DatabaseEngine::Redis {
+                    "0".into()
+                } else {
+                    database_name
+                },
+                username: if engine == DatabaseEngine::Redis {
+                    "default".into()
+                } else {
+                    username
+                },
+                password: random_password(),
+                root_password: (engine == DatabaseEngine::Mariadb).then(random_password),
             };
             config.validate()?;
             (
                 "database",
                 name(&label)?,
-                "postgres:17-alpine",
-                5432,
+                engine.image(),
+                engine.port(),
                 seal(&state, service, &config)?,
                 None,
             )
@@ -222,14 +322,22 @@ async fn configuration(
             .fetch_one(&state.pool)
             .await?;
             let host = format!("ferrix-{}", service.simple());
-            let mut url = url::Url::parse("postgresql://localhost:5432").map_err(|_| internal())?;
+            let mut url = url::Url::parse(&format!(
+                "{}://localhost:{}",
+                config.engine.scheme(),
+                config.engine.port()
+            ))
+            .map_err(|_| internal())?;
             url.set_host(Some(&host)).map_err(|_| internal())?;
             url.set_path(&config.database_name);
             url.set_username(&config.username).map_err(|_| internal())?;
             url.set_password(Some(&config.password))
                 .map_err(|_| internal())?;
+            if config.engine == DatabaseEngine::Mongodb {
+                url.query_pairs_mut().append_pair("authSource", "admin");
+            }
             Ok(Json(
-                json!({"kind":"database","name":app.name,"database_name":config.database_name,"username":config.username,"password":config.password,"connection_uri":url.as_str(),"credentials_locked":locked}),
+                json!({"kind":"database","name":app.name,"engine":config.engine,"root_password":config.root_password,"database_name":config.database_name,"username":config.username,"password":config.password,"connection_uri":url.as_str(),"credentials_locked":locked}),
             ))
         }
         "compose" => {
@@ -298,7 +406,13 @@ async fn save(
             .bind(service)
             .fetch_one(&mut *tx)
             .await?;
-            if locked && open::<DatabaseConfig>(&state, service, &old)? != edit.config {
+            let previous = open::<DatabaseConfig>(&state, service, &old)?;
+            if previous.engine != edit.config.engine {
+                return Err(invalid(
+                    "Database engine cannot be changed. Create a new service instead.",
+                ));
+            }
+            if locked && previous != edit.config {
                 return Err(ApiError(
                     StatusCode::CONFLICT,
                     "Database credentials are locked after the first deployment is queued.",

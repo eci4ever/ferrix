@@ -69,13 +69,19 @@ pub(super) async fn runtime(state: &AppState, app: &Application) -> Result<Value
     match inspect_owned(state, app.id, container).await {
         Ok(info) => {
             let running = info.state.as_ref().and_then(|s| s.running).unwrap_or(false);
+            let health = info
+                .state
+                .as_ref()
+                .and_then(|s| s.health.as_ref())
+                .and_then(|h| h.status.as_ref())
+                .map(ToString::to_string);
             let status = info
                 .state
                 .and_then(|s| s.status)
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "unknown".into());
             Ok(
-                json!({"state":status,"host_port":if running {app.host_port}else{None},"container_id":container,"internal_host":format!("ferrix-{}",app.id.simple()),"internal_port":app.container_port}),
+                json!({"state":status,"health":health,"host_port":if running {app.host_port}else{None},"container_id":container,"internal_host":format!("ferrix-{}",app.id.simple()),"internal_port":app.container_port}),
             )
         }
         Err(error) if error.0 == StatusCode::CONFLICT => Err(error),

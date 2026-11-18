@@ -195,6 +195,7 @@ async fn docker_deployment_flow_and_isolation() {
         let mut invalid_image=config.clone(); invalid_image["image"]=json!(format!("nginx:ferrix-missing-{}",Uuid::new_v4().simple()));
         assert_eq!(call(&app,&format!("/api/v1/applications/{application_id}/configuration"),&owner,Some(invalid_image)).await.0,StatusCode::OK);
         assert_eq!(remove_service(&app,application_id,&owner,config["name"].as_str().unwrap(),false).await,StatusCode::CONFLICT);
+        assert_eq!(call(&app,&format!("/api/v1/services/{application_id}/control"),&owner,Some(json!({"operation":"stop"}))).await.0,StatusCode::CONFLICT);
         // Both workers start together. The session lock must prevent one from recovering the other's live job.
         workers.push(tokio::spawn(run_worker(state.clone(),receiver.clone())));
         workers.push(tokio::spawn(run_worker(state.clone(),receiver.clone())));
@@ -247,10 +248,13 @@ async fn docker_deployment_flow_and_isolation() {
         assert_eq!(config["password"].as_str().unwrap().len(),64);
         assert_eq!(call(&app,&format!("/api/v1/services/{database}/configuration"),&member,None).await.0,StatusCode::FORBIDDEN);
         assert_eq!(call(&app,&format!("/api/v1/applications/{database}/configuration"),&owner,Some(json!({"name":"bad","image":"nginx:alpine","container_port":80}))).await.0,StatusCode::NOT_FOUND);
+        assert_eq!(call(&app,&format!("/api/v1/services/{database}/environment"),&owner,Some(json!({"environment":"TZ=UTC"}))).await.0,StatusCode::NO_CONTENT);
         let db_deploy=format!("/api/v1/services/{database}/deploy");
         assert_eq!(call(&app,&db_deploy,&owner,Some(json!({}))).await.0,StatusCode::ACCEPTED);
         let first=wait_status(&app,&owner,database,"succeeded").await;
         let first_container=first["container_id"].as_str().unwrap();
+        let inspected=state.docker.inspect_container(first_container,None).await.unwrap();
+        assert!(inspected.config.unwrap().env.unwrap().contains(&"TZ=UTC".to_owned()),"saved database environment must reach the deployed container");
         let output=tokio::process::Command::new("docker").args(["exec",first_container,"psql","-U","ferrix","-d","ferrix","-v","ON_ERROR_STOP=1","-c","CREATE TABLE persistence_check(value text); INSERT INTO persistence_check VALUES ('survives-redeploy');"]).output().await.unwrap();
         assert!(output.status.success(),"database initialization failed");
         let mut edit=config.clone();edit["password"]=json!("changed-password-is-not-allowed");
@@ -288,10 +292,23 @@ async fn docker_deployment_flow_and_isolation() {
 
         assert_eq!(remove_service(&app,database,&member,"PostgreSQL",true).await,StatusCode::FORBIDDEN);
         assert_eq!(remove_service(&app,database,&owner,"wrong-name",true).await,StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(call(&app,&format!("/api/v1/services/{database}/control"),&member,Some(json!({"operation":"stop"}))).await.0,StatusCode::FORBIDDEN);
+        assert_eq!(call(&app,&format!("/api/v1/services/{database}/environment"),&member,None).await.0,StatusCode::FORBIDDEN);
+        assert_eq!(call(&app,&format!("/api/v1/services/{database}/environment"),&owner,Some(json!({"environment":"POSTGRES_PASSWORD=overwrite"}))).await.0,StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(call(&app,&format!("/api/v1/services/{database}/environment"),&owner,Some(json!({"environment":"TZ=UTC"}))).await.0,StatusCode::NO_CONTENT);
+        assert_eq!(call(&app,&format!("/api/v1/services/{database}/environment"),&owner,None).await.1["environment"],"TZ=UTC");
+        sqlx::query("UPDATE auth_members SET role='admin' WHERE user_id=$1").bind(member_id).execute(&pool).await.unwrap();
+        assert_eq!(call(&app,&format!("/api/v1/services/{stack}/control"),&member,Some(json!({"operation":"stop"}))).await.0,StatusCode::FORBIDDEN);
+        sqlx::query("UPDATE auth_members SET role='member' WHERE user_id=$1").bind(member_id).execute(&pool).await.unwrap();
+        let states=call(&app,&format!("/api/v1/environments/{environment}/service-status"),&member,None).await.1;
+        assert_eq!(states.as_array().unwrap().len(),3);
+        assert!(states.as_array().unwrap().iter().all(|s|s["state"]=="running"),"{states}");
         // Other organizations cannot delete or discover this service.
         let other=call(&app,"/api/v1/auth/organizations",&owner,Some(json!({"name":"Deletion isolation"}))).await.1;
         call(&app,"/api/v1/auth/organizations/switch",&owner,Some(json!({"organization_id":other["id"]}))).await;
         assert_eq!(remove_service(&app,database,&owner,"PostgreSQL",true).await,StatusCode::NOT_FOUND);
+        assert_eq!(call(&app,&format!("/api/v1/services/{database}/control"),&owner,Some(json!({"operation":"stop"}))).await.0,StatusCode::NOT_FOUND);
+        assert_eq!(call(&app,&format!("/api/v1/environments/{environment}/service-status"),&owner,None).await.0,StatusCode::NOT_FOUND);
         call(&app,"/api/v1/auth/organizations/switch",&owner,Some(json!({"organization_id":org}))).await;
         assert_eq!(remove_service(&app,database,&owner,"PostgreSQL",false).await,StatusCode::NO_CONTENT);
         assert!(state.docker.inspect_volume(&format!("ferrix-db-{}",database.simple())).await.is_ok(),"data is retained by default");
@@ -308,6 +325,54 @@ async fn docker_deployment_flow_and_isolation() {
         assert!(state.docker.inspect_network(&format!("ferrix-env-{}",environment.replace('-', "")),None).await.is_ok(),"shared environment network remains");
         let app_name:String=sqlx::query_scalar("SELECT name FROM applications WHERE id=$1").bind(application_id).fetch_one(&pool).await.unwrap();
         assert_eq!(remove_service(&app,application_id,&owner,&app_name,false).await,StatusCode::NO_CONTENT);
+
+        for engine in ["mongodb","mariadb","redis"] {
+            let (code,service,_) = call(&app,&create_service,&owner,Some(json!({"kind":"database","engine":engine,"name":engine}))).await;
+            assert_eq!(code,StatusCode::CREATED,"{service}");
+            let service:Uuid=service["id"].as_str().unwrap().parse().unwrap(); added_services.push(service);
+            let endpoint=format!("/api/v1/services/{service}");
+            let settings=call(&app,&format!("{endpoint}/configuration"),&owner,None).await.1;
+            assert_eq!(settings["engine"],engine);
+            assert_eq!(settings["password"].as_str().unwrap().len(),64);
+            if engine=="mariadb" { assert_ne!(settings["password"],settings["root_password"]); }
+            let uri=settings["connection_uri"].as_str().unwrap();
+            assert!(uri.starts_with(match engine {"mongodb"=>"mongodb://","mariadb"=>"mysql://",_=>"redis://"}));
+            if engine=="mongodb" {assert!(uri.contains("authSource=admin"));}
+            let reserved=match engine {"mongodb"=>"MONGO_INITDB_ROOT_PASSWORD","mariadb"=>"MARIADB_ALLOW_EMPTY_ROOT_PASSWORD",_=>"REDIS_PASSWORD"};
+            assert_eq!(call(&app,&format!("{endpoint}/environment"),&owner,Some(json!({"environment":format!("{reserved}=bad")}))).await.0,StatusCode::UNPROCESSABLE_ENTITY);
+            let script=match engine {
+                "mongodb"=>"mongosh --quiet --host 127.0.0.1 --username \"$MONGO_INITDB_ROOT_USERNAME\" --password \"$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin --eval 'db.getSiblingDB(\"ferrix\").persistence_check.insertOne({value:\"survives-redeploy\"})'",
+                "mariadb"=>"mariadb -u\"$MARIADB_USER\" -p\"$MARIADB_PASSWORD\" \"$MARIADB_DATABASE\" -e 'CREATE TABLE persistence_check(value TEXT); INSERT INTO persistence_check VALUES (\"survives-redeploy\");'",
+                _=>"REDISCLI_AUTH=\"$REDIS_PASSWORD\" redis-cli --no-auth-warning SET persistence_check survives-redeploy",
+            };
+            assert_eq!(call(&app,&format!("{endpoint}/deploy"),&owner,Some(json!({}))).await.0,StatusCode::ACCEPTED);
+            let first=wait_status(&app,&owner,service,"succeeded").await;
+            let container=first["container_id"].as_str().unwrap();
+            let output=tokio::process::Command::new("docker").args(["exec",container,"sh","-c",script]).output().await.unwrap();
+            assert!(output.status.success(),"{engine}: authenticated write must succeed");
+            let anonymous=match engine {"mongodb"=>"mongosh --quiet --eval 'db.getSiblingDB(\"ferrix\").persistence_check.findOne()'","mariadb"=>"mariadb -uferrix ferrix -e 'SELECT * FROM persistence_check'",_=>"redis-cli --no-auth-warning GET persistence_check"};
+            let output=tokio::process::Command::new("docker").args(["exec",container,"sh","-c",anonymous]).output().await.unwrap();
+            assert!(!output.status.success() || String::from_utf8_lossy(&output.stdout).contains("NOAUTH"),"{engine}: unauthenticated data access must fail");
+            assert_eq!(call(&app,&format!("{endpoint}/deploy"),&owner,Some(json!({}))).await.0,StatusCode::ACCEPTED);
+            let second=wait_status(&app,&owner,service,"succeeded").await;
+            assert_ne!(first["container_id"],second["container_id"]);
+            let script=match engine {
+                "mongodb"=>"mongosh --quiet --host 127.0.0.1 --username \"$MONGO_INITDB_ROOT_USERNAME\" --password \"$MONGO_INITDB_ROOT_PASSWORD\" --authenticationDatabase admin --eval 'print(db.getSiblingDB(\"ferrix\").persistence_check.findOne().value)'",
+                "mariadb"=>"mariadb -u\"$MARIADB_USER\" -p\"$MARIADB_PASSWORD\" \"$MARIADB_DATABASE\" -N -e 'SELECT value FROM persistence_check'",
+                _=>"REDISCLI_AUTH=\"$REDIS_PASSWORD\" redis-cli --no-auth-warning GET persistence_check",
+            };
+            let output=tokio::process::Command::new("docker").args(["exec",second["container_id"].as_str().unwrap(),"sh","-c",script]).output().await.unwrap();
+            assert!(output.status.success(),"{engine}: authenticated read must succeed");
+            assert_eq!(String::from_utf8_lossy(&output.stdout).trim(),"survives-redeploy","{engine}: data must survive replacement");
+            let info=state.docker.inspect_container(second["container_id"].as_str().unwrap(),None).await.unwrap();
+            assert!(info.host_config.unwrap().port_bindings.is_none_or(|p|p.is_empty()));
+            assert_eq!(remove_service(&app,service,&owner,engine,true).await,StatusCode::NO_CONTENT);
+            assert!(state.docker.inspect_volume(&format!("ferrix-db-{}",service.simple())).await.is_err());
+            if engine=="mongodb" {assert!(state.docker.inspect_volume(&format!("ferrix-db-{}-config",service.simple())).await.is_err());}
+        }
+        for engine in ["mysql","libsql"] {
+            assert_eq!(call(&app,&create_service,&owner,Some(json!({"kind":"database","engine":engine,"name":"unsupported"}))).await.0,StatusCode::UNPROCESSABLE_ENTITY);
+        }
 
     }).catch_unwind().await;
     if let Some(ref id) = sentinel {
@@ -390,13 +455,30 @@ async fn docker_deployment_flow_and_isolation() {
                     .await;
             }
         }
-        let _ = state
+        let volumes = state
             .docker
-            .remove_volume(
-                &format!("ferrix-db-{}", service.simple()),
-                None::<bollard::query_parameters::RemoveVolumeOptions>,
-            )
-            .await;
+            .list_volumes(Some(
+                bollard::query_parameters::ListVolumesOptionsBuilder::default()
+                    .filters(&std::collections::HashMap::from([(
+                        "label".to_owned(),
+                        vec![
+                            format!("io.ferrix.application={service}"),
+                            "io.ferrix.managed=true".into(),
+                        ],
+                    )]))
+                    .build(),
+            ))
+            .await
+            .unwrap_or_default();
+        for volume in volumes.volumes.unwrap_or_default() {
+            let _ = state
+                .docker
+                .remove_volume(
+                    &volume.name,
+                    None::<bollard::query_parameters::RemoveVolumeOptions>,
+                )
+                .await;
+        }
         let networks = state
             .docker
             .list_networks(Some(

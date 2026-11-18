@@ -114,3 +114,9 @@ service from this list. Undeployed services are not failures. Up to five affecte
 services are returned with project IDs for navigation; the count is uncapped.
 This is deployment history, not live container health. No Docker probe or
 host-wide data is used. A single SQL statement gives all counts one snapshot.
+
+### Data tables and service cards
+
+Containers, Users, Sessions and Deployment History share a TanStack Table v9 adapter rendered with shadcn Table, InputGroup and Button components. It provides case-insensitive search over accessor values, sortable headers with `aria-sort`, ten-row pagination, stable record IDs and empty results. Sorting/search reset to page one; data refreshes preserve the current page where possible and clamp it after removals. Actions keep the original row ID after sorting/filtering. These operations apply to the API records already loaded, not server-side pagination; deployment history remains limited to the latest 30 records. Tables scroll horizontally inside their container on narrow screens.
+
+Project services remain cards. Their title anchor covers the card for pointer/keyboard navigation and browser open-in-new-tab behavior; Delete remains a separate button above that link. There is no Open button. Browser tests exercise table sorting/search/pagination, correctly targeted actions, card navigation/deletion and mobile overflow.

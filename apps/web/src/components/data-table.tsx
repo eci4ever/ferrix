@@ -1,0 +1,26 @@
+import { useEffect, useMemo, useState } from 'react'
+import type { ReactNode } from 'react'
+import { useTable, tableFeatures, rowSortingFeature, rowPaginationFeature, columnFilteringFeature, globalFilteringFeature, createSortedRowModel, createPaginatedRowModel, createFilteredRowModel, filterFn_includesString, sortFn_text } from '@tanstack/react-table'
+import type { ColumnDef, SortingState, PaginationState } from '@tanstack/react-table'
+import { ArrowDown, ArrowUp, ArrowUpDown, Search } from 'lucide-react'
+import { Button } from '@/components/ui/button'
+import { InputGroup, InputGroupAddon, InputGroupInput } from '@/components/ui/input-group'
+import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell, TableCaption } from '@/components/ui/table'
+
+const features = tableFeatures({ rowSortingFeature, rowPaginationFeature, columnFilteringFeature, globalFilteringFeature, sortedRowModel: createSortedRowModel(), paginatedRowModel: createPaginatedRowModel(), filteredRowModel: createFilteredRowModel(), filterFns: { includesString: filterFn_includesString }, sortFns: { text: sortFn_text } })
+export type DataColumn<T> = { id: string; label: string; value?: (row: T) => string; cell?: (row: T) => ReactNode }
+export function DataTable<T extends { id: string }>({ data, columns, label, caption, initialSorting = [] }: { data: T[]; columns: DataColumn<T>[]; label: string; caption?: string; initialSorting?: SortingState }) {
+  const [sorting, setSorting] = useState<SortingState>(initialSorting)
+  const [globalFilter, setGlobalFilter] = useState('')
+  const [pagination, setPagination] = useState<PaginationState>({ pageIndex: 0, pageSize: 10 })
+  const definitions = useMemo<ColumnDef<typeof features, T>[]>(() => columns.map(column => ({ id: column.id, accessorFn: column.value, header: column.label, cell: context => column.cell ? column.cell(context.row.original) : column.value?.(context.row.original), enableSorting: !!column.value, enableGlobalFilter: !!column.value, sortFn: 'text' })), [columns])
+  const table = useTable({ features, data, columns: definitions, getRowId: row => row.id, globalFilterFn: 'includesString', autoResetPageIndex: false, state: { sorting, globalFilter, pagination }, onSortingChange: setSorting, onGlobalFilterChange: setGlobalFilter, onPaginationChange: setPagination })
+  const pages = table.getPageCount()
+  useEffect(() => { if (pagination.pageIndex >= Math.max(1, pages)) setPagination(current => ({ ...current, pageIndex: Math.max(0, pages - 1) })) }, [pages, pagination.pageIndex])
+  const total = table.getFilteredRowModel().rows.length
+  return <div className="flex min-w-0 flex-col gap-3">
+    <InputGroup className="max-w-sm"><InputGroupAddon><Search /></InputGroupAddon><InputGroupInput aria-label={`Search ${label}`} placeholder={`Search ${label.toLowerCase()}…`} value={globalFilter} onChange={event => { setGlobalFilter(event.target.value); setPagination(current => ({ ...current, pageIndex: 0 })) }} /></InputGroup>
+    <div className="min-w-0 overflow-hidden rounded-lg border"><Table aria-label={label}>{caption ? <TableCaption>{caption}</TableCaption> : null}<TableHeader>{table.getHeaderGroups().map(group => <TableRow key={group.id}>{group.headers.map(header => <TableHead key={header.id} aria-sort={header.column.getCanSort() ? header.column.getIsSorted() === 'asc' ? 'ascending' : header.column.getIsSorted() === 'desc' ? 'descending' : 'none' : undefined}>{header.isPlaceholder ? null : header.column.getCanSort() ? <Button variant="ghost" onClick={() => { header.column.toggleSorting(); table.setPageIndex(0) }}><table.FlexRender header={header} />{header.column.getIsSorted() === 'asc' ? <ArrowUp data-icon="inline-end" /> : header.column.getIsSorted() === 'desc' ? <ArrowDown data-icon="inline-end" /> : <ArrowUpDown data-icon="inline-end" />}</Button> : <table.FlexRender header={header} />}</TableHead>)}</TableRow>)}</TableHeader><TableBody>{table.getRowModel().rows.length ? table.getRowModel().rows.map(row => <TableRow key={row.id}>{row.getAllCells().map(cell => <TableCell key={cell.id}><table.FlexRender cell={cell} /></TableCell>)}</TableRow>) : <TableRow><TableCell colSpan={columns.length} className="h-24 text-center">{globalFilter ? 'No matching results.' : 'No records yet.'}</TableCell></TableRow>}</TableBody></Table></div>
+    <div className="flex flex-wrap items-center justify-between gap-3"><p role="status" className="text-sm text-muted-foreground">{total ? pagination.pageIndex * pagination.pageSize + 1 : 0}–{Math.min((pagination.pageIndex + 1) * pagination.pageSize, total)} of {total}</p><div className="flex flex-wrap items-center gap-2"><Button variant="outline" aria-label={`Previous ${label} page`} disabled={!table.getCanPreviousPage()} onClick={() => table.previousPage()}>Previous</Button><span className="text-sm tabular-nums">{pagination.pageIndex + 1} / {Math.max(1, pages)}</span><Button variant="outline" aria-label={`Next ${label} page`} disabled={!table.getCanNextPage()} onClick={() => table.nextPage()}>Next</Button></div></div>
+  </div>
+}
