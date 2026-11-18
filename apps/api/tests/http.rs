@@ -137,6 +137,10 @@ async fn postgres_auth_security_and_tenant_isolation() {
         .unwrap();
     sqlx::migrate!("./migrations").run(&pool).await.unwrap();
     let app = app(pool.clone());
+    assert_eq!(
+        get(&app, "/api/v1/home-summary", "").await.0,
+        StatusCode::UNAUTHORIZED
+    );
     let (_, setup, _) = get(&app, "/api/v1/auth/setup", "").await;
     assert_eq!(setup["setup_required"], true);
     let registration = json!({"name":"Owner","email":" OWNER@example.com ","password":PASSWORD});
@@ -229,6 +233,7 @@ async fn postgres_auth_security_and_tenant_isolation() {
     .await;
     assert_eq!(status, StatusCode::OK);
     let org2 = org2["id"].as_str().unwrap();
+    check_home_summary(&app, &pool, &owner, org1, org2).await;
     assert_eq!(
         post(
             &app,
@@ -319,6 +324,10 @@ async fn postgres_auth_security_and_tenant_isolation() {
         StatusCode::FORBIDDEN
     );
     let member_id = member_id["user_id"].as_str().unwrap();
+    assert_eq!(
+        get(&app, "/api/v1/home-summary", &member).await.0,
+        StatusCode::OK
+    );
     let projects = get(&app, "/api/v1/projects", &member).await.1;
     assert_eq!(projects.as_array().unwrap().len(), 1);
     assert_eq!(projects[0]["name"], "Organization one project");
@@ -665,4 +674,105 @@ async fn postgres_auth_security_and_tenant_isolation() {
         .await
         .unwrap();
     admin.close().await;
+}
+
+async fn check_home_summary(
+    app: &axum::Router,
+    pool: &sqlx::PgPool,
+    owner: &str,
+    org1: &str,
+    org2: &str,
+) {
+    let org = uuid::Uuid::parse_str(org1).unwrap();
+    let (_, empty, _) = get(app, "/api/v1/home-summary", owner).await;
+    assert_eq!(empty["projects"], 1);
+    assert_eq!(empty["services"], 0);
+    assert_eq!(empty["needs_attention"], 0);
+    assert_eq!(empty["attention"], json!([]));
+    sqlx::query("INSERT INTO projects (id,name,organization_id,created_at) SELECT gen_random_uuid(),'summary_fixture', $1, now()-interval '8 days' FROM generate_series(1,101)")
+        .bind(org).execute(pool).await.unwrap();
+    let project: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM projects WHERE name='summary_fixture' LIMIT 1")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    let env = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO environments(id,project_id,name) VALUES($1,$2,'production')")
+        .bind(env)
+        .bind(project)
+        .execute(pool)
+        .await
+        .unwrap();
+    let services: Vec<uuid::Uuid> = (0..4).map(|_| uuid::Uuid::new_v4()).collect();
+    for (i, kind) in ["application", "database", "compose", "application"]
+        .iter()
+        .enumerate()
+    {
+        sqlx::query("INSERT INTO applications(id,environment_id,name,image,container_port,service_kind) VALUES($1,$2,$3,'test',80,$4)")
+            .bind(services[i]).bind(env).bind(format!("service-{i}")).bind(kind).execute(pool).await.unwrap();
+    }
+    // Old failure followed by success must not require attention. A latest old
+    // failure still does, even though it is outside the 24-hour activity window.
+    for (i, status, hours) in [
+        (0, "failed", 48),
+        (0, "succeeded", 2),
+        (1, "failed", 30),
+        (2, "failed", 3),
+        (2, "queued", 1),
+    ] {
+        sqlx::query("INSERT INTO deployments(id,application_id,image,container_port,status,created_at) VALUES($1,$2,'test',80,$3,now()-make_interval(hours => $4))")
+            .bind(uuid::Uuid::new_v4()).bind(services[i]).bind(status).bind(hours).execute(pool).await.unwrap();
+    }
+    let (status, summary, _) = get(app, "/api/v1/home-summary", owner).await;
+    assert_eq!(status, StatusCode::OK);
+    for (key, value) in [
+        ("projects", 102),
+        ("projects_new_7d", 1),
+        ("services", 4),
+        ("applications", 2),
+        ("databases", 1),
+        ("compose", 1),
+        ("deployments_24h", 3),
+        ("succeeded_24h", 1),
+        ("failed_24h", 1),
+        ("in_progress_24h", 1),
+        ("needs_attention", 1),
+    ] {
+        assert_eq!(summary[key], value, "{key}");
+    }
+    assert_eq!(summary["attention"][0]["id"], services[1].to_string());
+    assert_eq!(summary["attention"][0]["project_id"], project.to_string());
+    for i in 0..6 {
+        let service = uuid::Uuid::new_v4();
+        sqlx::query("INSERT INTO applications(id,environment_id,name,image,container_port) VALUES($1,$2,$3,'test',80)")
+            .bind(service).bind(env).bind(format!("failed-{i}")).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO deployments(id,application_id,image,container_port,status) VALUES($1,$2,'test',80,'failed')")
+            .bind(uuid::Uuid::new_v4()).bind(service).execute(pool).await.unwrap();
+    }
+    let (_, capped, _) = get(app, "/api/v1/home-summary", owner).await;
+    assert_eq!(capped["needs_attention"], 7);
+    assert_eq!(capped["attention"].as_array().unwrap().len(), 5);
+    post(
+        app,
+        "/api/v1/auth/organizations/switch",
+        json!({"organization_id":org2}),
+        owner,
+    )
+    .await;
+    let (_, other, _) = get(app, "/api/v1/home-summary", owner).await;
+    for key in ["projects", "services", "deployments_24h", "needs_attention"] {
+        assert_eq!(other[key], 0, "other org {key}");
+    }
+    assert_eq!(other["attention"], json!([]));
+    post(
+        app,
+        "/api/v1/auth/organizations/switch",
+        json!({"organization_id":org1}),
+        owner,
+    )
+    .await;
+    sqlx::query("DELETE FROM projects WHERE name='summary_fixture'")
+        .execute(pool)
+        .await
+        .unwrap();
 }

@@ -21,3 +21,11 @@ export async function load<T>(path: string): Promise<{ data: T; error: null } | 
   try { return { data: await request<T>(path), error: null } }
   catch (error) { return { data: null, error: error instanceof Error ? error.message : 'Unable to load data.' } }
 }
+
+export type HomeSummary = {
+  projects: number; projects_new_7d: number
+  services: number; applications: number; databases: number; compose: number
+  deployments_24h: number; succeeded_24h: number; failed_24h: number; in_progress_24h: number
+  needs_attention: number
+  attention: { id: string; name: string; project_id: string }[]
+}
