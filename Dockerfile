@@ -2,6 +2,7 @@
 FROM node:24-bookworm-slim AS web
 WORKDIR /build/apps/web
 COPY apps/web/package*.json ./
+COPY apps/web/vendor/ ./vendor/
 RUN npm ci
 COPY apps/web/ ./
 RUN npm run build
