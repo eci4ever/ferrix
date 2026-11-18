@@ -467,6 +467,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "dotenvy",
+ "futures-util",
  "hex",
  "iana-time-zone",
  "rand",

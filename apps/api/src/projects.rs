@@ -54,8 +54,15 @@ pub(crate) async fn create(
 ) -> Result<(StatusCode, Json<Project>), ApiError> {
     id.manager()?;
     let input = input.validate()?;
+    let mut tx = state.pool.begin().await?;
     let project = sqlx::query_as::<_, Project>("INSERT INTO projects (id, name, description, organization_id) VALUES ($1, $2, $3, $4) RETURNING id, name, description, created_at")
         .bind(Uuid::new_v4()).bind(input.name).bind(input.description).bind(id.organization_id)
-        .fetch_one(&state.pool).await?;
+        .fetch_one(&mut *tx).await?;
+    sqlx::query("INSERT INTO environments(id,project_id,name) VALUES($1,$2,'production')")
+        .bind(Uuid::new_v4())
+        .bind(project.id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
     Ok((StatusCode::CREATED, Json(project)))
 }

@@ -6,5 +6,5 @@ export type NavigationItem = { title: string; url: '/dashboard' | '/projects' | 
 export function NavMain({ label, items }: { label: string; items: NavigationItem[] }) {
   const pathname = useRouterState({ select: state => state.location.pathname })
   const { setOpenMobile } = useSidebar()
-  return <SidebarGroup><SidebarGroupLabel>{label}</SidebarGroupLabel><SidebarMenu>{items.map(item => <SidebarMenuItem key={item.url}><SidebarMenuButton asChild tooltip={item.title} isActive={pathname === item.url}><Link to={item.url} onClick={() => setOpenMobile(false)}><item.icon /><span>{item.title}</span></Link></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu></SidebarGroup>
+  return <SidebarGroup><SidebarGroupLabel>{label}</SidebarGroupLabel><SidebarMenu>{items.map(item => <SidebarMenuItem key={item.url}><SidebarMenuButton asChild tooltip={item.title} isActive={pathname === item.url || pathname.startsWith(`${item.url}/`)}><Link to={item.url} onClick={() => setOpenMobile(false)}><item.icon /><span>{item.title}</span></Link></SidebarMenuButton></SidebarMenuItem>)}</SidebarMenu></SidebarGroup>
 }
