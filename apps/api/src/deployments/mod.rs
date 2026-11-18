@@ -92,6 +92,7 @@ struct Environment {
 }
 #[derive(Serialize, sqlx::FromRow)]
 struct Application {
+    database_engine: Option<String>,
     kind: String,
     deployed: bool,
     id: Uuid,
@@ -119,7 +120,7 @@ struct Deployment {
     started_at: Option<DateTime<Utc>>,
     finished_at: Option<DateTime<Utc>>,
 }
-const APP_COLUMNS: &str = "a.service_kind AS kind,(a.active_deployment_id IS NOT NULL) AS deployed,a.id,a.environment_id,(SELECT project_id FROM environments WHERE id=a.environment_id) AS project_id,a.name,a.image,a.container_port,a.active_container_id,a.host_port,a.created_at,a.updated_at";
+const APP_COLUMNS: &str = "CASE WHEN a.service_kind='database' THEN CASE WHEN a.image LIKE 'mongo:%' THEN 'mongodb' WHEN a.image LIKE 'mariadb:%' THEN 'mariadb' WHEN a.image LIKE 'redis:%' THEN 'redis' ELSE 'postgres' END END AS database_engine,a.service_kind AS kind,(a.active_deployment_id IS NOT NULL) AS deployed,a.id,a.environment_id,(SELECT project_id FROM environments WHERE id=a.environment_id) AS project_id,a.name,a.image,a.container_port,a.active_container_id,a.host_port,a.created_at,a.updated_at";
 async fn project_access(state: &AppState, id: &Identity, project: Uuid) -> Result<(), ApiError> {
     if !sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1 AND organization_id=$2)",

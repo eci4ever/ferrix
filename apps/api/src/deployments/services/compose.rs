@@ -475,8 +475,23 @@ pub(in crate::deployments) async fn runtime(state: &AppState, id: Uuid) -> Resul
     } else {
         "partially_running"
     };
+    let health = if containers.iter().any(|c| {
+        c.status
+            .as_deref()
+            .is_some_and(|s| s.contains("(unhealthy)"))
+    }) {
+        Some("unhealthy")
+    } else if containers.iter().any(|c| {
+        c.status
+            .as_deref()
+            .is_some_and(|s| s.contains("(health: starting)"))
+    }) {
+        Some("starting")
+    } else {
+        None
+    };
     Ok(
-        json!({"state":status,"project":project(id),"containers":containers.iter().map(|c|json!({"id":c.id,"name":c.labels.as_ref().and_then(|l|l.get("com.docker.compose.service")),"state":c.state,"ports":c.ports.as_ref().map(|p|p.iter().filter_map(|p|p.public_port.map(|port|json!({"port":port,"ip":p.ip,"protocol":p.typ}))).collect::<Vec<_>>())})).collect::<Vec<_>>()}),
+        json!({"state":status,"health":health,"project":project(id),"containers":containers.iter().map(|c|json!({"id":c.id,"name":c.labels.as_ref().and_then(|l|l.get("com.docker.compose.service")),"state":c.state,"ports":c.ports.as_ref().map(|p|p.iter().filter_map(|p|p.public_port.map(|port|json!({"port":port,"ip":p.ip,"protocol":p.typ}))).collect::<Vec<_>>())})).collect::<Vec<_>>()}),
     )
 }
 async fn verify_ownership(state: &AppState, app: Uuid, canonical: &Value) -> Result<(), String> {

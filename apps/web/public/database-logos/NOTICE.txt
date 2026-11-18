@@ -1,0 +1,6 @@
+Database SVG artwork extracted from Dokploy data-tools-icons.tsx at commit da6282cc46e6bedaa6613be986f39b3a8177e2ad.
+Source: https://github.com/Dokploy/dokploy/blob/da6282cc46e6bedaa6613be986f39b3a8177e2ad/apps/dokploy/components/icons/data-tools-icons.tsx
+Copyright 2026-present Dokploy Technology, Inc.
+Licensed under Apache License 2.0; see LICENSE.txt.
+Changes: extracted four SVG elements as standalone assets and removed React className attributes.
+Database names and logos remain trademarks of their respective owners; no endorsement is implied.
