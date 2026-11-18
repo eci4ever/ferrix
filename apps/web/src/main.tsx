@@ -25,6 +25,7 @@ import { Card, CardHeader, CardTitle, CardDescription, CardAction, CardContent }
 import { LandingPage } from './landing'
 import { ApplicationWorkspace } from './deployments'
 import { ProjectServices, ServiceWorkspace } from './project-services'
+import { MonitoringPage } from './monitoring'
 import './index.css'
 
 function ErrorNotice({ message }: { message: string }) {
@@ -67,7 +68,7 @@ function Shell() {
     return <LoginPage key={pathname} setupRequired={pathname === '/signup' && setup.data.setup_required} initialMode={pathname === '/signup' ? 'signup' : 'login'} refresh={() => router.invalidate()} />
   }
   if (!account.data) return <Navigate to="/login" replace />
-  const pageNames: Record<string, string> = { '/dashboard': 'Home', '/projects': 'Projects', '/containers': 'Docker', '/security': 'Security', '/organization': 'Organization', '/admin': 'Users' }
+  const pageNames: Record<string, string> = { '/dashboard': 'Home', '/monitoring': 'Monitoring', '/projects': 'Projects', '/containers': 'Docker', '/security': 'Security', '/organization': 'Organization', '/admin': 'Users' }
   return <TooltipProvider><SidebarProvider>
     <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:bg-background focus:p-4">Skip to content</a>
     <AppSidebar identity={account.data} organizations={organizations.data ?? []} theme={theme} busy={accountBusy} onSwitch={id => accountAction('organizations/switch', { organization_id: id })} onSignOut={() => accountAction('sign-out')} onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} version={status.data?.version} />
@@ -182,6 +183,7 @@ const projectsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/pro
 const projectRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects/$projectId', component: function ProjectDetail() { const { projectId } = projectRoute.useParams(); const { account } = rootRoute.useLoaderData(); return <ProjectServices canCompose={account.data?.system_role === 'admin'} key={`${account.data?.organization_id}:${projectId}`} projectId={projectId} canManage={account.data?.role === 'owner' || account.data?.role === 'admin'} /> } })
 const applicationRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects/$projectId/applications/$applicationId', component: function ApplicationDetail() { const { projectId, applicationId } = applicationRoute.useParams(); const { account } = rootRoute.useLoaderData(); return <ApplicationWorkspace key={`${account.data?.organization_id}:${applicationId}`} projectId={projectId} applicationId={applicationId} canManage={account.data?.role === 'owner' || account.data?.role === 'admin'} /> } })
 const serviceRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects/$projectId/services/$serviceId', component: function ServiceDetail() { const { projectId, serviceId } = serviceRoute.useParams(); const { account } = rootRoute.useLoaderData(); return <ServiceWorkspace key={`${account.data?.organization_id}:${serviceId}`} projectId={projectId} serviceId={serviceId} canManage={account.data?.role === 'owner' || account.data?.role === 'admin'} canCompose={account.data?.system_role === 'admin'} /> } })
+const monitoringRoute = createRoute({ getParentRoute: () => rootRoute, path: '/monitoring', component: function Monitoring() { const { account } = rootRoute.useLoaderData(); return <MonitoringPage admin={account.data?.system_role === 'admin'} /> } })
 const containersRoute = createRoute({ getParentRoute: () => rootRoute, path: '/containers', component: ContainersPage, loader: async () => ({ containers: await load<Container[]>('/containers') }) })
 const securityRoute = createRoute({ getParentRoute: () => rootRoute, path: '/security', loader: async () => {
   const [sessions, security, audit] = await Promise.all([load<Session[]>('/auth/sessions'), load<Security>('/auth/security'), load<Audit[]>('/auth/audit')]); return { sessions, security, audit }
@@ -190,7 +192,7 @@ const teamRoute = createRoute({ getParentRoute: () => rootRoute, path: '/organiz
   const [organizations, members, invitations] = await Promise.all([load<Organization[]>('/auth/organizations'), load<Member[]>('/auth/members'), load<Invitation[]>('/auth/invitations')]); return { organizations, members, invitations }
 }, component: function OrganizationSettings() { const { organizations, members, invitations } = teamRoute.useLoaderData(); const { account } = rootRoute.useLoaderData(); const router = useRouter(); return account.data && organizations.data && members.data ? <TeamPage identity={account.data} organizations={organizations.data} members={members.data} invitations={invitations.data ?? []} refresh={() => router.invalidate()} /> : <ErrorNotice message="Could not load organization settings." /> } })
 const adminRoute = createRoute({ getParentRoute: () => rootRoute, path: '/admin', loader: () => load<User[]>('/auth/admin/users'), component: function UserAdministration() { const users = adminRoute.useLoaderData(); const router = useRouter(); return users.data ? <AdminPage users={users.data} refresh={() => router.invalidate()} /> : <ErrorNotice message={users.error} /> } })
-const router = createRouter({ routeTree: rootRoute.addChildren([landingRoute, loginRoute, signupRoute, homeRoute, projectsRoute, projectRoute, applicationRoute, serviceRoute, containersRoute, securityRoute, teamRoute, adminRoute]), defaultPendingMs: 150, defaultPendingMinMs: 200 })
+const router = createRouter({ routeTree: rootRoute.addChildren([landingRoute, loginRoute, signupRoute, homeRoute, projectsRoute, projectRoute, applicationRoute, serviceRoute, monitoringRoute, containersRoute, securityRoute, teamRoute, adminRoute]), defaultPendingMs: 150, defaultPendingMinMs: 200 })
 declare module '@tanstack/react-router' { interface Register { router: typeof router } }
 
 createRoot(document.getElementById('root')!).render(<StrictMode><RouterProvider router={router} /></StrictMode>)

@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+sysinfo = { version = "0.37", default-features = false, features = ["system", "disk", "network"] }
 argon2 = "0.5"
 rand = "0.8"
 sha2 = "0.10"
@@ -16,6 +17,7 @@ totp-rs = { version = "5.7", features = ["otpauth"] }
 url = "2"
 axum = "0.8"
 bollard = "0.20"
+reqwest = { version = "0.12", default-features = false, features = ["stream"] }
 chrono-tz = "0.10"
 iana-time-zone = "0.1"
 chrono = { version = "0.4", features = ["serde"] }
