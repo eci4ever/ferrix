@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link } from '@tanstack/react-router'
-import { ArrowLeft, ArrowUpRight, Box, ChevronDown, Plus, RefreshCw, Rocket, CircleAlert } from 'lucide-react'
+import { ArrowLeft, ArrowUpRight, RefreshCw, Rocket, CircleAlert } from 'lucide-react'
 import { request } from '@/lib/api'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -12,10 +12,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from '@/components/ui/empty'
-import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem } from '@/components/ui/dropdown-menu'
 
-type Environment = { id: string; project_id: string; name: string }
-type Environments = { project_name: string; environments: Environment[] }
 type Application = { id: string; environment_id: string; project_id: string; name: string; image: string; container_port: number; active_container_id: string | null }
 type Configuration = { name: string; image: string; container_port: number; environment: string }
 type Deployment = { id: string; status: 'queued' | 'running' | 'succeeded' | 'failed'; image: string; logs: string; created_at: string; image_id: string | null }
@@ -24,67 +21,17 @@ const json = (body: unknown) => ({ method: 'POST', headers: { 'Content-Type': 'a
 const message = (error: unknown) => error instanceof Error ? error.message : 'The request could not be completed.'
 function ErrorNotice({ error }: { error: string }) { return error ? <Alert variant="destructive"><CircleAlert /><AlertTitle>Something needs attention</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null }
 
-function ConfigurationFields({ initial, disabled }: { initial?: Configuration; disabled: boolean }) {
+export function ConfigurationFields({ initial, disabled }: { initial?: Configuration; disabled: boolean }) {
   return <FieldGroup>
-    <Field><FieldLabel htmlFor="application-name">Application name</FieldLabel><Input id="application-name" name="name" required maxLength={80} defaultValue={initial?.name ?? ''} placeholder="e.g. nginx" disabled={disabled} /></Field>
+    <Field><FieldLabel htmlFor="application-name">Application name</FieldLabel><Input id="application-name" name="name" required maxLength={80} autoFocus defaultValue={initial?.name ?? ''} placeholder="e.g. nginx" disabled={disabled} /></Field>
     <Field><FieldLabel htmlFor="application-image">Docker image</FieldLabel><Input id="application-image" name="image" required maxLength={255} defaultValue={initial?.image ?? 'nginx:alpine'} spellCheck={false} disabled={disabled} /><FieldDescription>Use a public registry image, for example nginx:alpine. Registry credentials and Git builds are not available yet.</FieldDescription></Field>
     <Field><FieldLabel htmlFor="application-port">Container port</FieldLabel><Input id="application-port" name="container_port" type="number" min={1} max={65535} required defaultValue={initial?.container_port ?? 80} disabled={disabled} /><FieldDescription>Ferrix allocates a free port on the server's loopback address.</FieldDescription></Field>
     <Field><FieldLabel htmlFor="application-environment">Environment variables</FieldLabel><Textarea id="application-environment" name="environment" rows={5} maxLength={16384} defaultValue={initial?.environment ?? ''} placeholder={'KEY=value\nANOTHER_KEY=value'} spellCheck={false} disabled={disabled} /><FieldDescription>One KEY=value per line. Values are stored encrypted and passed literally; shell expressions are not expanded.</FieldDescription></Field>
   </FieldGroup>
 }
-function configurationFrom(form: HTMLFormElement): Configuration {
+export function configurationFrom(form: HTMLFormElement): Configuration {
   const data = new FormData(form)
   return { name: String(data.get('name') ?? ''), image: String(data.get('image') ?? ''), container_port: Number(data.get('container_port')), environment: String(data.get('environment') ?? '') }
-}
-
-export function ProjectWorkspace({ projectId, canManage }: { projectId: string; canManage: boolean }) {
-  const [data, setData] = useState<Environments | null>(null)
-  const [selected, setSelected] = useState('')
-  const [applications, setApplications] = useState<Application[] | null>(null)
-  const [error, setError] = useState('')
-  const [notice, setNotice] = useState('')
-  const [form, setForm] = useState<'environment' | 'application' | null>(null)
-  const [busy, setBusy] = useState(false)
-  const environmentButton = useRef<HTMLButtonElement>(null)
-  const applicationButton = useRef<HTMLButtonElement>(null)
-  const refresh = useCallback(async (signal?: AbortSignal) => {
-    const next = await request<Environments>(`/projects/${projectId}/environments`, { signal })
-    setData(next)
-    setSelected(current => current && next.environments.some(e => e.id === current) ? current : (next.environments.find(e => e.name === 'production')?.id ?? next.environments[0]?.id ?? ''))
-  }, [projectId])
-  useEffect(() => { const controller = new AbortController(); void refresh(controller.signal).catch(e => { if (!controller.signal.aborted) setError(message(e)) }); return () => controller.abort() }, [refresh])
-  useEffect(() => {
-    if (!selected) return
-    const controller = new AbortController()
-    setApplications(null); setError('')
-    void request<Application[]>(`/environments/${selected}/applications`, { signal: controller.signal }).then(next => { if (!controller.signal.aborted) setApplications(next) }).catch(e => { if (!controller.signal.aborted) setError(message(e)) })
-    return () => controller.abort()
-  }, [selected])
-  function close() { const previous = form; setForm(null); setError(''); (previous === 'environment' ? environmentButton : applicationButton).current?.focus() }
-  async function createEnvironment(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); const name = String(new FormData(event.currentTarget).get('name') ?? '')
-    setBusy(true); setError('')
-    try { const environment = await request<Environment>(`/projects/${projectId}/environments`, json({ name })); await refresh(); setSelected(environment.id); close(); setNotice(`Environment “${environment.name}” created.`) }
-    catch (e) { setError(message(e)) } finally { setBusy(false) }
-  }
-  async function createApplication(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault(); const config = configurationFrom(event.currentTarget)
-    setBusy(true); setError('')
-    try { const app = await request<Application>(`/environments/${selected}/applications`, json(config)); setApplications(current => [...(current ?? []), app]); close(); setNotice(`Application “${app.name}” created. Open it to deploy.`) }
-    catch (e) { setError(message(e)) } finally { setBusy(false) }
-  }
-  const active = data?.environments.find(e => e.id === selected)
-  return <>
-    <Button asChild variant="ghost" className="self-start"><Link to="/projects"><ArrowLeft data-icon="inline-start" />Projects</Link></Button>
-    <div className="flex flex-wrap items-center justify-between gap-4"><div><h1 className="text-2xl font-semibold tracking-tight">{data?.project_name ?? 'Project'}</h1><p className="text-sm text-muted-foreground">Organize services by environment, then deploy an application.</p></div><div className="flex flex-wrap gap-2">
-      <DropdownMenu><DropdownMenuTrigger asChild><Button variant="outline" disabled={busy || !data?.environments.length}>{active?.name ?? 'Environment'}<ChevronDown data-icon="inline-end" /></Button></DropdownMenuTrigger><DropdownMenuContent><DropdownMenuGroup>{data?.environments.map(environment => <DropdownMenuItem key={environment.id} onSelect={() => { setSelected(environment.id); setForm(null); setNotice('') }}>{environment.name}{environment.id === selected ? ' (selected)' : ''}</DropdownMenuItem>)}</DropdownMenuGroup></DropdownMenuContent></DropdownMenu>
-      {canManage ? <><Button ref={environmentButton} variant="outline" onClick={() => { setForm('environment'); setNotice('') }} disabled={busy} aria-expanded={form === 'environment'}><Plus data-icon="inline-start" />Environment</Button><Button ref={applicationButton} onClick={() => { setForm('application'); setNotice('') }} disabled={!selected || busy} aria-expanded={form === 'application'}><Plus data-icon="inline-start" />Application</Button></> : null}
-    </div></div>
-    <p role="status" className="text-sm empty:hidden">{notice}</p><ErrorNotice error={error} />
-    {form === 'environment' ? <Card><CardHeader><CardTitle><h2>Create environment</h2></CardTitle><CardDescription>Keep production and staging services separate within this project.</CardDescription></CardHeader><CardContent><form onSubmit={createEnvironment} className="flex flex-col gap-4"><FieldGroup><Field><FieldLabel htmlFor="environment-name">Environment name</FieldLabel><Input id="environment-name" name="name" required maxLength={80} placeholder="staging" autoFocus disabled={busy} /></Field></FieldGroup><div className="flex justify-end gap-2"><Button type="button" variant="outline" disabled={busy} onClick={close}>Cancel</Button><Button disabled={busy}>{busy ? 'Creating…' : 'Create environment'}</Button></div></form></CardContent></Card> : null}
-    {form === 'application' ? <Card><CardHeader><CardTitle><h2>Create application</h2></CardTitle><CardDescription>Deploy a Docker image in {active?.name}.</CardDescription></CardHeader><CardContent><form onSubmit={createApplication} className="flex flex-col gap-4"><ConfigurationFields disabled={busy} /><div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={close} disabled={busy}>Cancel</Button><Button disabled={busy}>{busy ? 'Creating…' : 'Create application'}</Button></div></form></CardContent></Card> : null}
-    {!data || (!applications && !error) ? <Skeleton className="h-40 w-full" /> : applications?.length ? <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">{applications.map(app => <Card key={app.id}><CardHeader><CardTitle><h2><Link to="/projects/$projectId/applications/$applicationId" params={{ projectId, applicationId: app.id }}>{app.name}</Link></h2></CardTitle><CardDescription>{app.image}</CardDescription><CardAction><Box /></CardAction></CardHeader><CardContent className="flex items-center justify-between gap-2"><Badge variant="outline">{app.active_container_id ? 'Deployed' : 'Not deployed'}</Badge><Button asChild variant="secondary"><Link to="/projects/$projectId/applications/$applicationId" params={{ projectId, applicationId: app.id }}>Open<ArrowUpRight data-icon="inline-end" /></Link></Button></CardContent></Card>)}</div> : !error ? <Card><CardContent><Empty><EmptyHeader><EmptyMedia variant="icon"><Box /></EmptyMedia><EmptyTitle>No applications in {active?.name}</EmptyTitle><EmptyDescription>Create an application with nginx:alpine to run your first Docker image.</EmptyDescription></EmptyHeader></Empty></CardContent></Card> : null}
-  </>
 }
 
 export function ApplicationWorkspace({ projectId, applicationId, canManage }: { projectId: string; applicationId: string; canManage: boolean }) {

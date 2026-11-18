@@ -1,3 +1,4 @@
+mod services;
 mod worker;
 pub use worker::run_worker;
 
@@ -33,6 +34,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
             crate::auth::sessions::identify,
         ));
     reads
+        .merge(services::routes(state.clone()))
         .merge(
             Router::new()
                 .route("/projects/{id}/environments", post(create_environment))
@@ -44,7 +46,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
                     crate::auth::sessions::protect,
                 )),
         )
-        .layer(DefaultBodyLimit::max(32 * 1024))
+        .layer(DefaultBodyLimit::max(256 * 1024))
 }
 fn invalid(message: &'static str) -> ApiError {
     ApiError(StatusCode::UNPROCESSABLE_ENTITY, message)
@@ -90,6 +92,8 @@ struct Environment {
 }
 #[derive(Serialize, sqlx::FromRow)]
 struct Application {
+    kind: String,
+    deployed: bool,
     id: Uuid,
     environment_id: Uuid,
     project_id: Uuid,
@@ -115,7 +119,7 @@ struct Deployment {
     started_at: Option<DateTime<Utc>>,
     finished_at: Option<DateTime<Utc>>,
 }
-const APP_COLUMNS: &str = "a.id,a.environment_id,(SELECT project_id FROM environments WHERE id=a.environment_id) AS project_id,a.name,a.image,a.container_port,a.active_container_id,a.host_port,a.created_at,a.updated_at";
+const APP_COLUMNS: &str = "a.service_kind AS kind,(a.active_deployment_id IS NOT NULL) AS deployed,a.id,a.environment_id,(SELECT project_id FROM environments WHERE id=a.environment_id) AS project_id,a.name,a.image,a.container_port,a.active_container_id,a.host_port,a.created_at,a.updated_at";
 async fn project_access(state: &AppState, id: &Identity, project: Uuid) -> Result<(), ApiError> {
     if !sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1 AND organization_id=$2)",
@@ -189,7 +193,7 @@ async fn applications(
     Path(environment): Path<Uuid>,
 ) -> Result<Json<Vec<Application>>, ApiError> {
     environment_access(&state, &id, environment).await?;
-    Ok(Json(sqlx::query_as(&format!("SELECT {APP_COLUMNS} FROM applications a WHERE environment_id=$1 ORDER BY created_at,id")).bind(environment).fetch_all(&state.pool).await?))
+    Ok(Json(sqlx::query_as(&format!("SELECT {APP_COLUMNS} FROM applications a WHERE environment_id=$1 AND service_kind='application' ORDER BY created_at,id")).bind(environment).fetch_all(&state.pool).await?))
 }
 #[derive(Deserialize)]
 struct Configuration {
@@ -324,6 +328,9 @@ async fn configuration(
 ) -> Result<Json<Value>, ApiError> {
     id.manager()?;
     let row = app_access(&state, &id, app).await?;
+    if row.kind != "application" {
+        return Err(missing());
+    }
     let cipher: Option<Vec<u8>> =
         sqlx::query_scalar("SELECT env_cipher FROM applications WHERE id=$1")
             .bind(app)
@@ -340,7 +347,9 @@ async fn save_configuration(
     Json(mut input): Json<Configuration>,
 ) -> Result<Json<Application>, ApiError> {
     id.manager()?;
-    app_access(&state, &id, app).await?;
+    if app_access(&state, &id, app).await?.kind != "application" {
+        return Err(missing());
+    }
     let values = input.validate()?;
     let cipher = encrypt(&state, app, &values)?;
     sqlx::query("UPDATE applications SET name=$1,image=$2,container_port=$3,env_cipher=$4,updated_at=now() WHERE id=$5")
@@ -353,10 +362,20 @@ async fn deploy(
     Path(app): Path<Uuid>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     id.manager()?;
-    app_access(&state, &id, app).await?;
+    let row = app_access(&state, &id, app).await?;
+    if row.kind == "compose" {
+        id.admin()?;
+    }
+    let mut tx = state.pool.begin().await?;
+    sqlx::query_scalar::<_, Uuid>("SELECT id FROM applications WHERE id=$1 FOR UPDATE")
+        .bind(app)
+        .fetch_optional(&mut *tx)
+        .await?
+        .ok_or_else(missing)?;
     let deployment = Uuid::new_v4();
-    sqlx::query("INSERT INTO deployments(id,application_id,requested_by,image,container_port,env_cipher) SELECT $1,id,$2,image,container_port,env_cipher FROM applications WHERE id=$3")
-        .bind(deployment).bind(id.user_id).bind(app).execute(&state.pool).await.map_err(database_error)?;
+    sqlx::query("INSERT INTO deployments(id,application_id,requested_by,image,container_port,env_cipher,service_kind,service_cipher) SELECT $1,id,$2,image,container_port,env_cipher,service_kind,service_cipher FROM applications WHERE id=$3")
+        .bind(deployment).bind(id.user_id).bind(app).execute(&mut *tx).await.map_err(database_error)?;
+    tx.commit().await?;
     Ok((
         StatusCode::ACCEPTED,
         Json(json!({"id":deployment,"status":"queued"})),

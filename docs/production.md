@@ -52,7 +52,7 @@ Before updates, make a backup:
 sudo bash -c 'umask 077; cd /opt/ferrix; docker compose exec -T postgres pg_dump -U ferrix -d ferrix -Fc > ferrix.dump; tar -czf ferrix-backup.tar.gz .env compose.yaml Caddyfile ferrix.dump; rm ferrix.dump'
 ```
 
-Keep backups off-host. The `.env` auth key is required to decrypt existing MFA secrets. Do not regenerate the PostgreSQL password against an existing volume. Compose `down` preserves named volumes; `down -v` destroys them.
+Keep backups off-host. The `.env` auth key is required to decrypt existing MFA secrets and saved service configuration. Do not regenerate the PostgreSQL password against an existing volume. Compose `down` preserves named volumes; `down -v` destroys them.
 
 To update, first inspect the target release's migration/compatibility notes. Edit only `FERRIX_IMAGE` in `/opt/ferrix/.env` to a published version (or immutable image digest), then:
 
@@ -86,3 +86,5 @@ python3 scripts/tests/production.py ferrix:local
 ```
 
 The smoke test uses Caddy's internal CA only for localhost verification, creates a disposable database, and removes only its own Compose project and volumes when finished. It requires Compose 2.24.4+ for its test override. Public production HTTPS continues using Caddy's automatic public certificates.
+
+The runtime image includes Docker CLI and Compose for managed Compose deployments. Hosted service databases and Compose named volumes require separate data backups; the Ferrix metadata dump does not contain those volumes.
