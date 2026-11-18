@@ -54,7 +54,7 @@ The dashboard reads authenticated `GET /api/v1/server-time` for the server times
 ## Pull request CI
 
 The `CI` GitHub Actions workflow runs on every pull request, including updates,
-and can also be started manually. Its independent jobs check Rust formatting,
+on pushes to `main`, and can also be started manually. Its independent jobs check Rust formatting,
 Clippy with warnings denied, all Rust tests (including ignored PostgreSQL
 integration tests), and the frontend production build. Rust uses the stable
 toolchain; the frontend uses Node.js 24 and npm 12.2.2 with the committed lockfile.
@@ -120,3 +120,11 @@ host-wide data is used. A single SQL statement gives all counts one snapshot.
 Containers, Users, Sessions and Deployment History share a TanStack Table v9 adapter rendered with shadcn Table, InputGroup and Button components. It provides case-insensitive search over accessor values, sortable headers with `aria-sort`, ten-row pagination, stable record IDs and empty results. Sorting/search reset to page one; data refreshes preserve the current page where possible and clamp it after removals. Actions keep the original row ID after sorting/filtering. These operations apply to the API records already loaded, not server-side pagination; deployment history remains limited to the latest 30 records. Tables scroll horizontally inside their container on narrow screens.
 
 Project services remain cards. Their title anchor covers the card for pointer/keyboard navigation and browser open-in-new-tab behavior; Delete remains a separate button above that link. There is no Open button. Browser tests exercise table sorting/search/pagination, correctly targeted actions, card navigation/deletion and mobile overflow.
+
+### Cargo cache in GitHub Actions
+
+The Rust job restores Cargo registry/git dependencies and compiled dependency artifacts through `Swatinem/rust-cache`, pinned to a reviewed commit. The action runs after installing stable Rust and uses that same explicit toolchain for its cache key. Compiler version, Cargo manifests/lockfile and Rust build environment contribute to cache invalidation.
+
+Successful `main` runs save the reusable cache; PRs restore it without saving their own branch copies. A push to `main` warms the default-branch cache for future PRs. The first run or a toolchain/dependency change may still require compilation. Formatting, Clippy and all integration tests always run; Docker/database startup and test workloads are not cached. Installed Cargo binaries and the project’s own compiled crates are excluded by the action settings/defaults; compiled dependency artifacts remain cached.
+
+This cache is stored in GitHub Actions, not developers’ local clones. Local `.env`, auth keys, PostgreSQL/Docker data and volumes are not cache paths. No local development configuration changes are needed.
