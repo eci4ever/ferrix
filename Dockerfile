@@ -12,10 +12,14 @@ COPY Cargo.toml Cargo.lock ./
 COPY apps/api/ apps/api/
 RUN cargo build --locked --release -p ferrix-api
 
+FROM docker:29-cli AS docker-cli
+
 FROM debian:bookworm-slim AS runtime
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 ferrix && useradd --uid 10001 --gid ferrix --no-create-home ferrix
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
+COPY --from=docker-cli /usr/local/libexec/docker/cli-plugins/docker-compose /usr/local/libexec/docker/cli-plugins/docker-compose
 COPY --from=api /build/target/release/ferrix-api /usr/local/bin/ferrix-api
 COPY --from=web /build/apps/web/dist /opt/ferrix/web
 ENV FERRIX_BIND=0.0.0.0:8080 FERRIX_STATIC_DIR=/opt/ferrix/web RUST_LOG=ferrix_api=info,tower_http=info

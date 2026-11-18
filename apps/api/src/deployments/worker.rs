@@ -15,15 +15,17 @@ use std::{collections::HashMap, time::Duration};
 use tokio::sync::watch;
 
 #[derive(sqlx::FromRow)]
-struct Job {
-    id: Uuid,
-    application_id: Uuid,
-    image: String,
-    container_port: i32,
-    env_cipher: Option<Vec<u8>>,
-    organization_id: Uuid,
-    project_id: Uuid,
-    environment_id: Uuid,
+pub(super) struct Job {
+    pub(super) id: Uuid,
+    pub(super) application_id: Uuid,
+    pub(super) image: String,
+    pub(super) container_port: i32,
+    pub(super) env_cipher: Option<Vec<u8>>,
+    pub(super) service_kind: String,
+    pub(super) service_cipher: Option<Vec<u8>>,
+    pub(super) organization_id: Uuid,
+    pub(super) project_id: Uuid,
+    pub(super) environment_id: Uuid,
 }
 fn docker_error() -> ApiError {
     ApiError(
@@ -37,7 +39,7 @@ fn labels_match(labels: Option<&HashMap<String, String>>, app: Uuid) -> bool {
             && l.get("io.ferrix.application") == Some(&app.to_string())
     })
 }
-async fn inspect_owned(
+pub(super) async fn inspect_owned(
     state: &AppState,
     app: Uuid,
     container: &str,
@@ -58,6 +60,9 @@ async fn inspect_owned(
     Ok(info)
 }
 pub(super) async fn runtime(state: &AppState, app: &Application) -> Result<Value, ApiError> {
+    if app.kind == "compose" {
+        return super::services::compose::runtime(state, app.id).await;
+    }
     let Some(container) = &app.active_container_id else {
         return Ok(json!({"state":"not_deployed","host_port":null}));
     };
@@ -70,7 +75,7 @@ pub(super) async fn runtime(state: &AppState, app: &Application) -> Result<Value
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "unknown".into());
             Ok(
-                json!({"state":status,"host_port":if running {app.host_port}else{None},"container_id":container}),
+                json!({"state":status,"host_port":if running {app.host_port}else{None},"container_id":container,"internal_host":format!("ferrix-{}",app.id.simple()),"internal_port":app.container_port}),
             )
         }
         Err(error) if error.0 == StatusCode::CONFLICT => Err(error),
@@ -78,28 +83,32 @@ pub(super) async fn runtime(state: &AppState, app: &Application) -> Result<Value
     }
 }
 pub(super) async fn logs(state: &AppState, app: &Application) -> Result<Value, ApiError> {
-    let Some(container) = &app.active_container_id else {
-        return Ok(json!({"logs":"No container has been deployed yet."}));
+    let containers = if app.kind == "compose" {
+        super::services::compose::containers(state, app.id)
+            .await?
+            .into_iter()
+            .filter_map(|c| c.id)
+            .collect::<Vec<_>>()
+    } else {
+        app.active_container_id.iter().cloned().collect()
     };
-    inspect_owned(state, app.id, container).await?;
-    let options = LogsOptionsBuilder::default()
-        .stdout(true)
-        .stderr(true)
-        .tail("100")
-        .build();
     let read = async {
-        let mut stream = state.docker.logs(container, Some(options));
         let mut output = String::new();
-        while let Some(line) = stream.next().await {
-            let line = line.map_err(|_| docker_error())?.to_string();
-            for character in line.chars() {
-                if output.len() + character.len_utf8() > 65536 {
-                    break;
+        for container in containers {
+            inspect_owned(state, app.id, &container).await?;
+            let options = LogsOptionsBuilder::default()
+                .stdout(true)
+                .stderr(true)
+                .tail("100")
+                .build();
+            let mut stream = state.docker.logs(&container, Some(options));
+            while let Some(line) = stream.next().await {
+                for character in line.map_err(|_| docker_error())?.to_string().chars() {
+                    if output.len() + character.len_utf8() > 65536 {
+                        return Ok(json!({"logs":output}));
+                    }
+                    output.push(character);
                 }
-                output.push(character);
-            }
-            if output.len() >= 65536 {
-                break;
             }
         }
         Ok::<_, ApiError>(json!({"logs":output}))
@@ -108,7 +117,7 @@ pub(super) async fn logs(state: &AppState, app: &Application) -> Result<Value, A
         .await
         .map_err(|_| docker_error())?
 }
-async fn phase(conn: &mut PgConnection, job: Uuid, text: &str) -> Result<(), String> {
+pub(super) async fn phase(conn: &mut PgConnection, job: Uuid, text: &str) -> Result<(), String> {
     let count=sqlx::query("UPDATE deployments SET logs=left(logs || $1 || E'\\n',65536) WHERE id=$2 AND status='running'")
         .bind(text).bind(job).execute(conn).await.map_err(|_|"Could not persist deployment progress.")?.rows_affected();
     if count != 1 {
@@ -117,6 +126,9 @@ async fn phase(conn: &mut PgConnection, job: Uuid, text: &str) -> Result<(), Str
     Ok(())
 }
 async fn execute(state: &AppState, conn: &mut PgConnection, job: &Job) -> Result<(), String> {
+    if job.service_kind == "compose" {
+        return super::services::compose::execute(state, conn, job).await;
+    }
     phase(conn, job.id, "Pulling Docker image…").await?;
     let options = CreateImageOptionsBuilder::default()
         .from_image(&job.image)
@@ -136,11 +148,12 @@ async fn execute(state: &AppState, conn: &mut PgConnection, job: &Job) -> Result
         .inspect_image(&job.image)
         .await
         .map_err(|_| "Could not inspect the pulled image.")?;
-    if image
-        .config
-        .as_ref()
-        .and_then(|c| c.volumes.as_ref())
-        .is_some_and(|volumes| !volumes.is_empty())
+    if job.service_kind == "application"
+        && image
+            .config
+            .as_ref()
+            .and_then(|c| c.volumes.as_ref())
+            .is_some_and(|volumes| !volumes.is_empty())
     {
         return Err(
             "This image declares persistent volumes. This MVP supports stateless images only."
@@ -180,7 +193,7 @@ async fn execute(state: &AppState, conn: &mut PgConnection, job: &Job) -> Result
             job.environment_id.to_string(),
         ),
     ]);
-    let config = ContainerCreateBody {
+    let mut config = ContainerCreateBody {
         image: Some(image_id),
         env: Some(env),
         labels: Some(labels),
@@ -212,6 +225,10 @@ async fn execute(state: &AppState, conn: &mut PgConnection, job: &Job) -> Result
         }),
         ..Default::default()
     };
+    super::services::database::attach_network(state, job, &mut config).await?;
+    if job.service_kind == "database" {
+        super::services::database::configure(state, job, &mut config).await?;
+    }
     let name = format!("ferrix-{}-{}", job.application_id.simple(), job.id.simple());
     let created = state
         .docker
@@ -229,6 +246,15 @@ async fn execute(state: &AppState, conn: &mut PgConnection, job: &Job) -> Result
         .execute(&mut *conn)
         .await
         .map_err(|_| "Could not persist container ID.")?;
+    if job.service_kind == "database" {
+        phase(
+            conn,
+            job.id,
+            "Stopping the previous database before opening its persistent volume…",
+        )
+        .await?;
+        super::services::database::stop_previous(state, conn, job).await?;
+    }
     phase(conn, job.id, "Starting container…").await?;
     state
         .docker
@@ -263,6 +289,9 @@ async fn execute(state: &AppState, conn: &mut PgConnection, job: &Job) -> Result
             ready = 0;
         }
         if ready >= 2 {
+            if job.service_kind == "database" {
+                break None;
+            }
             let port = info
                 .network_settings
                 .and_then(|n| n.ports)
@@ -272,7 +301,7 @@ async fn execute(state: &AppState, conn: &mut PgConnection, job: &Job) -> Result
                 .and_then(|p| p.host_port)
                 .and_then(|p| p.parse::<i32>().ok())
                 .ok_or("Docker did not allocate a host port.")?;
-            break port;
+            break Some(port);
         }
     };
     phase(conn, job.id, "Container is running. Activating deployment…").await?;
@@ -281,7 +310,7 @@ async fn execute(state: &AppState, conn: &mut PgConnection, job: &Job) -> Result
         .begin()
         .await
         .map_err(|_| "Could not begin deployment activation.")?;
-    let count=sqlx::query("UPDATE deployments SET status='succeeded',finished_at=now(),logs=logs || E'Container activated successfully.\\n' WHERE id=$1 AND status='running'")
+    let count=sqlx::query("UPDATE deployments SET status='succeeded',restore_container_id=NULL,finished_at=now(),logs=logs || E'Container activated successfully.\\n' WHERE id=$1 AND status='running'")
         .bind(job.id).execute(&mut *tx).await.map_err(|_|"Could not persist deployment success.")?.rows_affected();
     if count != 1 {
         return Err("Deployment was interrupted before activation.".into());
@@ -330,10 +359,10 @@ async fn cleanup(state: &AppState, conn: &mut PgConnection) -> Result<(), String
         let Some(container_id) = container.id else {
             continue;
         };
-        let removable:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM deployments d JOIN applications a ON a.id=d.application_id WHERE d.id=$1 AND a.id=$2 AND d.status IN ('succeeded','failed') AND a.active_container_id IS DISTINCT FROM $3)")
+        let removable:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM deployments d JOIN applications a ON a.id=d.application_id WHERE d.id=$1 AND a.id=$2 AND a.service_kind!='compose' AND d.status IN ('succeeded','failed') AND a.active_container_id IS DISTINCT FROM $3)")
             .bind(deployment).bind(app).bind(&container_id).fetch_one(&mut *conn).await.map_err(|_|"Could not verify cleanup ownership.")?;
         if removable && labels_match(Some(&labels), app) {
-            let _ = tokio::time::timeout(
+            let removed = tokio::time::timeout(
                 Duration::from_secs(10),
                 state.docker.remove_container(
                     &container_id,
@@ -346,6 +375,17 @@ async fn cleanup(state: &AppState, conn: &mut PgConnection) -> Result<(), String
                 ),
             )
             .await;
+            match removed {
+                Ok(Ok(()))
+                | Ok(Err(bollard::errors::Error::DockerResponseServerError {
+                    status_code: 404,
+                    ..
+                })) => {}
+                _ => return Err(
+                    "Could not clean the previous candidate safely. Database recovery will retry."
+                        .into(),
+                ),
+            }
         }
     }
     Ok(())
@@ -358,10 +398,12 @@ async fn cycle(
     // The exclusive session lock guarantees that no other live worker owns these running jobs.
     sqlx::query("UPDATE deployments SET status='failed',finished_at=now(),logs=logs || E'Deployment interrupted by worker restart. Redeploy to try again.\\n' WHERE status='running'")
         .execute(&mut *conn).await.map_err(|_|"Could not recover interrupted deployments.")?;
-    let job=sqlx::query_as::<_,Job>("WITH next AS (SELECT id FROM deployments WHERE status='queued' ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1), claimed AS (UPDATE deployments d SET status='running',started_at=now() FROM next WHERE d.id=next.id RETURNING d.*) SELECT d.id,d.application_id,d.image,d.container_port,d.env_cipher,p.organization_id,p.id AS project_id,e.id AS environment_id FROM claimed d JOIN applications a ON a.id=d.application_id JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id")
+    cleanup(state, conn).await?;
+    super::services::database::restore_pending(state, conn).await?;
+    let job=sqlx::query_as::<_,Job>("WITH next AS (SELECT id FROM deployments WHERE status='queued' ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1), claimed AS (UPDATE deployments d SET status='running',started_at=now() FROM next WHERE d.id=next.id RETURNING d.*) SELECT d.id,d.application_id,d.image,d.container_port,d.env_cipher,d.service_kind,d.service_cipher,p.organization_id,p.id AS project_id,e.id AS environment_id FROM claimed d JOIN applications a ON a.id=d.application_id JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id")
         .fetch_optional(&mut *conn).await.map_err(|_|"Could not claim queued deployment.")?;
     if let Some(job) = job {
-        let authorized:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM deployments d LEFT JOIN auth_users u ON u.id=d.requested_by LEFT JOIN auth_members m ON m.user_id=u.id AND m.organization_id=$2 WHERE d.id=$1 AND (d.requested_by IS NULL OR (NOT u.banned AND m.role IN ('owner','admin'))))")
+        let authorized:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM deployments d LEFT JOIN auth_users u ON u.id=d.requested_by LEFT JOIN auth_members m ON m.user_id=u.id AND m.organization_id=$2 WHERE d.id=$1 AND (d.requested_by IS NULL OR (NOT u.banned AND m.role IN ('owner','admin') AND (d.service_kind!='compose' OR u.system_role='admin'))))")
             .bind(job.id).bind(job.organization_id).fetch_one(&mut *conn).await.map_err(|_|"Could not verify deployment authorization.")?;
         let result = if authorized {
             tokio::select! {
@@ -376,6 +418,7 @@ async fn cycle(
                 .bind(error).bind(job.id).execute(&mut *conn).await.map_err(|_|"Could not record deployment failure.")?;
         }
         cleanup(state, conn).await?;
+        super::services::database::restore_pending(state, conn).await?;
         Ok(true)
     } else {
         cleanup(state, conn).await?;

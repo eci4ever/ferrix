@@ -46,6 +46,30 @@ async fn call(
         cookie,
     )
 }
+async fn remove_service(
+    app: &Router,
+    service: Uuid,
+    cookie: &str,
+    name: &str,
+    remove_data: bool,
+) -> StatusCode {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .method("DELETE")
+                .uri(format!("/api/v1/services/{service}"))
+                .header("origin", ORIGIN)
+                .header("cookie", cookie)
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({"name":name,"remove_data":remove_data}).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap()
+        .status()
+}
 async fn wait_status(app: &Router, cookie: &str, application: Uuid, status: &str) -> Value {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
     loop {
@@ -124,6 +148,8 @@ async fn docker_deployment_flow_and_isolation() {
     let (shutdown, receiver) = tokio::sync::watch::channel(false);
     let mut workers = Vec::new();
     let mut application = None;
+    let mut added_services: Vec<Uuid> = Vec::new();
+    let mut owned_environments: Vec<Uuid> = Vec::new();
     let mut sentinel = None;
     let outcome=AssertUnwindSafe(async {
         assert_eq!(call(&app,"/api/v1/applications/00000000-0000-0000-0000-000000000000/deploy","",Some(json!({}))).await.0,StatusCode::UNAUTHORIZED);
@@ -137,6 +163,7 @@ async fn docker_deployment_flow_and_isolation() {
         let (code,envs,_)=call(&app,&format!("/api/v1/projects/{project}/environments"),&owner,None).await;
         assert_eq!(code,StatusCode::OK); assert_eq!(envs["environments"][0]["name"],"production");
         let environment=envs["environments"][0]["id"].as_str().unwrap();
+        owned_environments.push(environment.parse().unwrap());
         assert_eq!(call(&app,&format!("/api/v1/projects/{project}/environments"),&owner,Some(json!({"name":"production"}))).await.0,StatusCode::CONFLICT);
         assert_eq!(call(&app,&format!("/api/v1/projects/{project}/environments"),&owner,Some(json!({"name":"staging"}))).await.0,StatusCode::CREATED);
         let config=json!({"name":"nginx","image":"nginx:alpine","container_port":80,"environment":"FERRIX_TEST_SECRET=literal-secret-123\nLITERAL=$(whoami)"});
@@ -167,6 +194,7 @@ async fn docker_deployment_flow_and_isolation() {
         assert_eq!(call(&app,&endpoint,&owner,Some(json!({}))).await.0,StatusCode::CONFLICT);
         let mut invalid_image=config.clone(); invalid_image["image"]=json!(format!("nginx:ferrix-missing-{}",Uuid::new_v4().simple()));
         assert_eq!(call(&app,&format!("/api/v1/applications/{application_id}/configuration"),&owner,Some(invalid_image)).await.0,StatusCode::OK);
+        assert_eq!(remove_service(&app,application_id,&owner,config["name"].as_str().unwrap(),false).await,StatusCode::CONFLICT);
         // Both workers start together. The session lock must prevent one from recovering the other's live job.
         workers.push(tokio::spawn(run_worker(state.clone(),receiver.clone())));
         workers.push(tokio::spawn(run_worker(state.clone(),receiver.clone())));
@@ -179,6 +207,7 @@ async fn docker_deployment_flow_and_isolation() {
         let unrelated = state.docker.create_container(None, bollard::models::ContainerCreateBody {
             image: Some("nginx:alpine".into()),
             labels: Some(std::collections::HashMap::from([
+                ("io.ferrix.test".into(), schema.clone()),
                 ("io.ferrix.managed".into(), "true".into()),
                 ("io.ferrix.application".into(), Uuid::new_v4().to_string()),
                 ("io.ferrix.deployment".into(), Uuid::new_v4().to_string()),
@@ -209,6 +238,77 @@ async fn docker_deployment_flow_and_isolation() {
         tokio::time::sleep(Duration::from_secs(2)).await;
         assert!(state.docker.inspect_container(&old_container,None).await.is_err(),"old owned container should be removed after activation");
         assert_eq!(call(&app,&format!("/api/v1/applications/{application_id}/logs"),&owner,None).await.0,StatusCode::OK);
+        let create_service=format!("/api/v1/environments/{environment}/services");
+        assert_eq!(call(&app,&create_service,&member,Some(json!({"kind":"database","name":"forbidden"}))).await.0,StatusCode::FORBIDDEN);
+        let (code,db,_) = call(&app,&create_service,&owner,Some(json!({"kind":"database","name":"PostgreSQL"}))).await;
+        assert_eq!(code,StatusCode::CREATED,"{db}");
+        let database:Uuid=db["id"].as_str().unwrap().parse().unwrap();added_services.push(database);
+        let config=call(&app,&format!("/api/v1/services/{database}/configuration"),&owner,None).await.1;
+        assert_eq!(config["password"].as_str().unwrap().len(),64);
+        assert_eq!(call(&app,&format!("/api/v1/services/{database}/configuration"),&member,None).await.0,StatusCode::FORBIDDEN);
+        assert_eq!(call(&app,&format!("/api/v1/applications/{database}/configuration"),&owner,Some(json!({"name":"bad","image":"nginx:alpine","container_port":80}))).await.0,StatusCode::NOT_FOUND);
+        let db_deploy=format!("/api/v1/services/{database}/deploy");
+        assert_eq!(call(&app,&db_deploy,&owner,Some(json!({}))).await.0,StatusCode::ACCEPTED);
+        let first=wait_status(&app,&owner,database,"succeeded").await;
+        let first_container=first["container_id"].as_str().unwrap();
+        let output=tokio::process::Command::new("docker").args(["exec",first_container,"psql","-U","ferrix","-d","ferrix","-v","ON_ERROR_STOP=1","-c","CREATE TABLE persistence_check(value text); INSERT INTO persistence_check VALUES ('survives-redeploy');"]).output().await.unwrap();
+        assert!(output.status.success(),"database initialization failed");
+        let mut edit=config.clone();edit["password"]=json!("changed-password-is-not-allowed");
+        assert_eq!(call(&app,&format!("/api/v1/services/{database}/configuration"),&owner,Some(edit)).await.0,StatusCode::CONFLICT);
+        assert_eq!(call(&app,&db_deploy,&owner,Some(json!({}))).await.0,StatusCode::ACCEPTED);
+        let second=wait_status(&app,&owner,database,"succeeded").await;
+        assert_ne!(first["container_id"],second["container_id"]);
+        let output=tokio::process::Command::new("docker").args(["exec",second["container_id"].as_str().unwrap(),"psql","-U","ferrix","-d","ferrix","-At","-c","SELECT value FROM persistence_check"]).output().await.unwrap();
+        assert!(output.status.success());assert_eq!(String::from_utf8_lossy(&output.stdout).trim(),"survives-redeploy");
+        let info=state.docker.inspect_container(second["container_id"].as_str().unwrap(),None).await.unwrap();
+        assert!(info.host_config.unwrap().port_bindings.is_none_or(|p|p.is_empty()),"database must not publish a host port");
+        // Ordinary organization admins cannot create a host-level Compose project.
+        sqlx::query("UPDATE auth_members SET role='admin' WHERE user_id=$1").bind(member_id).execute(&pool).await.unwrap();
+        assert_eq!(call(&app,&create_service,&member,Some(json!({"kind":"compose","name":"forbidden-compose","yaml":"services: {web: {image: nginx:alpine}}"}))).await.0,StatusCode::FORBIDDEN);
+        sqlx::query("UPDATE auth_members SET role='member' WHERE user_id=$1").bind(member_id).execute(&pool).await.unwrap();
+        assert_eq!(call(&app,&create_service,&owner,Some(json!({"kind":"compose","name":"unsafe","yaml":"services: {web: {image: nginx:alpine, volumes: ['/:/host']}}"}))).await.0,StatusCode::UNPROCESSABLE_ENTITY);
+        let yaml="services:\n  web:\n    image: nginx:alpine\n    ports: [\"80\"]\n    environment:\n      LITERAL: ${LITERAL}\n      SLASH: ${SLASH}\n      QUOTE: ${QUOTE}\n";
+        let variables="LITERAL=$(whoami)${NOT_REAL}\nSLASH=C:\\temp\\\nQUOTE=it's fine";
+        let (code,stack,_)=call(&app,&create_service,&owner,Some(json!({"kind":"compose","name":"Web stack","yaml":yaml,"environment":variables}))).await;
+        assert_eq!(code,StatusCode::CREATED,"{stack}");
+        let stack:Uuid=stack["id"].as_str().unwrap().parse().unwrap();added_services.push(stack);
+        assert_eq!(call(&app,&format!("/api/v1/services/{stack}/deploy"),&owner,Some(json!({}))).await.0,StatusCode::ACCEPTED);
+        wait_status(&app,&owner,stack,"succeeded").await;
+        let runtime=call(&app,&format!("/api/v1/services/{stack}/runtime"),&owner,None).await.1;
+        assert_eq!(runtime["state"],"running","{runtime}");
+        nginx_responds(&state,runtime["containers"][0]["ports"][0]["port"].as_i64().unwrap()).await;
+        let info=state.docker.inspect_container(runtime["containers"][0]["id"].as_str().unwrap(),None).await.unwrap();
+        let variables=info.config.unwrap().env.unwrap();
+        assert!(variables.contains(&"LITERAL=$(whoami)${NOT_REAL}".to_owned()),"literal interpolation mismatch: {variables:?}");
+        assert!(variables.contains(&"SLASH=C:\\temp\\".to_owned()),"backslash interpolation mismatch: {variables:?}");
+        assert!(variables.contains(&"QUOTE=it's fine".to_owned()));
+        let services=call(&app,&create_service,&member,None).await.1;
+        assert_eq!(services.as_array().unwrap().len(),3);
+        assert_eq!(call(&app,&format!("/api/v1/environments/{environment}/applications"),&owner,None).await.1.as_array().unwrap().len(),1);
+
+        assert_eq!(remove_service(&app,database,&member,"PostgreSQL",true).await,StatusCode::FORBIDDEN);
+        assert_eq!(remove_service(&app,database,&owner,"wrong-name",true).await,StatusCode::UNPROCESSABLE_ENTITY);
+        // Other organizations cannot delete or discover this service.
+        let other=call(&app,"/api/v1/auth/organizations",&owner,Some(json!({"name":"Deletion isolation"}))).await.1;
+        call(&app,"/api/v1/auth/organizations/switch",&owner,Some(json!({"organization_id":other["id"]}))).await;
+        assert_eq!(remove_service(&app,database,&owner,"PostgreSQL",true).await,StatusCode::NOT_FOUND);
+        call(&app,"/api/v1/auth/organizations/switch",&owner,Some(json!({"organization_id":org}))).await;
+        assert_eq!(remove_service(&app,database,&owner,"PostgreSQL",false).await,StatusCode::NO_CONTENT);
+        assert!(state.docker.inspect_volume(&format!("ferrix-db-{}",database.simple())).await.is_ok(),"data is retained by default");
+        assert!(state.docker.inspect_container(second["container_id"].as_str().unwrap(),None).await.is_err());
+        assert_eq!(call(&app,&format!("/api/v1/services/{database}"),&owner,None).await.0,StatusCode::NOT_FOUND);
+        let remaining:i64=sqlx::query_scalar("SELECT count(*) FROM deployments WHERE application_id=$1").bind(database).fetch_one(&pool).await.unwrap();
+        assert_eq!(remaining,0);
+        // Destructive removal affects only the Compose service's labeled data.
+        let volume=format!("ferrix-delete-test-{}",stack.simple());
+        state.docker.create_volume(bollard::models::VolumeCreateRequest{name:Some(volume.clone()),labels:Some(std::collections::HashMap::from([("io.ferrix.managed".into(),"true".into()),("io.ferrix.application".into(),stack.to_string())])),..Default::default()}).await.unwrap();
+        assert_eq!(remove_service(&app,stack,&owner,"Web stack",true).await,StatusCode::NO_CONTENT);
+        assert!(state.docker.inspect_volume(&volume).await.is_err());
+        assert!(state.docker.inspect_container(runtime["containers"][0]["id"].as_str().unwrap(),None).await.is_err());
+        assert!(state.docker.inspect_network(&format!("ferrix-env-{}",environment.replace('-', "")),None).await.is_ok(),"shared environment network remains");
+        let app_name:String=sqlx::query_scalar("SELECT name FROM applications WHERE id=$1").bind(application_id).fetch_one(&pool).await.unwrap();
+        assert_eq!(remove_service(&app,application_id,&owner,&app_name,false).await,StatusCode::NO_CONTENT);
+
     }).catch_unwind().await;
     if let Some(ref id) = sentinel {
         assert!(
@@ -260,6 +360,65 @@ async fn docker_deployment_flow_and_isolation() {
                         .build(),
                 ),
             )
+            .await;
+    }
+    for service in added_services {
+        let options = bollard::query_parameters::ListContainersOptionsBuilder::default()
+            .all(true)
+            .filters(&std::collections::HashMap::from([(
+                "label".to_owned(),
+                vec![format!("io.ferrix.application={service}")],
+            )]))
+            .build();
+        for container in state
+            .docker
+            .list_containers(Some(options))
+            .await
+            .unwrap_or_default()
+        {
+            if let Some(id) = container.id {
+                let _ = state
+                    .docker
+                    .remove_container(
+                        &id,
+                        Some(
+                            bollard::query_parameters::RemoveContainerOptionsBuilder::default()
+                                .force(true)
+                                .build(),
+                        ),
+                    )
+                    .await;
+            }
+        }
+        let _ = state
+            .docker
+            .remove_volume(
+                &format!("ferrix-db-{}", service.simple()),
+                None::<bollard::query_parameters::RemoveVolumeOptions>,
+            )
+            .await;
+        let networks = state
+            .docker
+            .list_networks(Some(
+                bollard::query_parameters::ListNetworksOptionsBuilder::default()
+                    .filters(&std::collections::HashMap::from([(
+                        "label".to_owned(),
+                        vec![format!("io.ferrix.application={service}")],
+                    )]))
+                    .build(),
+            ))
+            .await
+            .unwrap_or_default();
+        for network in networks {
+            if let Some(id) = network.id {
+                let _ = state.docker.remove_network(&id).await;
+            }
+        }
+    }
+    for environment in owned_environments {
+        let _ = state
+            .docker
+            .remove_network(&format!("ferrix-env-{}", environment.simple()))
             .await;
     }
     pool.close().await;
