@@ -97,3 +97,20 @@ The probe honors `DOCKER_HOST` Unix sockets and HTTP/TCP endpoints (defaulting t
 responses are capped at 8 MiB and three seconds. Unsupported transports report
 unavailable. An HTTP fixture test protects legacy storage-field compatibility.
 No database migration is required.
+
+### Home summary
+
+Authenticated `GET /api/v1/home-summary` returns counts for the session's active
+organization, including ordinary members. Projects and services cover all rows,
+independent of the Projects list's 100-row limit. Service totals include
+applications, databases and Compose services across every environment.
+Deployments count requests created in the last 24 hours, broken down into
+succeeded, failed and queued/running. Projects created in the last seven days
+are counted separately.
+
+Needs attention counts services whose latest deployment (creation time, then ID)
+failed, regardless of age; a newer successful or pending deployment clears that
+service from this list. Undeployed services are not failures. Up to five affected
+services are returned with project IDs for navigation; the count is uncapped.
+This is deployment history, not live container health. No Docker probe or
+host-wide data is used. A single SQL statement gives all counts one snapshot.

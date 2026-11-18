@@ -12,7 +12,7 @@ import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert'
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from '@/components/ui/empty'
 import { Skeleton } from '@/components/ui/skeleton'
 import { load, request } from '@/lib/api'
-import type { Project, SystemStatus, Container } from '@/lib/api'
+import type { Project, SystemStatus, Container, HomeSummary } from '@/lib/api'
 import { LoginPage, SecurityPage, TeamPage, AdminPage } from './auth'
 import type { Identity, Security, Session, Audit, Organization, Member, Invitation, User } from './auth'
 import { ServerClock } from '@/components/server-clock'
@@ -87,7 +87,8 @@ function Shell() {
 }
 
 function HomePage() {
-  const { projects } = homeRoute.useLoaderData()
+  const { projects, summary } = homeRoute.useLoaderData()
+  const totals: HomeSummary | null = summary.data
   const { account, status } = rootRoute.useLoaderData()
   if (!account.data) return null
   const recent: Project[] = projects.data ?? []
@@ -95,11 +96,13 @@ function HomePage() {
     <CardHeader><CardTitle><h1 className="text-2xl font-semibold tracking-tight md:text-3xl">Welcome back, {account.data.name}</h1></CardTitle><CardDescription>Your deployment workspace at a glance.</CardDescription><CardAction><Button asChild variant="secondary"><Link to="/projects">Go to projects<ArrowRight data-icon="inline-end" /></Link></Button></CardAction></CardHeader>
     <CardContent className="flex flex-col gap-6">
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <Card><CardHeader><CardTitle>Projects</CardTitle><CardDescription>In this organization</CardDescription></CardHeader><CardContent><p className="text-3xl font-semibold">{projects.error ? 'Unavailable' : recent.length === 100 ? '100+' : recent.length}</p><p className="mt-2 text-xs text-muted-foreground">{recent.length === 100 ? 'Showing the 100 most recent' : 'Ready to organize your applications'}</p></CardContent></Card>
-        <Card><CardHeader><CardTitle>Organization</CardTitle><CardDescription>Current workspace</CardDescription></CardHeader><CardContent><p className="truncate font-semibold">{account.data.organization_name}</p><Badge variant="secondary" className="mt-3">{account.data.role}</Badge></CardContent></Card>
-        <Card><CardHeader><CardTitle>Deployments</CardTitle><CardDescription>Deployment history</CardDescription></CardHeader><CardContent><p className="text-xl font-semibold">Docker images</p><p className="mt-2 text-xs text-muted-foreground">Open a project to manage deployments</p></CardContent></Card>
-        <Card><CardHeader><CardTitle>Status</CardTitle><CardDescription>Connected services</CardDescription></CardHeader><CardContent className="flex flex-col items-start gap-3">{status.data ? <><Connection name="PostgreSQL" connected={status.data.database} /><Connection name="Docker" connected={status.data.docker} /></> : <p className="text-sm text-muted-foreground">Unable to check connections</p>}</CardContent></Card>
+        <Card><CardHeader><CardTitle>Projects</CardTitle><CardDescription>In this organization</CardDescription></CardHeader><CardContent><p className="text-3xl font-semibold tabular-nums">{totals?.projects ?? 'Unavailable'}</p><p className="mt-2 text-xs text-muted-foreground">{totals ? `${totals.projects_new_7d} created in the last 7 days` : 'Summary could not be loaded'}</p></CardContent></Card>
+        <Card><CardHeader><CardTitle>Services</CardTitle><CardDescription>Across all projects</CardDescription></CardHeader><CardContent><p className="text-3xl font-semibold tabular-nums">{totals?.services ?? 'Unavailable'}</p><p className="mt-2 text-xs text-muted-foreground">{totals ? `${totals.applications} applications · ${totals.databases} databases · ${totals.compose} Compose` : 'Summary could not be loaded'}</p></CardContent></Card>
+        <Card><CardHeader><CardTitle>Deployments</CardTitle><CardDescription>Last 24 hours</CardDescription></CardHeader><CardContent><p className="text-3xl font-semibold tabular-nums">{totals?.deployments_24h ?? 'Unavailable'}</p><p className="mt-2 text-xs text-muted-foreground">{totals ? `${totals.succeeded_24h} succeeded · ${totals.failed_24h} failed · ${totals.in_progress_24h} queued or running` : 'Summary could not be loaded'}</p></CardContent></Card>
+        <Card><CardHeader><CardTitle>Needs attention</CardTitle><CardDescription>Services with a failed latest deployment</CardDescription></CardHeader><CardContent><p className="text-3xl font-semibold tabular-nums">{totals?.needs_attention ?? 'Unavailable'}</p>{totals ? totals.attention.length ? <><ul className="mt-2 space-y-1 text-sm">{totals.attention.map(service => <li key={service.id}><Link className="break-words underline underline-offset-4" to="/projects/$projectId/services/$serviceId" params={{ projectId: service.project_id, serviceId: service.id }}>{service.name}</Link></li>)}</ul>{totals.needs_attention > totals.attention.length ? <p className="mt-2 text-xs text-muted-foreground">Showing 5 of {totals.needs_attention} services. Open Projects to view all.</p> : null}</> : <p className="mt-2 text-xs text-muted-foreground">No failed latest deployments</p> : <p className="mt-2 text-xs text-muted-foreground">Summary could not be loaded</p>}</CardContent></Card>
       </div>
+      {summary.error ? <ErrorNotice message={`${summary.error} Use Refresh to retry.`} /> : null}
+      {status.data ? <div className="flex flex-wrap gap-4 text-sm"><Connection name="PostgreSQL" connected={status.data.database} /><Connection name="Docker" connected={status.data.docker} /></div> : null}
       {status.error ? <ErrorNotice message={status.error} /> : null}
       <Card><CardHeader><CardTitle>Recent projects</CardTitle><CardDescription>Your most recently created projects</CardDescription><CardAction><Button asChild variant="ghost"><Link to="/projects">View all<ArrowRight data-icon="inline-end" /></Link></Button></CardAction></CardHeader><CardContent>{projects.error ? <ErrorNotice message={projects.error} /> : recent.length ? <Table><TableHeader><TableRow><TableHead>Project</TableHead><TableHead>Created</TableHead><TableHead>Stage</TableHead></TableRow></TableHeader><TableBody>{recent.slice(0, 5).map(project => <TableRow key={project.id}><TableCell><Link className="font-medium underline-offset-4 hover:underline" to="/projects/$projectId" params={{ projectId: project.id }}>{project.name}</Link><p className="mt-1 max-w-sm truncate text-xs text-muted-foreground">{project.description || 'No description'}</p></TableCell><TableCell>{new Date(project.created_at).toLocaleDateString()}</TableCell><TableCell><Badge variant="outline">Created</Badge></TableCell></TableRow>)}</TableBody></Table> : <Empty><EmptyHeader><EmptyMedia variant="icon"><Folder /></EmptyMedia><EmptyTitle>No projects yet</EmptyTitle><EmptyDescription>Create your first project to start organizing your applications.</EmptyDescription></EmptyHeader><Button asChild variant="outline"><Link to="/projects">Go to projects</Link></Button></Empty>}</CardContent></Card>
     </CardContent>
@@ -178,7 +181,7 @@ const rootRoute = createRootRoute({
 const landingRoute = createRoute({ getParentRoute: () => rootRoute, path: '/', component: LandingPage })
 const loginRoute = createRoute({ getParentRoute: () => rootRoute, path: '/login' })
 const signupRoute = createRoute({ getParentRoute: () => rootRoute, path: '/signup' })
-const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: '/dashboard', component: HomePage, loader: async () => ({ projects: await load<Project[]>('/projects') }) })
+const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: '/dashboard', component: HomePage, loader: async () => { const [projects, summary] = await Promise.all([load<Project[]>('/projects'), load<HomeSummary>('/home-summary')]); return { projects, summary } } })
 const projectsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects', component: ProjectsPage, loader: async () => ({ projects: await load<Project[]>('/projects') }) })
 const projectRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects/$projectId', component: function ProjectDetail() { const { projectId } = projectRoute.useParams(); const { account } = rootRoute.useLoaderData(); return <ProjectServices canCompose={account.data?.system_role === 'admin'} key={`${account.data?.organization_id}:${projectId}`} projectId={projectId} canManage={account.data?.role === 'owner' || account.data?.role === 'admin'} /> } })
 const applicationRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects/$projectId/applications/$applicationId', component: function ApplicationDetail() { const { projectId, applicationId } = applicationRoute.useParams(); const { account } = rootRoute.useLoaderData(); return <ApplicationWorkspace key={`${account.data?.organization_id}:${applicationId}`} projectId={projectId} applicationId={applicationId} canManage={account.data?.role === 'owner' || account.data?.role === 'admin'} /> } })

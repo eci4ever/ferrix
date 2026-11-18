@@ -1,5 +1,6 @@
 pub mod auth;
 pub mod deployments;
+mod home;
 mod monitoring;
 mod projects;
 mod server_time;
@@ -29,6 +30,7 @@ pub fn router(state: AppState) -> Router {
     let protected = Router::new()
         .route("/api/v1/monitoring", get(monitoring::get))
         .layer(axum::Extension(monitor))
+        .route("/api/v1/home-summary", get(home::get))
         .route("/api/v1/status", get(status))
         .route(
             "/api/v1/projects",
