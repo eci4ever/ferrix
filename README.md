@@ -17,6 +17,8 @@ Authentication setup and security behavior: [Auth guide](docs/auth.md).
 | Routing | TanStack Router |
 | UI | shadcn/ui, Tailwind CSS |
 
+Environment, application and Docker image deployment flow: [Deployment guide](docs/deployments.md).
+
 Production VPS installation and release workflow: [Production guide](docs/production.md).
 
 ## Jalankan secara tempatan
@@ -50,13 +52,14 @@ Port PostgreSQL pembangunan ialah `5433`, dengan volume `ferrix_postgres`. Kelay
 
 ## Fungsi sekarang
 
-- Cipta projek dan lihat sehingga 100 projek terkini daripada PostgreSQL.
+- Cipta projek dengan environment production, tambah environment dan aplikasi Docker.
+- Deploy public Docker image melalui queue persisten, lihat progress dan container logs, serta redeploy dengan container lama dikekalkan jika deployment baharu gagal.
 - Semak sambungan PostgreSQL dan Docker secara berasingan.
 - Lihat inventori container Docker melalui Bollard (baca sahaja).
 - Dashboard dengan navigasi Projects dan Containers, keadaan kosong, ralat dan borang projek.
 - Log permintaan dan graceful shutdown untuk Ctrl+C/SIGTERM.
 
-Projek ialah kumpulan aplikasi. Mencipta projek belum melancarkan container atau menjalankan deployment. Data UI datang daripada API sebenar, tanpa data contoh.
+Projek ialah kumpulan aplikasi. Buka projek untuk mengurus environment dan aplikasi, kemudian deploy Docker image melalui worker queue. Data UI datang daripada API sebenar, tanpa data contoh.
 
 ## API
 
@@ -100,14 +103,12 @@ cd apps/web && npm run build
 
 ## Urutan pembangunan seterusnya
 
-1. Auth pemilik, sesi dan kawalan akses tersedia dalam branch auth; lengkapkan review sebelum deployment.
-2. Aplikasi di bawah projek: image Docker, environment dan konfigurasi port.
-3. Worker deployment dengan rekod persisten, status queued/running/succeeded/failed, log dan pemulihan selepas restart.
-4. Pull image, cipta/start container dan semakan kesihatan melalui Bollard.
-5. Domain dan HTTPS melalui reverse proxy; pilihan proxy belum dimuktamadkan.
-6. Git/Dockerfile builds, Compose, rollback dan server jauh.
+1. Domain dan HTTPS aplikasi melalui reverse proxy, dengan alamat stabil selepas redeploy.
+2. Persistent volumes dan private registry credentials.
+3. Tindakan stop/restart, rollback serta pemantauan readiness aplikasi.
+4. Git/Dockerfile builds, Compose dan server jauh.
 
-Kekalkan API dan worker dalam satu workspace Rust dahulu. Tambah proses worker berasingan apabila aliran deployment dibina. Jangan menjalankan build atau deployment panjang dalam handler HTTP.
+API dan worker deployment kini berada dalam satu proses Rust. Kerja Docker berjalan dalam worker queue, bukan handler HTTP. Lihat [deployment guide](docs/deployments.md) untuk had MVP dan pengesahan.
 
 Rujukan: [Dokploy](https://docs.dokploy.com/docs/core), [Axum](https://docs.rs/axum/0.8.9/axum/), [Bollard](https://docs.rs/bollard/0.20.2/bollard/), [TanStack Router](https://tanstack.com/router/latest/docs/framework/react/overview), [shadcn/ui](https://ui.shadcn.com/docs).
 

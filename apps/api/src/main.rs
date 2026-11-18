@@ -25,11 +25,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let docker = bollard::Docker::connect_with_defaults()?;
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(address = %listener.local_addr()?, "Ferrix API ready");
-    let mut app = router(AppState {
+    let state = AppState {
         pool: pool.clone(),
         docker,
         auth,
-    });
+    };
+    let mut app = router(state.clone());
     if let Ok(directory) = std::env::var("FERRIX_STATIC_DIR") {
         let index = std::path::Path::new(&directory).join("index.html");
         if !index.is_file() {
@@ -49,12 +50,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .fallback(tower_http::services::ServeFile::new(index)),
             );
     }
+    let (worker_shutdown, receiver) = tokio::sync::watch::channel(false);
+    let worker = tokio::spawn(ferrix_api::deployments::run_worker(state, receiver));
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown())
+    .with_graceful_shutdown(async move {
+        shutdown().await;
+        let _ = worker_shutdown.send(true);
+    })
     .await?;
+    worker.await?;
     pool.close().await;
     Ok(())
 }

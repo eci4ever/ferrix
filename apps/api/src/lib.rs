@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod deployments;
 mod projects;
 mod server_time;
 
@@ -41,6 +42,7 @@ pub fn router(state: AppState) -> Router {
             auth::sessions::identify,
         ));
     Router::new()
+        .nest("/api/v1", deployments::routes(state.clone()))
         .merge(clock)
         .merge(protected)
         .nest("/api/v1/auth", auth::routes(state.clone()))
@@ -125,6 +127,7 @@ async fn containers(
     ))
 }
 
+#[derive(Debug)]
 pub struct ApiError(StatusCode, &'static str);
 
 impl From<sqlx::Error> for ApiError {
