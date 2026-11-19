@@ -1,0 +1,1 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Hosting</title></head><body><h1>Your PHP hosting is ready</h1><p>Upload your PHP project from the Hosting dashboard.</p></body></html>

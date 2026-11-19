@@ -1,7 +1,7 @@
 import { useId, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import type { FormEvent } from 'react'
-import { Eye, EyeOff, Layers3 } from 'lucide-react'
+import { ChevronDown, Eye, EyeOff, Layers3 } from 'lucide-react'
 import { InputGroup, InputGroupInput, InputGroupAddon, InputGroupButton } from '@/components/ui/input-group'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Button } from '@/components/ui/button'
@@ -13,7 +13,7 @@ import { Table, TableHeader, TableHead, TableBody, TableRow, TableCell } from '@
 import { DataTable } from '@/components/data-table'
 import { request } from '@/lib/api'
 
-export type Identity = { session_id: string; user_id: string; name: string; email: string; system_role: string; organization_id: string; organization_name: string; role: string }
+export type Identity = { hosting_student?: boolean; session_id: string; user_id: string; name: string; email: string; system_role: string; organization_id: string; organization_name: string; role: string }
 export type Session = { id: string; created_at: string; expires_at: string; user_agent: string; ip_address: string; current: boolean }
 export type Member = { id: string; name: string; email: string; role: string }
 export type Organization = { id: string; name: string; role: string }
@@ -45,6 +45,7 @@ export function LoginPage({ setupRequired, refresh, initialMode = 'login' }: { s
   const [invitation, setInvitation] = useState(initialMode === 'signup' && !setupRequired)
   const [reset, setReset] = useState(false)
   const [showCode, setShowCode] = useState(false)
+  const [moreOptions, setMoreOptions] = useState(false)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
   const mode = setupRequired ? 'setup' : reset ? 'reset' : invitation ? 'invitation' : 'login'
@@ -59,10 +60,11 @@ export function LoginPage({ setupRequired, refresh, initialMode = 'login' }: { s
     } catch (error) { setMessage(errorText(error)) } finally { setBusy(false) }
   }
   return <main className="flex min-h-svh items-center justify-center bg-background px-6 py-12">
-    <section className="flex w-full max-w-lg flex-col gap-8" aria-labelledby="login-heading">
-      <header className="flex flex-col items-center gap-5 text-center">
-        <div className="flex items-center justify-center gap-3"><Layers3 className="size-6 shrink-0" aria-hidden="true" /><h1 id="login-heading" className="text-xl font-semibold tracking-tight">{title}</h1></div>
-        <p className="text-base text-muted-foreground">{description}</p>
+    <section className="flex w-full max-w-sm flex-col gap-6" aria-labelledby="login-heading">
+      <header className="flex flex-col items-center gap-3 text-center">
+        <Link to="/" aria-label="Ferrix home" title="Ferrix home" className="mb-3 flex size-12 items-center justify-center rounded-xl border bg-card outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-4 focus-visible:ring-offset-background"><Layers3 className="size-6" aria-hidden="true" /></Link>
+        <h1 id="login-heading" className="text-2xl font-semibold tracking-tight">{title}</h1>
+        <p className="text-sm text-muted-foreground">{description}</p>
       </header>
       <Message message={message} />
       <form key={mode} onSubmit={submit} className="flex flex-col gap-6">
@@ -71,12 +73,13 @@ export function LoginPage({ setupRequired, refresh, initialMode = 'login' }: { s
           {!reset ? <Field><FieldLabel htmlFor="login-email">Email</FieldLabel><Input id="login-email" name="email" required type="email" maxLength={254} autoComplete="username"  /></Field> : null}
           <LoginPassword name={reset ? 'new_password' : 'password'} label={reset ? 'New password' : invitation ? 'Password (existing account password, or a new password)' : 'Password'} newPassword={setupRequired || reset} />
           {invitation || reset ? <TextField name="token" label={reset ? 'Password reset token' : 'Invitation token'} type="password" autoComplete="off" /> : null}
-          {!setupRequired ? <Collapsible open={showCode} onOpenChange={setShowCode}><CollapsibleTrigger asChild><Button type="button" variant="link">{showCode ? 'Hide verification code' : 'Use an authenticator or recovery code'}</Button></CollapsibleTrigger><CollapsibleContent className="pt-4"><TextField name="code" label="Authenticator or recovery code" required={false} autoComplete="one-time-code" /></CollapsibleContent></Collapsible> : null}
+          {!setupRequired ? <Collapsible open={showCode} onOpenChange={setShowCode}><CollapsibleTrigger asChild><Button type="button" variant="link">{showCode ? 'Hide verification code' : 'Use two-factor authentication'}</Button></CollapsibleTrigger><CollapsibleContent className="pt-4"><TextField name="code" label="Authenticator or recovery code" required={false} autoComplete="one-time-code" /></CollapsibleContent></Collapsible> : null}
         </FieldGroup></fieldset>
         <Button type="submit" className="w-full" disabled={busy}>{busy ? 'Please wait…' : setupRequired ? 'Create account' : reset ? 'Reset password' : invitation ? 'Accept invitation' : 'Login'}</Button>
       </form>
-      {!setupRequired ? <div className="flex flex-wrap justify-center gap-x-4 gap-y-2"><Button variant="link" disabled={busy} onClick={() => { setInvitation(!invitation); setReset(false); setMessage('') }}>{invitation ? 'Back to sign in' : 'Have an invitation?'}</Button><Button variant="link" disabled={busy} onClick={() => { setReset(!reset); setInvitation(false); setMessage('') }}>{reset ? 'Back to sign in' : 'Reset password with an admin token'}</Button></div> : null}
-      <div className="flex flex-wrap justify-center gap-2"><Button asChild variant="link"><Link to="/">Back to home</Link></Button><Button asChild variant="link"><Link to={initialMode === 'signup' ? '/login' : '/signup'}>{initialMode === 'signup' ? 'Login' : 'Sign up'}</Link></Button></div>
+      {!setupRequired && (invitation || reset) ? <Button variant="link" disabled={busy} onClick={() => {setInvitation(false);setReset(false);setShowCode(false);setMessage('')}}>Back to sign in</Button> : null}
+      {!setupRequired && !invitation && !reset ? <Collapsible open={moreOptions} onOpenChange={setMoreOptions} className="flex flex-col items-center gap-3"><CollapsibleTrigger asChild><Button variant="ghost" disabled={busy}>More sign-in options<ChevronDown data-icon="inline-end" /></Button></CollapsibleTrigger><CollapsibleContent className="flex flex-col items-center gap-1"><Button variant="link" disabled={busy} onClick={() => {setInvitation(true);setShowCode(false);setMessage('')}}>Accept a team invitation</Button><Button variant="link" disabled={busy} onClick={() => {setReset(true);setShowCode(false);setMessage('')}}>Reset password</Button><p className="max-w-xs text-center text-xs leading-relaxed text-muted-foreground">Your administrator provides invitation and password reset tokens.</p></CollapsibleContent></Collapsible> : null}
+
     </section>
   </main>
 }

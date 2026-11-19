@@ -26,6 +26,7 @@ pub struct GatewayConfig {
 pub(crate) enum Resource {
     Site(Uuid),
     Application(Uuid),
+    Student(Uuid),
 }
 impl GatewayConfig {
     pub fn from_env() -> Result<Self, String> {
@@ -94,6 +95,9 @@ impl GatewayConfig {
             network: Some(network),
         })
     }
+    pub(crate) fn ingress_network(&self) -> Option<&str> {
+        self.network.as_deref()
+    }
     pub(crate) fn url(&self, resource: Resource) -> Option<String> {
         let host = self.hostname(resource)?;
         let secure = !self.local || self.https;
@@ -110,6 +114,7 @@ impl GatewayConfig {
         let (prefix, id) = match resource {
             Resource::Site(id) => ("site", id),
             Resource::Application(id) => ("app", id),
+            Resource::Student(id) => ("student", id),
         };
         Some(format!(
             "{prefix}-{}.{}",
@@ -127,6 +132,7 @@ impl GatewayConfig {
         let resource = match kind {
             "site" => Resource::Site(id),
             "app" => Resource::Application(id),
+            "student" => Resource::Student(id),
             _ => return None,
         };
         (self.hostname(resource).as_deref() == Some(host)).then_some(resource)
@@ -169,7 +175,10 @@ pub fn public_router(state: AppState) -> Router {
 async fn route(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
     let host = host(&headers).ok_or_else(missing)?;
     let mut upstream = "unused.invalid:80".to_owned();
-    let kind = if let Some(Resource::Application(id)) = state.gateway.resource(&host) {
+    let kind = if let Some(Resource::Student(id)) = state.gateway.resource(&host) {
+        upstream = crate::student_hosting::upstream(&state, id).await?;
+        "application"
+    } else if let Some(Resource::Application(id)) = state.gateway.resource(&host) {
         let row:Option<(String,i32)>=sqlx::query_as("SELECT a.active_container_id,d.container_port FROM applications a JOIN deployments d ON d.id=a.active_deployment_id AND d.application_id=a.id WHERE a.id=$1 AND a.service_kind='application' AND a.active_container_id IS NOT NULL").bind(id).fetch_optional(&state.pool).await?;
         let (container, port) = row.ok_or_else(missing)?;
         let info = crate::deployments::inspect_gateway_container(&state, id, &container).await?;
