@@ -1,4 +1,4 @@
-import { StrictMode, useEffect, useRef, useState } from 'react'
+import { createContext, useContext, StrictMode, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createRootRoute, createRoute, createRouter, RouterProvider, Outlet, Link, Navigate, useRouter, useRouterState } from '@tanstack/react-router'
@@ -32,11 +32,14 @@ function ErrorNotice({ message }: { message: string }) {
   return <Alert variant="destructive"><CircleAlert /><AlertTitle>Something needs attention</AlertTitle><AlertDescription>{message}</AlertDescription></Alert>
 }
 
+const WorkspaceRefresh = createContext(0)
+
 function Shell() {
   const { status, account, setup, organizations } = rootRoute.useLoaderData()
   const router = useRouter()
   const pathname = useRouterState({ select: state => state.location.pathname })
   const [refreshing, setRefreshing] = useState(false)
+  const [refreshVersion, setRefreshVersion] = useState(0)
   const [accountBusy, setAccountBusy] = useState(false)
   const [refreshError, setRefreshError] = useState('')
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
@@ -49,6 +52,7 @@ function Shell() {
   }, [theme])
   async function refresh() {
     setRefreshing(true); setRefreshError('')
+    setRefreshVersion(version => version + 1)
     try { await router.invalidate() }
     catch { setRefreshError('Refresh failed. Please try again.') }
     finally { setRefreshing(false) }
@@ -80,7 +84,7 @@ function Shell() {
       <div className="flex min-w-0 flex-1 flex-col gap-6 p-4 pt-2 md:p-6 md:pt-2">
         {refreshError ? <ErrorNotice message={refreshError} /> : null}
         {organizations.error ? <ErrorNotice message={organizations.error} /> : null}
-        <Outlet />
+        <WorkspaceRefresh.Provider value={refreshVersion}><Outlet /></WorkspaceRefresh.Provider>
       </div>
     </SidebarInset>
   </SidebarProvider></TooltipProvider>
@@ -176,7 +180,7 @@ const projectRoute = createRoute({ getParentRoute: () => rootRoute, path: '/proj
 const applicationRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects/$projectId/applications/$applicationId', component: function ApplicationDetail() { const { projectId, applicationId } = applicationRoute.useParams(); const { account } = rootRoute.useLoaderData(); return <ServiceWorkspace key={`${account.data?.organization_id}:${applicationId}`} projectId={projectId} serviceId={applicationId} canCompose={account.data?.system_role === 'admin'} canManage={account.data?.role === 'owner' || account.data?.role === 'admin'} /> } })
 const serviceRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects/$projectId/services/$serviceId', component: function ServiceDetail() { const { projectId, serviceId } = serviceRoute.useParams(); const { account } = rootRoute.useLoaderData(); return <ServiceWorkspace key={`${account.data?.organization_id}:${serviceId}`} projectId={projectId} serviceId={serviceId} canManage={account.data?.role === 'owner' || account.data?.role === 'admin'} canCompose={account.data?.system_role === 'admin'} /> } })
 const monitoringRoute = createRoute({ getParentRoute: () => rootRoute, path: '/monitoring', component: function Monitoring() { const { account } = rootRoute.useLoaderData(); return <MonitoringPage admin={account.data?.system_role === 'admin'} /> } })
-const containersRoute = createRoute({ getParentRoute: () => rootRoute, path: '/containers', component: function Docker() { const { account } = rootRoute.useLoaderData(); return <DockerPage admin={account.data?.system_role === 'admin'} /> } })
+const containersRoute = createRoute({ getParentRoute: () => rootRoute, path: '/containers', component: function Docker() { const { account } = rootRoute.useLoaderData(); return <DockerPage admin={account.data?.system_role === 'admin'} refreshVersion={useContext(WorkspaceRefresh)} /> } })
 const securityRoute = createRoute({ getParentRoute: () => rootRoute, path: '/security', loader: async () => {
   const [sessions, security, audit] = await Promise.all([load<Session[]>('/auth/sessions'), load<Security>('/auth/security'), load<Audit[]>('/auth/audit')]); return { sessions, security, audit }
 }, component: function AccountSecurity() { const { sessions, security, audit } = securityRoute.useLoaderData(); const router = useRouter(); return sessions.data && security.data ? <SecurityPage sessions={sessions.data} security={security.data} audit={audit.data ?? []} refresh={() => router.invalidate()} /> : <ErrorNotice message={sessions.error ?? security.error ?? 'Could not load security settings.'} /> } })

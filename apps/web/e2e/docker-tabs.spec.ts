@@ -3,6 +3,7 @@ import { expect, test } from '@playwright/test'
 test('Docker tabs load on demand and recover from a failed request', async ({ page }) => {
   let imagesUnavailable = true
   let imageRequests = 0
+  let engineVersion = '28.0'
   await page.route('**/api/v1/**', route => {
     const path = new URL(route.request().url()).pathname
     if (path === '/api/v1/docker/images') {
@@ -10,6 +11,9 @@ test('Docker tabs load on demand and recover from a failed request', async ({ pa
       return imagesUnavailable
         ? route.fulfill({ status: 503, json: { error: 'Docker unavailable.' } })
         : route.fulfill({ json: [{ id: 'sha256:abc', tags: 'postgres:17', size: 1048576 }] })
+    }
+    if (path === '/api/v1/docker/health') {
+      return route.fulfill({ json: { connected: true, version: engineVersion } })
     }
     const responses: Record<string, unknown> = {
       '/api/v1/auth/session': { name: 'Admin', system_role: 'admin', organization_id: 'org', organization_name: 'Test', role: 'owner' },
@@ -22,7 +26,6 @@ test('Docker tabs load on demand and recover from a failed request', async ({ pa
         { id: 'two', name: 'stopped-db', image: 'postgres:17', state: 'exited', status: 'Exited' },
       ],
       '/api/v1/docker/swarm': { state: 'inactive', manager: false },
-      '/api/v1/docker/health': { connected: true, version: '28.0' },
     }
     return route.fulfill({ json: responses[path] ?? {} })
   })
@@ -44,5 +47,11 @@ test('Docker tabs load on demand and recover from a failed request', async ({ pa
   await expect(page.getByRole('cell', { name: 'postgres:17' })).toBeVisible()
   await page.getByRole('tab', { name: 'Health', exact: true }).click()
   await expect(page.getByText('28.0', { exact: true })).toBeVisible()
+  const previousImageRequests = imageRequests
+  engineVersion = '28.1'
+  await page.getByRole('button', { name: 'Refresh workspace' }).click()
+  await expect(page.getByText('28.1', { exact: true })).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'Health', exact: true })).toHaveAttribute('aria-selected', 'true')
+  expect(imageRequests).toBe(previousImageRequests)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 })

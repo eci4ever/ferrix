@@ -34,13 +34,15 @@ function formatValue(key: string, value: DockerRecord[string]) {
   return String(value)
 }
 
-function Inventory({ section }: { section: Section }) {
+function Inventory({ section, refreshVersion }: { section: Section; refreshVersion: number }) {
   const [data, setData] = useState<DockerRecord | DockerRecord[] | null>(null)
   const [error, setError] = useState('')
   const [refresh, setRefresh] = useState(0)
   const [state, setState] = useState('')
   useEffect(() => {
     const controller = new AbortController()
+    setError('')
+    setData(null)
     const path = section.id === 'containers' ? '/containers' : '/docker/' + section.id
     request<DockerRecord | DockerRecord[]>(path, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(8000)]) })
       .then(result => { if (!controller.signal.aborted) setData(result) })
@@ -48,7 +50,7 @@ function Inventory({ section }: { section: Section }) {
         if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : 'Docker inventory unavailable.')
       })
     return () => controller.abort()
-  }, [section.id, refresh])
+  }, [section.id, refresh, refreshVersion])
 
   const rows = Array.isArray(data) ? data : []
   const states = Array.from(new Set(rows.map(row => String(row.state || 'unknown')))).sort()
@@ -60,7 +62,7 @@ function Inventory({ section }: { section: Section }) {
     </CardHeader>
     <CardContent className="flex min-w-0 flex-col gap-4">
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="outline" onClick={() => { setError(''); setData(null); setRefresh(previous => previous + 1) }} disabled={!data && !error}>
+        <Button variant="outline" onClick={() => setRefresh(previous => previous + 1)} disabled={!data && !error}>
           <RefreshCw aria-hidden="true" /> Refresh {section.label.toLowerCase()}
         </Button>
         {section.id === 'containers' && states.length > 0 && <select aria-label="Container state" value={state} onChange={event => setState(event.target.value)} className="h-9 rounded-md border bg-background px-2 text-sm">
@@ -88,7 +90,7 @@ function Inventory({ section }: { section: Section }) {
   </Card>
 }
 
-export function DockerPage({ admin }: { admin: boolean }) {
+export function DockerPage({ admin, refreshVersion }: { admin: boolean; refreshVersion: number }) {
   if (!admin) return <Alert><AlertTitle>Administrator access required</AlertTitle><AlertDescription>Docker inventory is shared across the host.</AlertDescription></Alert>
   return <section className="flex min-w-0 flex-col gap-4">
     <div><h1 className="text-2xl font-semibold tracking-tight">Docker</h1><p className="text-sm text-muted-foreground">Inventory and diagnostics for the connected Docker host.</p></div>
@@ -99,7 +101,7 @@ export function DockerPage({ admin }: { admin: boolean }) {
         </TabsList>
       </div>
       {sections.map(section => <TabsContent key={section.id} value={section.id} className="min-w-0">
-        <Inventory section={section} />
+        <Inventory section={section} refreshVersion={refreshVersion} />
       </TabsContent>)}
     </Tabs>
   </section>
