@@ -10,6 +10,7 @@ pub(crate) struct Project {
     name: String,
     description: String,
     created_at: DateTime<Utc>,
+    service_count: i64,
 }
 
 #[derive(Deserialize)]
@@ -43,7 +44,7 @@ pub(crate) async fn list(
     State(state): State<AppState>,
     id: Identity,
 ) -> Result<Json<Vec<Project>>, ApiError> {
-    Ok(Json(sqlx::query_as::<_, Project>("SELECT id, name, description, created_at FROM projects WHERE organization_id=$1 ORDER BY created_at DESC, id DESC LIMIT 100")
+    Ok(Json(sqlx::query_as::<_, Project>("SELECT p.id, p.name, p.description, p.created_at, (SELECT count(*) FROM applications a JOIN environments e ON e.id=a.environment_id WHERE e.project_id=p.id) + (SELECT count(*) FROM static_websites s JOIN environments e ON e.id=s.environment_id WHERE e.project_id=p.id) AS service_count FROM projects p WHERE p.organization_id=$1 ORDER BY p.created_at DESC, p.id DESC LIMIT 100")
         .bind(id.organization_id).fetch_all(&state.pool).await?))
 }
 
@@ -55,7 +56,7 @@ pub(crate) async fn create(
     id.manager()?;
     let input = input.validate()?;
     let mut tx = state.pool.begin().await?;
-    let project = sqlx::query_as::<_, Project>("INSERT INTO projects (id, name, description, organization_id) VALUES ($1, $2, $3, $4) RETURNING id, name, description, created_at")
+    let project = sqlx::query_as::<_, Project>("INSERT INTO projects (id, name, description, organization_id) VALUES ($1, $2, $3, $4) RETURNING id, name, description, created_at, 0::bigint AS service_count")
         .bind(Uuid::new_v4()).bind(input.name).bind(input.description).bind(id.organization_id)
         .fetch_one(&mut *tx).await?;
     sqlx::query("INSERT INTO environments(id,project_id,name) VALUES($1,$2,'production')")

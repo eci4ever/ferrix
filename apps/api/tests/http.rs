@@ -810,6 +810,7 @@ async fn check_static_website(
 ) {
     let projects = get(app, "/api/v1/projects", owner).await.1;
     let project = projects[0]["id"].as_str().unwrap();
+    let initial_count = projects[0]["service_count"].as_i64().unwrap();
     let envs = get(
         app,
         &format!("/api/v1/projects/{project}/environments"),
@@ -827,6 +828,14 @@ async fn check_static_website(
     .await;
     assert_eq!(status, StatusCode::CREATED);
     let path = format!("/api/v1/static-websites/{}", site["id"].as_str().unwrap());
+    let updated_projects = get(app, "/api/v1/projects", owner).await.1;
+    let updated = updated_projects
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["id"] == project)
+        .unwrap();
+    assert_eq!(updated["service_count"], initial_count + 1);
     assert_eq!(get(app, &path, "").await.0, StatusCode::UNAUTHORIZED);
     let public = ferrix_api::static_websites::public_router(pool.clone());
     let preview = format!("{path}/preview/");
