@@ -20,6 +20,9 @@ services:
     init: true
     environment:
       FERRIX_WEBSITE_BIND: 0.0.0.0:8081
+      FERRIX_AUTO_DOMAIN: ${FERRIX_AUTO_DOMAIN:-}
+      FERRIX_PUBLIC_IP: ${FERRIX_PUBLIC_IP:-}
+      FERRIX_INGRESS_NETWORK: ${COMPOSE_PROJECT_NAME:-ferrix}_ingress
       DATABASE_URL: postgres://ferrix:${POSTGRES_PASSWORD:?Missing POSTGRES_PASSWORD}@postgres:5432/ferrix
       FERRIX_AUTH_ORIGIN: https://${FERRIX_DOMAIN:?Missing FERRIX_DOMAIN}
       FERRIX_AUTH_KEY: ${FERRIX_AUTH_KEY:?Missing FERRIX_AUTH_KEY}
@@ -52,7 +55,14 @@ services:
     depends_on:
       ferrix:
         condition: service_healthy
+    networks: [default, ingress]
 volumes:
   postgres:
   caddy_data:
   caddy_config:
+
+networks:
+  ingress:
+    name: ${COMPOSE_PROJECT_NAME:-ferrix}_ingress
+    labels:
+      io.ferrix.ingress: ${COMPOSE_PROJECT_NAME:-ferrix}_ingress

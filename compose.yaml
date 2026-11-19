@@ -15,6 +15,29 @@ services:
       interval: 3s
       timeout: 3s
       retries: 10
+  proxy:
+    image: caddy:2-alpine
+    profiles: [websites]
+    restart: unless-stopped
+    environment:
+      FERRIX_WEBSITE_UPSTREAM: host.docker.internal:${FERRIX_WEBSITE_PORT:-8090}
+    ports:
+      - "127.0.0.1:${FERRIX_WEBSITE_HTTP_PORT:-9080}:80"
+      - "127.0.0.1:${FERRIX_WEBSITE_HTTPS_PORT:-9443}:443"
+    volumes:
+      - ./deploy/${FERRIX_LOCAL_CADDYFILE:-Caddyfile.local}:/etc/caddy/Caddyfile:ro
+      - ferrix_caddy_data:/data
+    networks: [default, ingress]
+    read_only: true
+    tmpfs: [/config, /tmp]
+    security_opt: [no-new-privileges:true]
+networks:
+  ingress:
+    name: ${COMPOSE_PROJECT_NAME:?Missing COMPOSE_PROJECT_NAME}_ingress
+    labels:
+      io.ferrix.ingress: ${COMPOSE_PROJECT_NAME:?Missing COMPOSE_PROJECT_NAME}_ingress
+
 volumes:
   ferrix_postgres:
+  ferrix_caddy_data:
 

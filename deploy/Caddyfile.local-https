@@ -1,0 +1,36 @@
+{
+    admin off
+    on_demand_tls {
+        ask http://{$FERRIX_WEBSITE_UPSTREAM}/_ferrix/tls-ask
+    }
+    servers {
+        strict_sni_host on
+    }
+    persist_config off
+}
+
+https:// {
+    tls internal {
+        on_demand
+    }
+    encode zstd gzip
+    route {
+        @private path /_ferrix /_ferrix/*
+        respond @private 404
+        request_header -X-Ferrix-Upstream
+        request_header -X-Ferrix-Service-Type
+        forward_auth {$FERRIX_WEBSITE_UPSTREAM} {
+            uri /_ferrix/route
+            copy_headers X-Ferrix-Upstream X-Ferrix-Service-Type
+        }
+        @application header X-Ferrix-Service-Type application
+        reverse_proxy @application {http.request.header.X-Ferrix-Upstream} {
+            header_up -X-Ferrix-Upstream
+            header_up -X-Ferrix-Service-Type
+        }
+        reverse_proxy {$FERRIX_WEBSITE_UPSTREAM} {
+            header_up -X-Ferrix-Upstream
+            header_up -X-Ferrix-Service-Type
+        }
+    }
+}

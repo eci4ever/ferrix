@@ -232,6 +232,9 @@ async fn execute(state: &AppState, conn: &mut PgConnection, job: &Job) -> Result
         ..Default::default()
     };
     super::services::database::attach_network(state, job, &mut config).await?;
+    if job.service_kind == "application" {
+        crate::gateway::attach(state, &mut config).await?;
+    }
     if job.service_kind == "database" {
         super::services::database::configure(state, job, &mut config).await?;
     }

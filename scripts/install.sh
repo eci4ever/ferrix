@@ -14,10 +14,24 @@ ref=${FERRIX_REF:-main}
 base="https://raw.githubusercontent.com/eci4ever/ferrix/${ref}"
 version=${FERRIX_VERSION:-latest}
 [[ $version =~ ^[a-zA-Z0-9_][a-zA-Z0-9_.-]*$ ]] || fail 'Invalid image version.'
+command -v curl >/dev/null || fail 'Install curl first.'
+public_ip=${FERRIX_PUBLIC_IP:-}
+if [[ -z $public_ip ]]; then
+  public_ip=$(curl -4 -fsS --connect-timeout 5 --max-time 10 https://api.ipify.org) || fail 'Could not detect public IPv4; set FERRIX_PUBLIC_IP explicitly.'
+fi
+[[ $public_ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail 'FERRIX_PUBLIC_IP must be an IPv4 address.'
+IFS='.' read -r -a ip_parts <<< "$public_ip"
+for part in "${ip_parts[@]}"; do
+  [[ ${#part} -le 3 && ( $part == 0 || $part != 0* ) ]] && ((10#$part <= 255)) || fail 'Invalid IPv4 octet.'
+done
+((ip_parts[0] > 0 && ip_parts[0] < 224 && ip_parts[0] != 10 && ip_parts[0] != 127)) || fail 'Use a public IPv4 address.'
+[[ $public_ip != 192.168.* && $public_ip != 169.254.* ]] || fail 'Use a public IPv4 address.'
+! ((ip_parts[0] == 172 && ip_parts[1] >= 16 && ip_parts[1] <= 31)) || fail 'Use a public IPv4 address.'
 domain=${FERRIX_DOMAIN:-}
 if [[ -z $domain && -r /dev/tty ]]; then
-  read -r -p 'Ferrix domain (e.g. deploy.example.com): ' domain </dev/tty || fail 'Set FERRIX_DOMAIN for unattended installation.'
+  read -r -p 'Ferrix domain (leave blank for automatic sslip.io domain): ' domain </dev/tty || true
 fi
+domain=${domain:-ferrix.${public_ip//./-}.sslip.io}
 [[ ${#domain} -le 253 && $domain == *.* && $domain =~ ^[a-zA-Z0-9]([a-zA-Z0-9.-]*[a-zA-Z0-9])?$ && $domain != *..* ]] || fail 'Set FERRIX_DOMAIN to a DNS hostname, without scheme or port.'
 IFS='.' read -r -a labels <<< "$domain"
 for label in "${labels[@]}"; do
@@ -61,6 +75,8 @@ timezone=${FERRIX_TIMEZONE:-UTC}
 cat > "$staging/.env" <<ENV
 FERRIX_IMAGE=$image
 FERRIX_DOMAIN=$domain
+FERRIX_PUBLIC_IP=$public_ip
+FERRIX_AUTO_DOMAIN=sslip.io
 POSTGRES_PASSWORD=$password
 FERRIX_AUTH_KEY=$key
 DOCKER_GID=$socket_gid

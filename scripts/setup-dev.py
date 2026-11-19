@@ -30,6 +30,11 @@ RUST_LOG=ferrix_api=info,tower_http=info
     with path.open("x") as file:
         file.write(text)
     path.chmod(0o600)
+    from importlib.util import spec_from_file_location, module_from_spec
+    spec = spec_from_file_location("setup_domains", root / "scripts/setup-domains.py")
+    module = module_from_spec(spec)
+    spec.loader.exec_module(module)
+    module.configure(root, user)
     print(f"Created {path} for {user}: API {api}, web {web}, PostgreSQL {postgres}")
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@ export type StaticSite = {
   id: string
   project_id: string
   name: string
+  automatic_url?: string | null
   domain: string | null
   active_release_id: string | null
   created_at: string
@@ -120,8 +121,9 @@ export function StaticWebsite({ projectId, siteId, canManage, canSetDomain }: {
         <h1 className="break-words text-2xl font-semibold">{details.site.name}</h1>
         <p className="text-sm text-muted-foreground">Static Website</p>
         {details.site.active_release_id ? <Button asChild variant="outline" className="mt-3"><a href={`/api/v1/static-websites/${siteId}/preview/`} target="_blank" rel="noopener noreferrer">Preview</a></Button> : <Button variant="outline" className="mt-3" disabled>Preview</Button>}
-        <p className="mt-2 text-xs text-muted-foreground">{details.site.active_release_id ? 'Preview the published HTML and styles. Scripts and forms are disabled; use a domain to test interactive behavior.' : 'Publish a build to enable Preview.'}</p>
+        <p className="mt-2 text-xs text-muted-foreground">{details.site.active_release_id ? 'Preview the published HTML and styles. Scripts and forms are disabled in this dashboard preview. Use Open website for the full interactive site.' : 'Publish a build to enable Preview.'}</p>
       </div>
+      <Card><CardHeader><CardTitle><h2>Automatic domain</h2></CardTitle><CardDescription>A separate website origin with JavaScript, CSS and client-side navigation enabled. No custom domain is required.</CardDescription></CardHeader><CardContent className="flex flex-col gap-3">{details.site.automatic_url ? <><p className="break-all text-sm">{details.site.automatic_url}</p>{details.site.active_release_id ? <Button asChild variant="outline" className="self-start"><a href={details.site.automatic_url} target="_blank" rel="noopener noreferrer">Open website</a></Button> : <p className="text-sm text-muted-foreground">Publish a build to make this address live.</p>}</> : <p className="text-sm text-muted-foreground">Ask the server administrator to enable automatic domains and the Caddy proxy.</p>}</CardContent></Card>
       <Card>
         <CardHeader>
           <CardTitle><h2>Custom domain</h2></CardTitle>

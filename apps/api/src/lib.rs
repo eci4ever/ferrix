@@ -1,6 +1,7 @@
 pub mod auth;
 pub mod deployments;
 mod docker_inventory;
+pub mod gateway;
 mod home;
 mod monitoring;
 mod projects;
@@ -22,6 +23,7 @@ use tower_http::trace::TraceLayer;
 
 #[derive(Clone)]
 pub struct AppState {
+    pub gateway: std::sync::Arc<gateway::GatewayConfig>,
     pub pool: PgPool,
     pub docker: Docker,
     pub auth: std::sync::Arc<auth::AuthConfig>,

@@ -26,6 +26,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(address = %listener.local_addr()?, "Ferrix API ready");
     let state = AppState {
+        gateway: std::sync::Arc::new(ferrix_api::gateway::GatewayConfig::from_env()?),
         pool: pool.clone(),
         docker,
         auth,
@@ -52,10 +53,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let (worker_shutdown, receiver) = tokio::sync::watch::channel(false);
     let state_shutdown = receiver.clone();
-    let worker = tokio::spawn(ferrix_api::deployments::run_worker(state, receiver));
+    let worker = tokio::spawn(ferrix_api::deployments::run_worker(state.clone(), receiver));
     let public = if let Ok(bind) = std::env::var("FERRIX_WEBSITE_BIND") {
         let listener = tokio::net::TcpListener::bind(bind).await?;
-        let public = ferrix_api::static_websites::public_router(pool.clone());
+        let public = ferrix_api::gateway::public_router(state.clone());
         let mut shutdown = state_shutdown;
         Some(tokio::spawn(async move {
             axum::serve(listener, public)

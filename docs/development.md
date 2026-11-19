@@ -138,3 +138,61 @@ The Rust job restores Cargo registry/git dependencies and compiled dependency ar
 Successful `main` runs save the reusable cache; PRs restore it without saving their own branch copies. A push to `main` warms the default-branch cache for future PRs. The first run or a toolchain/dependency change may still require compilation. Formatting, Clippy and all integration tests always run; Docker/database startup and test workloads are not cached. Installed Cargo binaries and the project’s own compiled crates are excluded by the action settings/defaults; compiled dependency artifacts remain cached.
 
 This cache is stored in GitHub Actions, not developers’ local clones. Local `.env`, auth keys, PostgreSQL/Docker data and volumes are not cache paths. No local development configuration changes are needed.
+
+## Automatic website domains
+
+For an existing clone, run `python3 scripts/setup-domains.py` once. Fresh
+`setup-dev.py` setups include these settings. Start the private public-site
+listener by restarting the API, then start Caddy:
+
+```sh
+docker compose --profile websites up -d proxy
+```
+
+| User | Private website listener | Local Caddy HTTP |
+| --- | --- | --- |
+| nmfairus | 8090 | 80 |
+| mac2 | 8091 | 9081 |
+| mac3 | 8092 | 9082 |
+
+Static Website and Docker Application pages show an **Automatic domain**.
+Use **Open website** to run JavaScript, modules, forms and root-relative assets
+on a separate origin. Local URLs use `site-<uuid>.localhost:<port>` and
+`app-<uuid>.localhost:<port>`. Port 80 is omitted from nmfairus URLs, so they open as `http://site-<uuid>.localhost/`
+or `http://app-<uuid>.localhost/`. Port 80 is reserved for nmfairus; mac2 and
+mac3 retain their separate ports to avoid conflicts.
+UUIDs remain stable across publishes and redeploys.
+Publish a static build or deploy an Application first. Applications deployed
+before automatic domains were configured need one redeploy to join ingress.
+Database and Compose services are not automatically exposed.
+
+The ingress network and its ownership label are scoped to the Compose project.
+Never reuse another user's network. The authenticated dashboard preview keeps
+its script sandbox; use the automatic URL for interactive testing.
+
+`python3 scripts/tests/automatic-domains.py` exercises real Caddy, Docker and
+Playwright with disposable resources in the current user's database. It also
+checks the production HTTPS routes with a test certificate authority; public
+DNS and ACME issuance require a real VPS.
+
+### Local HTTPS
+
+The nmfairus profile uses HTTPS on port 443 and redirects HTTP on port 80.
+Automatic URLs become `https://app-<uuid>.localhost/` and
+`https://site-<uuid>.localhost/`. Other users retain their isolated HTTP ports.
+`FERRIX_WEBSITE_HTTPS=true`, `FERRIX_WEBSITE_HTTPS_PORT=443` and
+`FERRIX_LOCAL_CADDYFILE=Caddyfile.local-https` select this mode.
+Caddy stores its local certificate authority in the project-scoped
+`ferrix_caddy_data` volume. Preserve this volume so the trusted root stays stable.
+
+Copy only the public root certificate (never its private key) from the proxy:
+
+```sh
+docker compose cp proxy:/data/caddy/pki/authorities/local/root.crt /tmp/ferrix-local-root.crt
+security add-trusted-cert -r trustRoot -k "$HOME/Library/Keychains/login.keychain-db" /tmp/ferrix-local-root.crt
+```
+
+macOS may request permission to trust the certificate. Restart the browser
+after installing it. Firefox with a separate trust store may need its own
+certificate import. Trust applies to this user's local Caddy authority.
+See [Caddy local HTTPS](https://caddyserver.com/docs/automatic-https#local-https).

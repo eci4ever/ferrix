@@ -38,12 +38,21 @@ pub(crate) fn routes(state: AppState) -> Router<AppState> {
 
 #[derive(Serialize, sqlx::FromRow)]
 struct Site {
+    #[sqlx(default)]
+    automatic_url: Option<String>,
     id: Uuid,
     project_id: Uuid,
     name: String,
     domain: Option<String>,
     active_release_id: Option<Uuid>,
     created_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl Site {
+    fn with_gateway(mut self, state: &AppState) -> Self {
+        self.automatic_url = state.gateway.url(crate::gateway::Resource::Site(self.id));
+        self
+    }
 }
 
 const SITES: &str = "SELECT s.id,e.project_id,s.name,s.domain,s.active_release_id,s.created_at
@@ -77,12 +86,17 @@ async fn list(
     id: Identity,
     Path(environment): Path<Uuid>,
 ) -> Result<Json<Vec<Site>>, ApiError> {
-    Ok(Json(
+    let sites: Vec<Site> =
         sqlx::query_as(&format!("{SITES} AND e.id=$2 ORDER BY s.created_at DESC"))
             .bind(id.organization_id)
             .bind(environment)
             .fetch_all(&state.pool)
-            .await?,
+            .await?;
+    Ok(Json(
+        sites
+            .into_iter()
+            .map(|site| site.with_gateway(&state))
+            .collect(),
     ))
 }
 
@@ -121,7 +135,7 @@ async fn create(
             "An organization can have up to 10 static websites.",
         ));
     }
-    let site = sqlx::query_as(
+    let site: Site = sqlx::query_as(
         "WITH created AS (
         INSERT INTO static_websites(id,environment_id,name)
         SELECT $1,e.id,$2 FROM environments e JOIN projects p ON p.id=e.project_id
@@ -138,7 +152,7 @@ async fn create(
     .map_err(conflict)?
     .ok_or_else(missing)?;
     tx.commit().await?;
-    Ok((StatusCode::CREATED, Json(site)))
+    Ok((StatusCode::CREATED, Json(site.with_gateway(&state))))
 }
 
 #[derive(Serialize, sqlx::FromRow)]
@@ -162,7 +176,7 @@ async fn details(
     let releases: Vec<Release> = sqlx::query_as("SELECT id,bytes,created_at FROM static_releases WHERE site_id=$1 ORDER BY created_at DESC,id DESC")
         .bind(site.id).fetch_all(&state.pool).await?;
     Ok(Json(
-        serde_json::json!({ "site": site, "releases": releases }),
+        serde_json::json!({ "site": site.with_gateway(&state), "releases": releases }),
     ))
 }
 
@@ -252,6 +266,9 @@ async fn domain(
         })
         .transpose()?;
     if let Some(name) = &domain {
+        if state.gateway.reserved(name) {
+            return Err(invalid("Automatic domain names are reserved by Ferrix."));
+        }
         let origin = url::Url::parse(&state.auth.origin)
             .map_err(|_| invalid("Dashboard origin is invalid."))?;
         if let Some(host) = origin.host_str() {
@@ -428,22 +445,35 @@ async fn rollback(
 }
 
 pub fn public_router(pool: PgPool) -> Router {
+    public_router_with_config(pool, Default::default())
+}
+pub(crate) fn public_router_with_config(
+    pool: PgPool,
+    config: std::sync::Arc<crate::gateway::GatewayConfig>,
+) -> Router {
     Router::new()
         .route("/_ferrix/tls-ask", get(tls_ask))
         .fallback(get(file))
+        .layer(axum::Extension(config))
         .with_state(pool)
 }
 
 async fn tls_ask(
     State(pool): State<PgPool>,
+    axum::Extension(config): axum::Extension<std::sync::Arc<crate::gateway::GatewayConfig>>,
     Query(input): Query<std::collections::HashMap<String, String>>,
 ) -> Result<StatusCode, ApiError> {
     let name = input
         .get("domain")
         .and_then(|value| hostname(value))
         .ok_or_else(missing)?;
-    let allowed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM static_websites WHERE domain=$1 AND active_release_id IS NOT NULL)")
-        .bind(name).fetch_one(&pool).await?;
+    let (site, app) = match config.resource(&name) {
+        Some(crate::gateway::Resource::Site(id)) => (Some(id), None),
+        Some(crate::gateway::Resource::Application(id)) => (None, Some(id)),
+        None => (None, None),
+    };
+    let allowed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM static_websites WHERE (domain=$1 OR id=$2) AND active_release_id IS NOT NULL) OR EXISTS(SELECT 1 FROM applications WHERE id=$3 AND service_kind='application' AND active_container_id IS NOT NULL)")
+        .bind(name).bind(site).bind(app).fetch_one(&pool).await?;
     if !allowed {
         return Err(missing());
     }
@@ -513,6 +543,7 @@ async fn preview(
 
 async fn file(
     State(pool): State<PgPool>,
+    axum::Extension(config): axum::Extension<std::sync::Arc<crate::gateway::GatewayConfig>>,
     headers: HeaderMap,
     uri: Uri,
 ) -> Result<Response, ApiError> {
@@ -522,15 +553,38 @@ async fn file(
         .and_then(|value| value.parse::<axum::http::uri::Authority>().ok())
         .and_then(|authority| hostname(authority.host()))
         .ok_or_else(missing)?;
-    let path = request_path(uri.path()).ok_or_else(missing)?;
+    let mut path = request_path(uri.path()).ok_or_else(missing)?;
+    let site = match config.resource(&host) {
+        Some(crate::gateway::Resource::Site(id)) => Some(id),
+        _ => None,
+    };
     let content: Option<Vec<u8>> = sqlx::query_scalar(
         "SELECT f.content FROM static_websites s JOIN static_files f
-        ON f.site_id=s.id AND f.release_id=s.active_release_id WHERE s.domain=$1 AND f.path=$2",
+        ON f.site_id=s.id AND f.release_id=s.active_release_id WHERE (s.domain=$1 OR s.id=$3) AND f.path=$2",
     )
-    .bind(host)
+    .bind(&host)
     .bind(&path)
+    .bind(site)
     .fetch_optional(&pool)
     .await?;
+    let content = if content.is_none()
+        && !uri
+            .path()
+            .trim_end_matches('/')
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .contains('.')
+        && headers
+            .get(header::ACCEPT)
+            .and_then(|h| h.to_str().ok())
+            .is_some_and(|h| h.contains("text/html"))
+    {
+        path = "index.html".into();
+        sqlx::query_scalar("SELECT f.content FROM static_websites s JOIN static_files f ON f.site_id=s.id AND f.release_id=s.active_release_id WHERE (s.domain=$1 OR s.id=$2) AND f.path='index.html'").bind(&host).bind(site).fetch_optional(&pool).await?
+    } else {
+        content
+    };
     let content = content.ok_or(ApiError(StatusCode::NOT_FOUND, "Page not found."))?;
     Ok(static_response(&path, content))
 }
