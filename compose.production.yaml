@@ -19,6 +19,7 @@ services:
     restart: unless-stopped
     init: true
     environment:
+      FERRIX_STUDENT_PHP_IMAGE: ${FERRIX_STUDENT_PHP_IMAGE:-ghcr.io/eci4ever/ferrix-student-php:latest}
       FERRIX_WEBSITE_BIND: 0.0.0.0:8081
       FERRIX_AUTO_DOMAIN: ${FERRIX_AUTO_DOMAIN:-}
       FERRIX_PUBLIC_IP: ${FERRIX_PUBLIC_IP:-}

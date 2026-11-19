@@ -21,7 +21,7 @@ static DUMMY: LazyLock<String> = LazyLock::new(|| {
         .unwrap()
         .to_string()
 });
-pub(super) async fn hash(password: String) -> Result<String, ApiError> {
+pub(crate) async fn hash(password: String) -> Result<String, ApiError> {
     if password.chars().count() < 12 || password.len() > 1024 {
         return Err(bad(
             "Use a password of at least 12 characters and at most 1024 bytes.",
@@ -67,7 +67,7 @@ pub(super) async fn verify(password: String, hash: Option<String>) -> Result<(),
     .map_err(|_| internal())?;
     if ok { Ok(()) } else { Err(invalid()) }
 }
-pub(super) fn email(value: &str) -> Result<String, ApiError> {
+pub(crate) fn email(value: &str) -> Result<String, ApiError> {
     let value = value.trim().to_lowercase();
     let parts: Vec<_> = value.split('@').collect();
     if value.len() > 254
@@ -80,14 +80,14 @@ pub(super) fn email(value: &str) -> Result<String, ApiError> {
     }
     Ok(value)
 }
-pub(super) fn name(value: &str) -> Result<String, ApiError> {
+pub(crate) fn name(value: &str) -> Result<String, ApiError> {
     let value = value.trim();
     if value.is_empty() || value.chars().count() > 80 {
         return Err(bad("Name must contain 1–80 characters."));
     }
     Ok(value.to_owned())
 }
-pub(super) async fn throttle(pool: &sqlx::PgPool, key: &str, limit: i32) -> Result<(), ApiError> {
+pub(crate) async fn throttle(pool: &sqlx::PgPool, key: &str, limit: i32) -> Result<(), ApiError> {
     let count:i32=sqlx::query_scalar("INSERT INTO auth_throttles(key,attempts,reset_at) VALUES($1,1,now()+interval '15 minutes') ON CONFLICT(key) DO UPDATE SET attempts=CASE WHEN auth_throttles.reset_at<now() THEN 1 ELSE auth_throttles.attempts+1 END,reset_at=CASE WHEN auth_throttles.reset_at<now() THEN now()+interval '15 minutes' ELSE auth_throttles.reset_at END RETURNING attempts").bind(digest(key)).fetch_one(pool).await?;
     if count > limit {
         Err(ApiError(

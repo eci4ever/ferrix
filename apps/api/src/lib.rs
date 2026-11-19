@@ -7,6 +7,7 @@ mod monitoring;
 mod projects;
 mod server_time;
 pub mod static_websites;
+pub mod student_hosting;
 
 use axum::{
     Json, Router,
@@ -55,7 +56,9 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .nest(
             "/api/v1",
-            deployments::routes(state.clone()).merge(static_websites::routes(state.clone())),
+            deployments::routes(state.clone())
+                .merge(static_websites::routes(state.clone()))
+                .merge(student_hosting::routes(state.clone())),
         )
         .merge(clock)
         .merge(protected)

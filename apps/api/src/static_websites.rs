@@ -470,8 +470,16 @@ async fn tls_ask(
     let (site, app) = match config.resource(&name) {
         Some(crate::gateway::Resource::Site(id)) => (Some(id), None),
         Some(crate::gateway::Resource::Application(id)) => (None, Some(id)),
-        None => (None, None),
+        _ => (None, None),
     };
+    if let Some(crate::gateway::Resource::Student(user)) = config.resource(&name) {
+        let allowed: bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM student_hostings h JOIN auth_users u ON u.id=h.user_id WHERE h.user_id=$1 AND h.status='active' AND NOT u.banned)").bind(user).fetch_one(&pool).await?;
+        return if allowed {
+            Ok(StatusCode::OK)
+        } else {
+            Err(missing())
+        };
+    }
     let allowed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM static_websites WHERE (domain=$1 OR id=$2) AND active_release_id IS NOT NULL) OR EXISTS(SELECT 1 FROM applications WHERE id=$3 AND service_kind='application' AND active_container_id IS NOT NULL)")
         .bind(name).bind(site).bind(app).fetch_one(&pool).await?;
     if !allowed {

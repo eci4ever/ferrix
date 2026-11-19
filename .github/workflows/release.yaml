@@ -88,3 +88,21 @@ jobs:
           cache-to: type=gha,scope=release-amd64,mode=max
           provenance: true
           sbom: true
+
+      - name: Publish Student PHP image
+        uses: docker/build-push-action@v6
+        with:
+          context: deploy/student-php
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ needs.source.outputs.image }}-student-php:${{ needs.source.outputs.version }}
+            ${{ needs.source.outputs.image }}-student-php:sha-${{ needs.source.outputs.commit }}
+            ${{ needs.source.outputs.stable == 'true' && format('{0}-student-php:latest', needs.source.outputs.image) || '' }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ needs.source.outputs.commit }}
+          cache-from: type=gha,scope=student-php-amd64
+          cache-to: type=gha,scope=student-php-amd64,mode=max
+          provenance: true
+          sbom: true
