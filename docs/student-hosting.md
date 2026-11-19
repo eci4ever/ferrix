@@ -121,3 +121,18 @@ repository. Browser screenshots are written under `/tmp/ferrix-student-hosting-*
 References: [MariaDB GRANT](https://mariadb.com/docs/server/reference/sql-statements/account-management-sql-statements/grant),
 [account locking](https://mariadb.com/docs/server/security/user-account-management/account-locking)
 and [PDO MySQL](https://www.php.net/ref.pdo-mysql).
+
+## Container grouping
+
+The shared database appears as `mariadb` inside the installation's Compose
+project in OrbStack. Its Docker name is `<project>-mariadb-1`, while PHP uses
+the short private hostname `mariadb`. The existing UUID-based volume name and
+legacy DNS alias are retained, preserving data and existing PHP connections.
+`FERRIX_HOSTING_COMPOSE_PROJECT` selects the display group; local development
+falls back to `COMPOSE_PROJECT_NAME`. Production Compose passes this explicitly.
+
+Ferrix still manages this database through its Docker API and ownership labels.
+It deliberately does not set a Compose config-hash, so ordinary Compose commands
+do not adopt it as a configured YAML service. Hosting reconciliation starts and
+checks it separately. Existing ungrouped containers require a controlled
+replacement with the same volume; never start both against that volume at once.

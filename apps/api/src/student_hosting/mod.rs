@@ -208,7 +208,7 @@ async fn details(
     let mut v = metadata(&state, &h);
     if h.status == "active" {
         v["database_password"] = json!(open(&state, user, &h.password_cipher)?);
-        v["database_host"] = json!(runtime::server_name(&state).await?);
+        v["database_host"] = json!("mariadb");
         v["database_port"] = json!(3306);
     }
     Ok(Json(v))
