@@ -1,4 +1,4 @@
-export type Project = { id: string; name: string; description: string; created_at: string }
+export type Project = { id: string; name: string; description: string; created_at: string; service_count: number }
 export type SystemStatus = { database: boolean; docker: boolean; version: string }
 export type Container = { id: string; name: string; image: string; state: string; status: string }
 
