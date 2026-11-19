@@ -88,3 +88,29 @@ python3 scripts/tests/production.py ferrix:local
 The smoke test uses Caddy's internal CA only for localhost verification, creates a disposable database, and removes only its own Compose project and volumes when finished. It requires Compose 2.24.4+ for its test override. Public production HTTPS continues using Caddy's automatic public certificates.
 
 The runtime image includes Docker CLI and Compose for managed Compose deployments. Hosted service databases and Compose named volumes require separate data backups; the Ferrix metadata dump does not contain those volumes.
+
+## Host a static website
+
+1. Open a project environment and choose **Create Service → Static Website**.
+2. A system administrator with manager access to that organization assigns a
+   DNS hostname they control. Point the domain's A/AAAA records at the server
+   and ensure TCP 80 and 443 are reachable. Use a separate domain from the
+   dashboard when hosting third-party content.
+3. Select your build output folder and publish it. The root must contain
+   `index.html`. Each build supports up to 512 files and 8 MiB total. Each
+   organization can keep up to 10 websites.
+4. Open the HTTPS link. Caddy obtains and renews certificates on demand.
+   Ferrix authorizes issuance only for a registered domain with a published
+   build. If issuance fails, check DNS, firewall rules and Caddy logs.
+5. Choose **Roll back** on a retained release to activate it again. Ferrix
+   retains the five most recent uploads per website.
+
+Static releases are part of the PostgreSQL backup. The website listener runs
+on internal container port 8081 and must not be published directly. The
+dashboard stays on port 8080 behind its own Caddy host rule. Static hosting
+serves files and directory indexes requested with a trailing slash. Configure
+the site's generator to emit HTML for its routes if its URLs need deep links.
+
+For an existing installation, back up the database, then update the installed
+Compose and Caddy configuration from the same release as the image. Preserve
+the existing `.env` and named volumes, including Caddy certificate storage.

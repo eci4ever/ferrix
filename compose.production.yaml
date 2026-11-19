@@ -19,6 +19,7 @@ services:
     restart: unless-stopped
     init: true
     environment:
+      FERRIX_WEBSITE_BIND: 0.0.0.0:8081
       DATABASE_URL: postgres://ferrix:${POSTGRES_PASSWORD:?Missing POSTGRES_PASSWORD}@postgres:5432/ferrix
       FERRIX_AUTH_ORIGIN: https://${FERRIX_DOMAIN:?Missing FERRIX_DOMAIN}
       FERRIX_AUTH_KEY: ${FERRIX_AUTH_KEY:?Missing FERRIX_AUTH_KEY}
