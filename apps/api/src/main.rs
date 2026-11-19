@@ -51,7 +51,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
     }
     let (worker_shutdown, receiver) = tokio::sync::watch::channel(false);
+    let state_shutdown = receiver.clone();
     let worker = tokio::spawn(ferrix_api::deployments::run_worker(state, receiver));
+    let public = if let Ok(bind) = std::env::var("FERRIX_WEBSITE_BIND") {
+        let listener = tokio::net::TcpListener::bind(bind).await?;
+        let public = ferrix_api::static_websites::public_router(pool.clone());
+        let mut shutdown = state_shutdown;
+        Some(tokio::spawn(async move {
+            axum::serve(listener, public)
+                .with_graceful_shutdown(async move {
+                    let _ = shutdown.wait_for(|stop| *stop).await;
+                })
+                .await
+        }))
+    } else {
+        None
+    };
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
@@ -61,6 +76,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = worker_shutdown.send(true);
     })
     .await?;
+    if let Some(public) = public {
+        public.await??;
+    }
     worker.await?;
     pool.close().await;
     Ok(())

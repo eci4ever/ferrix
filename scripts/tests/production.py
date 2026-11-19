@@ -19,7 +19,7 @@ import urllib.request
 
 root = Path(__file__).resolve().parents[2]
 image = sys.argv[1] if len(sys.argv) > 1 else 'ferrix:production-test'
-project = f'ferrix-nmfairus-smoke-{os.getpid()}'
+project = f'ferrix-production-smoke-{os.getpid()}'
 # Fixed loopback-only test ports; fail rather than disturbing an existing service.
 origin = 'https://localhost:18443'
 socket_gid = subprocess.check_output(['docker', 'run', '--rm', '--entrypoint', 'stat', '-v', '/var/run/docker.sock:/var/run/docker.sock:ro', image, '-c', '%g', '/var/run/docker.sock'], text=True).strip()
@@ -28,7 +28,8 @@ with tempfile.TemporaryDirectory(prefix='ferrix-production-') as directory:
     fixture = Path(directory)
     (fixture / '.env').write_text(f'FERRIX_IMAGE={image}\nFERRIX_DOMAIN=localhost\nPOSTGRES_PASSWORD={secrets.token_hex(32)}\nFERRIX_AUTH_KEY={secrets.token_hex(32)}\nDOCKER_GID={socket_gid}\nTZ=Asia/Kuala_Lumpur\n')
     (fixture / '.env').chmod(0o600)
-    (fixture / 'Caddyfile').write_text('localhost {\n tls internal\n reverse_proxy ferrix:8080\n}\n')
+    caddyfile = (root / 'deploy/Caddyfile').read_text()
+    (fixture / 'Caddyfile').write_text(caddyfile.replace('{\n', '{\n    local_certs\n', 1))
     (fixture / 'override.yaml').write_text(f'''services:
   ferrix:
     environment:
@@ -100,11 +101,43 @@ with tempfile.TemporaryDirectory(prefix='ferrix-production-') as directory:
             assert clock['utc_offset'] == 'UTC+08:00'
         with request('/api/v1/projects', {'name': 'Persistent production test'}) as response:
             assert response.status in (200, 201)
+            project_id = json.load(response)['id']
+        with request(f'/api/v1/projects/{project_id}/environments') as response:
+            environment_id = json.load(response)['environments'][0]['id']
+        with request(f'/api/v1/environments/{environment_id}/static-websites', {'name': 'Production website'}) as response:
+            site = json.load(response)
+        site_api = '/api/v1/static-websites/' + site['id']
+        website_domain = 'website.ferrix.test'
+        with request(site_api + '/domain', {'domain': website_domain}) as response:
+            assert response.status == 204
+
+        ca = fixture / 'caddy-root.crt'
+        subprocess.run(compose + ['cp', 'proxy:/data/caddy/pki/authorities/local/root.crt', str(ca)], check=True)
+
+        def website(path='/'):
+            return subprocess.check_output([
+                'curl', '--silent', '--show-error', '--fail', '--cacert', str(ca), '--max-time', '10',
+                '--noproxy', '*', '--resolve', f'{website_domain}:18443:127.0.0.1',
+                f'https://{website_domain}:18443{path}',
+            ])
+
+        releases = []
+        for content in ('first build', 'second build'):
+            files = [{'path': 'index.html', 'hex': content.encode().hex()}]
+            with request(site_api + '/publish', {'files': files}) as response:
+                assert response.status == 201
+            with request(site_api) as response:
+                releases.append(json.load(response)['site']['active_release_id'])
+            assert website().decode() == content
+        with request(site_api + '/rollback', {'release_id': releases[0]}) as response:
+            assert response.status == 204
+        assert website() == b'first build'
         subprocess.run(compose + ['restart', 'ferrix'], check=True)
         for attempt in range(20):
             try:
                 with request('/api/v1/projects') as response:
                     assert 'Persistent production test' in response.read().decode()
+                assert website() == b'first build'
                 break
             except (OSError, urllib.error.URLError):
                 if attempt == 19:
@@ -114,6 +147,6 @@ with tempfile.TemporaryDirectory(prefix='ferrix-production-') as directory:
             assert response.status in (200, 204)
         with request('/api/v1/auth/sign-in', {'email': registration['email'], 'password': registration['password']}) as response:
             assert response.status == 200
-        print('Production smoke passed: HTTPS, SPA routes/assets, migrations, secure cookies, first admin, origin checks, clock, restart persistence and login.')
+        print('Production smoke passed: HTTPS, SPA routes/assets, migrations, secure cookies, first admin, origin checks, clock, website publish and rollback, restart persistence and login.')
     finally:
         subprocess.run(compose + ['down', '-v', '--remove-orphans'], check=True)

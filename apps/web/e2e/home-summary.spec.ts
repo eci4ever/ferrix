@@ -21,7 +21,7 @@ test('Home shows summary totals, attention links, empty and failure states on mo
   })
   await page.goto('/dashboard')
   await expect(page.getByText('102', { exact: true })).toBeVisible()
-  await expect(page.getByText('4 applications · 3 databases · 1 Compose')).toBeVisible()
+  await expect(page.getByText('4 applications · 3 databases · 1 Compose · 0 websites')).toBeVisible()
   await expect(page.getByRole('link', { name: 'Failed service', exact: true })).toHaveAttribute('href', '/projects/project/services/service')
   await page.setViewportSize({ width: 320, height: 900 })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)

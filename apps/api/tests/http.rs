@@ -234,6 +234,7 @@ async fn postgres_auth_security_and_tenant_isolation() {
     assert_eq!(status, StatusCode::OK);
     let org2 = org2["id"].as_str().unwrap();
     check_home_summary(&app, &pool, &owner, org1, org2).await;
+    check_static_website(&app, &pool, &owner, org1, org2).await;
     assert_eq!(
         post(
             &app,
@@ -797,4 +798,156 @@ async fn check_home_summary(
         .execute(pool)
         .await
         .unwrap();
+}
+
+async fn check_static_website(
+    app: &axum::Router,
+    pool: &sqlx::PgPool,
+    owner: &str,
+    org1: &str,
+    org2: &str,
+) {
+    let projects = get(app, "/api/v1/projects", owner).await.1;
+    let project = projects[0]["id"].as_str().unwrap();
+    let envs = get(
+        app,
+        &format!("/api/v1/projects/{project}/environments"),
+        owner,
+    )
+    .await
+    .1;
+    let env = envs["environments"][0]["id"].as_str().unwrap();
+    let (status, site, _) = post(
+        app,
+        &format!("/api/v1/environments/{env}/static-websites"),
+        json!({"name":"Docs"}),
+        owner,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let path = format!("/api/v1/static-websites/{}", site["id"].as_str().unwrap());
+    assert_eq!(get(app, &path, "").await.0, StatusCode::UNAUTHORIZED);
+    let public = ferrix_api::static_websites::public_router(pool.clone());
+    let ask = "/_ferrix/tls-ask?domain=docs.example.test";
+    assert_eq!(get(&public, ask, "").await.0, StatusCode::NOT_FOUND);
+    assert_eq!(
+        post(
+            app,
+            &format!("{path}/domain"),
+            json!({"domain":"Docs.Example.Test."}),
+            owner
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(get(&public, ask, "").await.0, StatusCode::NOT_FOUND);
+    let publish = format!("{path}/publish");
+    assert_eq!(
+        post(
+            app,
+            &publish,
+            json!({"files":[{"path":"../index.html","hex":"61"}]}),
+            owner
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let mut first = Value::Null;
+    for content in ["first", "second"] {
+        let build = json!({"files":[{"path":"index.html","hex":hex::encode(content)},{"path":"assets/app.js","hex":"61"}]});
+        assert_eq!(
+            post(app, &publish, build, owner).await.0,
+            StatusCode::CREATED
+        );
+        let details = get(app, &path, owner).await.1;
+        if first.is_null() {
+            first = details["site"]["active_release_id"].clone();
+        }
+        assert_eq!(get(&public, ask, "").await.0, StatusCode::NO_CONTENT);
+        let response = hosted(&public, "docs.example.test", "/").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response.headers()["content-type"],
+            "text/html; charset=utf-8"
+        );
+        assert_eq!(to_bytes(response.into_body(), 1024).await.unwrap(), content);
+    }
+    assert_eq!(
+        hosted(&public, "other.example.test", "/").await.status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        hosted(&public, "docs.example.test", "/api/v1/auth/session")
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        hosted(&public, "docs.example.test", "/%2e%2e/index.html")
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    let switch = "/api/v1/auth/organizations/switch";
+    assert_eq!(
+        post(app, switch, json!({"organization_id":org2}), owner)
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(get(app, &path, owner).await.0, StatusCode::NOT_FOUND);
+    let rollback = format!("{path}/rollback");
+    assert_eq!(
+        post(app, &rollback, json!({"release_id":first}), owner)
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        post(app, switch, json!({"organization_id":org1}), owner)
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        post(app, &rollback, json!({"release_id":first}), owner)
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    let response = hosted(&public, "docs.example.test", "/").await;
+    assert_eq!(to_bytes(response.into_body(), 1024).await.unwrap(), "first");
+    assert_eq!(
+        call(
+            app,
+            "DELETE",
+            &path,
+            json!({"name":"Docs"}),
+            owner,
+            Some(ORIGIN)
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(get(&public, ask, "").await.0, StatusCode::NOT_FOUND);
+    assert_eq!(
+        hosted(&public, "docs.example.test", "/").await.status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+async fn hosted(app: &axum::Router, host: &str, path: &str) -> axum::response::Response {
+    app.clone()
+        .oneshot(
+            Request::builder()
+                .uri(path)
+                .header("host", host)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap()
 }
