@@ -119,6 +119,8 @@ export function StaticWebsite({ projectId, siteId, canManage, canSetDomain }: {
       <div>
         <h1 className="break-words text-2xl font-semibold">{details.site.name}</h1>
         <p className="text-sm text-muted-foreground">Static Website</p>
+        {details.site.active_release_id ? <Button asChild variant="outline" className="mt-3"><a href={`/api/v1/static-websites/${siteId}/preview/`} target="_blank" rel="noopener noreferrer">Preview</a></Button> : <Button variant="outline" className="mt-3" disabled>Preview</Button>}
+        <p className="mt-2 text-xs text-muted-foreground">{details.site.active_release_id ? 'Preview the published HTML and styles. Scripts and forms are disabled; use a domain to test interactive behavior.' : 'Publish a build to enable Preview.'}</p>
       </div>
       <Card>
         <CardHeader>
