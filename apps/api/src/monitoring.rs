@@ -26,7 +26,7 @@ pub(crate) struct Sample {
     transmit_bps: Option<f64>,
 }
 #[derive(Clone, Default, Serialize)]
-struct DockerUsage {
+pub(crate) struct DockerUsage {
     at: Option<i64>,
     images: Option<u64>,
     containers: Option<u64>,
@@ -301,6 +301,10 @@ fn docker_usage(value: serde_json::Value) -> DockerUsage {
         build_cache: sum_sizes(&value["BuildCache"], "Size"),
         error: None,
     }
+}
+
+pub(crate) fn cached_docker_usage(cache: &Monitor) -> DockerUsage {
+    cache.read().unwrap().docker.clone()
 }
 
 pub(crate) async fn get(

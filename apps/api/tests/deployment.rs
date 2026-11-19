@@ -155,6 +155,15 @@ async fn docker_deployment_flow_and_isolation() {
         assert_eq!(call(&app,"/api/v1/applications/00000000-0000-0000-0000-000000000000/deploy","",Some(json!({}))).await.0,StatusCode::UNAUTHORIZED);
         let (code,_,owner)=call(&app,"/api/v1/auth/setup","",Some(json!({"name":"Deploy Owner","email":"owner@example.com","password":PASSWORD}))).await;
         assert_eq!(code,StatusCode::OK);
+        for section in ["images", "volumes", "networks", "swarm", "events", "disk-usage", "health"] {
+            let (code, body, _) = call(&app, &format!("/api/v1/docker/{section}"), &owner, None).await;
+            assert_eq!(code, StatusCode::OK, "{section}: {body}");
+            match section {
+                "images" | "volumes" | "networks" | "events" => assert!(body.is_array(), "{section}"),
+                "health" => assert_eq!(body["connected"], true),
+                _ => assert!(body.is_object(), "{section}"),
+            }
+        }
         let identity=call(&app,"/api/v1/auth/session",&owner,None).await.1;
         let org=identity["organization_id"].as_str().unwrap();
         let (code,project,_)=call(&app,"/api/v1/projects",&owner,Some(json!({"name":"Docker test"}))).await;
