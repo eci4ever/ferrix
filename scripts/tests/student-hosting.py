@@ -60,7 +60,7 @@ try:
  subprocess.run(['cargo','build','-p','ferrix-api'],check=True,env=env)
  subprocess.run(['docker','network','create','--label',f'io.ferrix.ingress={network}',network],check=True,env=env,stdout=subprocess.DEVNULL)
  query=urllib.parse.parse_qsl(parsed.query)+[('options','-csearch_path='+schema)]
- runtime=env|{'DATABASE_URL':urllib.parse.urlunsplit(parsed._replace(query=urllib.parse.urlencode(query))),'FERRIX_WEB_PORT':str(web_port),'FERRIX_AUTH_ORIGIN':origin,'FERRIX_AUTH_KEY':secrets.token_hex(32),'FERRIX_BIND':f'127.0.0.1:{api_port}','FERRIX_WEBSITE_BIND':f'127.0.0.1:{public_port}','FERRIX_AUTO_DOMAIN':'localhost','FERRIX_WEBSITE_HTTPS':'false','FERRIX_WEBSITE_HTTP_PORT':str(edge_port),'FERRIX_INGRESS_NETWORK':network,'FERRIX_STUDENT_PHP_IMAGE':'ferrix-student-php:local','FERRIX_PUBLIC_IP':''}
+ runtime=env|{'FERRIX_HOSTING_COMPOSE_PROJECT':schema,'DATABASE_URL':urllib.parse.urlunsplit(parsed._replace(query=urllib.parse.urlencode(query))),'FERRIX_WEB_PORT':str(web_port),'FERRIX_AUTH_ORIGIN':origin,'FERRIX_AUTH_KEY':secrets.token_hex(32),'FERRIX_BIND':f'127.0.0.1:{api_port}','FERRIX_WEBSITE_BIND':f'127.0.0.1:{public_port}','FERRIX_AUTO_DOMAIN':'localhost','FERRIX_WEBSITE_HTTPS':'false','FERRIX_WEBSITE_HTTP_PORT':str(edge_port),'FERRIX_INGRESS_NETWORK':network,'FERRIX_STUDENT_PHP_IMAGE':'ferrix-student-php:local','FERRIX_PUBLIC_IP':''}
  with open('/tmp/ferrix-student-hosting-test.log','w+b') as log:
   process=subprocess.Popen([str(root/'target/debug/ferrix-api')],cwd=root,env=runtime,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
   for _ in range(100):
@@ -90,6 +90,11 @@ try:
   api(alice,f'/student-hosting/{aid}/upload',{'files':[{'path':'index.php','hex':'00'}]},409)
   for user in [aid,bid]:api(admin,f'/student-hosting/{user}/approve',{},202)
   a=ready(aid);b=ready(bid)
+  server=json.loads(subprocess.check_output(['docker','inspect',schema+'-mariadb-1'],text=True))[0]
+  assert server['Config']['Labels']['com.docker.compose.project']==schema
+  assert server['Config']['Labels']['com.docker.compose.service']=='mariadb'
+  assert 'com.docker.compose.config-hash' not in server['Config']['Labels']
+  assert next(m['Name'] for m in server['Mounts'] if m['Destination']=='/var/lib/mysql')=='ferrix-students-db-'+scope
   assert a['database_host']==b['database_host'] and a['database_user']!=b['database_user'] and a['database_name']!=b['database_name']
   code='''<?php $pdo=new PDO('mysql:host='.getenv('DB_HOST').';dbname='.getenv('DB_NAME'),getenv('DB_USER'),getenv('DB_PASSWORD'),[PDO::ATTR_ERRMODE=>PDO::ERRMODE_EXCEPTION]);$pdo->exec('CREATE TABLE IF NOT EXISTS notes(id INT PRIMARY KEY, value VARCHAR(50))');$pdo->exec("INSERT IGNORE INTO notes VALUES(1,'persistent')");echo $pdo->query('SELECT value FROM notes WHERE id=1')->fetchColumn();try{$pdo->exec('USE `'''+b['database_name']+'''`');http_response_code(500);echo 'LEAK';}catch(PDOException $e){if(($e->errorInfo[1]??0)!==1044){http_response_code(500);}echo ' ISOLATED';} ?>'''
   api(alice,f'/student-hosting/{aid}/upload',{'files':[{'path':'index.php','hex':code.encode().hex()},{'path':'assets/test.txt','hex':b'asset'.hex()}]},204)

@@ -20,8 +20,23 @@ async fn scope(state: &AppState) -> Result<String> {
             .await?;
     Ok(id.simple().to_string())
 }
+fn compose_project() -> Option<String> {
+    std::env::var("FERRIX_HOSTING_COMPOSE_PROJECT")
+        .or_else(|_| std::env::var("COMPOSE_PROJECT_NAME"))
+        .ok()
+        .filter(|name| {
+            !name.is_empty()
+                && name.len() <= 63
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"_-".contains(&b))
+        })
+}
 pub(super) async fn server_name(state: &AppState) -> Result<String> {
-    Ok(format!("ferrix-students-db-{}", scope(state).await?))
+    Ok(match compose_project() {
+        Some(project) => format!("{project}-mariadb-1"),
+        None => format!("ferrix-students-db-{}", scope(state).await?),
+    })
 }
 async fn network(state: &AppState) -> Result<String> {
     Ok(format!("ferrix-students-{}", scope(state).await?))
@@ -165,6 +180,16 @@ async fn ensure_server(state: &AppState) -> Result<()> {
     let name = server_name(state).await?;
     let net = network(state).await?;
     let expected = labels(state, None).await?;
+    // Keep the original volume identity even when the display/container name changes.
+    let storage = format!("ferrix-students-db-{}", scope(state).await?);
+    let mut container_labels = expected.clone();
+    if let Some(project) = compose_project() {
+        container_labels.insert("com.docker.compose.project".into(), project);
+        container_labels.insert("com.docker.compose.service".into(), "mariadb".into());
+        container_labels.insert("com.docker.compose.container-number".into(), "1".into());
+        // No Compose config-hash: Ferrix retains lifecycle ownership. Compose
+        // must not adopt this dynamically configured database as a YAML service.
+    }
     let info = match state.docker.inspect_network(&net, None).await {
         Ok(n) => n,
         Err(bollard::errors::Error::DockerResponseServerError {
@@ -216,8 +241,13 @@ async fn ensure_server(state: &AppState) -> Result<()> {
         Err(bollard::errors::Error::DockerResponseServerError {
             status_code: 404, ..
         }) => {
+            // A legacy container must be retired before changing its name.
+            // Never start a second MariaDB process against the same data volume.
+            if name != storage && state.docker.inspect_container(&storage, None).await.is_ok() {
+                return Err(unavailable());
+            }
             image(state, "mariadb:11.4").await?;
-            volume(state, &name, None).await?;
+            volume(state, &storage, None).await?;
             state
                 .docker
                 .create_container(
@@ -225,7 +255,7 @@ async fn ensure_server(state: &AppState) -> Result<()> {
                     ContainerCreateBody {
                         image: Some("mariadb:11.4".into()),
                         env: Some(vec![format!("MARIADB_ROOT_PASSWORD={pass}")]),
-                        labels: Some(expected),
+                        labels: Some(container_labels),
                         host_config: Some(HostConfig {
                             network_mode: Some(net.clone()),
                             memory: Some(1024 * 1024 * 1024),
@@ -234,7 +264,7 @@ async fn ensure_server(state: &AppState) -> Result<()> {
                             security_opt: Some(vec!["no-new-privileges:true".into()]),
                             mounts: Some(vec![Mount {
                                 target: Some("/var/lib/mysql".into()),
-                                source: Some(name.clone()),
+                                source: Some(storage.clone()),
                                 typ: Some(MountTypeEnum::VOLUME),
                                 ..Default::default()
                             }]),
@@ -248,7 +278,11 @@ async fn ensure_server(state: &AppState) -> Result<()> {
                             endpoints_config: Some(HashMap::from([(
                                 net.clone(),
                                 EndpointSettings {
-                                    aliases: Some(vec![name.clone()]),
+                                    aliases: Some(vec![
+                                        name.clone(),
+                                        storage.clone(),
+                                        "mariadb".into(),
+                                    ]),
                                     ..Default::default()
                                 },
                             )])),
@@ -324,7 +358,7 @@ async fn provision(state: &AppState, user: Uuid) -> Result<()> {
                 user: Some("33:33".into()),
                 labels: Some(labels(state, Some(user)).await?),
                 env: Some(vec![
-                    format!("DB_HOST={}", server_name(state).await?),
+                    "DB_HOST=mariadb".into(),
                     format!("DB_NAME={}", h.database_name),
                     format!("DB_USER={}", h.database_user),
                     format!("DB_PASSWORD={pass}"),
