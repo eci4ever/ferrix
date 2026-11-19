@@ -17,6 +17,8 @@ pub(crate) fn routes(state: AppState) -> Router<AppState> {
     let reads = Router::new()
         .route("/environments/{id}/static-websites", get(list))
         .route("/static-websites/{id}", get(details))
+        .route("/static-websites/{id}/preview/", get(preview_index))
+        .route("/static-websites/{id}/preview/{*path}", get(preview_file))
         .route_layer(from_fn_with_state(
             state.clone(),
             crate::auth::sessions::identify,
@@ -473,6 +475,42 @@ fn request_path(path: &str) -> Option<String> {
     valid_path(&path).then_some(path)
 }
 
+async fn preview_index(
+    State(state): State<AppState>,
+    id: Identity,
+    Path(site): Path<Uuid>,
+) -> Result<Response, ApiError> {
+    preview(&state, &id, site, "index.html").await
+}
+
+async fn preview_file(
+    State(state): State<AppState>,
+    id: Identity,
+    Path((site, path)): Path<(Uuid, String)>,
+) -> Result<Response, ApiError> {
+    if !valid_path(&path) {
+        return Err(missing());
+    }
+    preview(&state, &id, site, &path).await
+}
+
+async fn preview(
+    state: &AppState,
+    id: &Identity,
+    site: Uuid,
+    path: &str,
+) -> Result<Response, ApiError> {
+    let content: Option<Vec<u8>> = sqlx::query_scalar("SELECT f.content FROM static_websites s JOIN environments e ON e.id=s.environment_id JOIN projects p ON p.id=e.project_id JOIN static_files f ON f.site_id=s.id AND f.release_id=s.active_release_id WHERE s.id=$1 AND p.organization_id=$2 AND f.path=$3")
+        .bind(site).bind(id.organization_id).bind(path).fetch_optional(&state.pool).await?;
+    let mut response = static_response(path, content.ok_or_else(missing)?);
+    // Uploaded HTML must not execute with dashboard privileges or submit credentialed forms.
+    response.headers_mut().insert(header::CONTENT_SECURITY_POLICY, "sandbox; default-src 'none'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; font-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'".parse().unwrap());
+    response
+        .headers_mut()
+        .insert(header::REFERRER_POLICY, "no-referrer".parse().unwrap());
+    Ok(response)
+}
+
 async fn file(
     State(pool): State<PgPool>,
     headers: HeaderMap,
@@ -494,6 +532,10 @@ async fn file(
     .fetch_optional(&pool)
     .await?;
     let content = content.ok_or(ApiError(StatusCode::NOT_FOUND, "Page not found."))?;
+    Ok(static_response(&path, content))
+}
+
+fn static_response(path: &str, content: Vec<u8>) -> Response {
     let mime = match path
         .rsplit('.')
         .next()
@@ -519,7 +561,7 @@ async fn file(
         "txt" => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
     };
-    Ok((
+    (
         [
             (header::CONTENT_TYPE, mime),
             (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
@@ -527,5 +569,5 @@ async fn file(
         ],
         content,
     )
-        .into_response())
+        .into_response()
 }

@@ -53,6 +53,7 @@ test('create, publish and roll back a static website from a project', async ({ p
     await page.getByLabel('Website name').fill('Documentation')
     await page.getByRole('button', { name: 'Create Static Website' }).click()
     await page.getByRole('link', { name: 'Documentation' }).click()
+    await expect(page.getByRole('button', { name: 'Preview', exact: true })).toBeDisabled()
     await page.getByLabel('DNS hostname').fill('docs.example.test')
     await page.getByRole('button', { name: 'Save domain' }).click()
     await expect(page.getByText('Domain saved.')).toBeVisible()
@@ -63,6 +64,8 @@ test('create, publish and roll back a static website from a project', async ({ p
       await expect(page.getByRole('button', { name: 'Publish build' })).toBeEnabled()
     }
     await expect(page.getByRole('link', { name: 'Open docs.example.test' })).toHaveAttribute('href', 'https://docs.example.test/')
+    await expect(page.getByRole('link', { name: 'Preview', exact: true })).toHaveAttribute('href', '/api/v1/static-websites/website/preview/')
+    await expect(page.getByRole('link', { name: 'Preview', exact: true })).toHaveAttribute('target', '_blank')
     await page.getByRole('button', { name: 'Roll back' }).click()
     await expect(page.getByText('Release activated.')).toBeVisible()
     await expect(page.getByRole('list').filter({ hasText: 'release-' }).getByRole('listitem').nth(1)).toContainText('Live')

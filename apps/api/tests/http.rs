@@ -828,6 +828,9 @@ async fn check_static_website(
     let path = format!("/api/v1/static-websites/{}", site["id"].as_str().unwrap());
     assert_eq!(get(app, &path, "").await.0, StatusCode::UNAUTHORIZED);
     let public = ferrix_api::static_websites::public_router(pool.clone());
+    let preview = format!("{path}/preview/");
+    assert_eq!(get(app, &preview, "").await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(get(app, &preview, owner).await.0, StatusCode::NOT_FOUND);
     let ask = "/_ferrix/tls-ask?domain=docs.example.test";
     assert_eq!(get(&public, ask, "").await.0, StatusCode::NOT_FOUND);
     assert_eq!(
@@ -873,6 +876,29 @@ async fn check_static_website(
             "text/html; charset=utf-8"
         );
         assert_eq!(to_bytes(response.into_body(), 1024).await.unwrap(), content);
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(&preview)
+                    .header("cookie", owner)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(
+            response.headers()["content-security-policy"]
+                .to_str()
+                .unwrap()
+                .starts_with("sandbox;")
+        );
+        assert_eq!(to_bytes(response.into_body(), 1024).await.unwrap(), content);
+        assert_eq!(
+            get(app, &format!("{preview}assets/app.js"), owner).await.0,
+            StatusCode::OK
+        );
     }
     assert_eq!(
         hosted(&public, "other.example.test", "/").await.status(),
@@ -898,6 +924,7 @@ async fn check_static_website(
         StatusCode::NO_CONTENT
     );
     assert_eq!(get(app, &path, owner).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(get(app, &preview, owner).await.0, StatusCode::NOT_FOUND);
     let rollback = format!("{path}/rollback");
     assert_eq!(
         post(app, &rollback, json!({"release_id":first}), owner)
@@ -918,6 +945,30 @@ async fn check_static_website(
         StatusCode::NO_CONTENT
     );
     let response = hosted(&public, "docs.example.test", "/").await;
+    assert_eq!(to_bytes(response.into_body(), 1024).await.unwrap(), "first");
+    assert_eq!(
+        post(
+            app,
+            &format!("{path}/domain"),
+            json!({"domain":null}),
+            owner
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    let response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(&preview)
+                .header("cookie", owner)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(to_bytes(response.into_body(), 1024).await.unwrap(), "first");
     assert_eq!(
         call(

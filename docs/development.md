@@ -51,6 +51,16 @@ Do not use a wildcard safe.directory. Existing GitHub credentials and commit ide
 
 The dashboard reads authenticated `GET /api/v1/server-time` for the server timestamp, IANA timezone and current UTC offset. It ticks locally between synchronizations every 60 seconds and synchronizes again when the tab becomes visible. Clock requests validate the session without extending its inactivity expiry. The timezone follows a valid `TZ` environment override (for containers), otherwise the server OS, falling back to UTC if unavailable.
 
+### Static website preview
+
+The Static Website page enables **Preview** after a build is published. It opens
+the active release in a new tab without a domain or `FERRIX_WEBSITE_BIND`.
+Preview requires a valid session and membership in the website's organization.
+HTML, inline styles and relative image/CSS assets are supported. Scripts, forms
+and embedded frames are disabled by a CSP sandbox to isolate uploads from the
+dashboard. Root-relative asset URLs and interactive builds require the website's
+dedicated hostname instead. Preview follows the active release after rollback.
+
 ## Pull request CI
 
 The `CI` GitHub Actions workflow runs on every pull request, including updates,
