@@ -66,6 +66,8 @@ fn open(state: &AppState, id: Uuid, cipher: &[u8]) -> Result<String, ApiError> {
 #[derive(sqlx::FromRow, Serialize)]
 pub(crate) struct Hosting {
     pub user_id: Uuid,
+    #[serde(skip)]
+    pub unix_uid: i32,
     pub name: String,
     pub email: String,
     pub status: String,
@@ -77,7 +79,7 @@ pub(crate) struct Hosting {
     pub error: Option<String>,
     pub created_at: chrono::DateTime<chrono::Utc>,
 }
-const SELECT: &str = "SELECT h.user_id,u.name,u.email,h.status,h.database_name,h.database_user,h.password_cipher,h.container_id,h.error,h.created_at FROM student_hostings h JOIN auth_users u ON u.id=h.user_id";
+const SELECT: &str = "SELECT h.user_id,h.unix_uid,u.name,u.email,h.status,h.database_name,h.database_user,h.password_cipher,h.container_id,h.error,h.created_at FROM student_hostings h JOIN auth_users u ON u.id=h.user_id";
 pub fn routes(state: AppState) -> Router<AppState> {
     Router::new()
         .route("/student-hosting", get(list))

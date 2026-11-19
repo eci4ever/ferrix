@@ -27,6 +27,8 @@ services:
     volumes:
       - ./deploy/${FERRIX_LOCAL_CADDYFILE:-Caddyfile.local}:/etc/caddy/Caddyfile:ro
       - ferrix_caddy_data:/data
+      - hosting_files:/srv/hosting:ro
+      - hosting_sockets:/run/hosting:ro
     networks: [default, ingress]
     read_only: true
     tmpfs: [/config, /tmp]
@@ -41,3 +43,14 @@ volumes:
   ferrix_postgres:
   ferrix_caddy_data:
 
+
+  hosting_files:
+    name: ${COMPOSE_PROJECT_NAME:-ferrix}_hosting_files
+    labels:
+      io.ferrix.hosting.project: ${COMPOSE_PROJECT_NAME:-ferrix}
+      io.ferrix.hosting.purpose: files
+  hosting_sockets:
+    name: ${COMPOSE_PROJECT_NAME:-ferrix}_hosting_sockets
+    labels:
+      io.ferrix.hosting.project: ${COMPOSE_PROJECT_NAME:-ferrix}
+      io.ferrix.hosting.purpose: sockets

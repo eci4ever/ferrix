@@ -1,8 +1,10 @@
-FROM php:8.4-apache
-RUN docker-php-ext-install pdo_mysql mysqli \
-    && printf 'expose_php=Off\ndisplay_errors=Off\nlog_errors=On\nupload_max_filesize=8M\npost_max_size=10M\nmemory_limit=128M\nmax_execution_time=30\nopcache.revalidate_freq=0\n' > /usr/local/etc/php/conf.d/student.ini \
-    && printf '<Directory /var/www/html>\nAllowOverride None\nOptions -Indexes -ExecCGI\n</Directory>\n' > /etc/apache2/conf-enabled/student.conf
-HEALTHCHECK --interval=10s --timeout=3s CMD php -r '$s=@fsockopen("127.0.0.1",80); exit($s?0:1);'
-
-COPY index.php /var/www/html/index.php
-RUN chown -R www-data:www-data /var/www/html
+FROM php:8.4-fpm
+RUN apt-get update && apt-get install -y --no-install-recommends python3 passwd \
+    && rm -rf /var/lib/apt/lists/* \
+    && docker-php-ext-install pdo_mysql mysqli \
+    && printf 'expose_php=Off\ndisplay_errors=Off\nlog_errors=On\nmemory_limit=64M\nmax_execution_time=30\nopcache.enable=0\nffi.enable=false\nenable_dl=Off\n' > /usr/local/etc/php/conf.d/hosting.ini
+COPY hosting-manager.py /usr/local/bin/hosting-manager
+COPY index.php /usr/local/share/hosting-index.php
+RUN chmod 0755 /usr/local/bin/hosting-manager
+ENTRYPOINT ["/usr/local/bin/hosting-manager", "init"]
+HEALTHCHECK --interval=5s --timeout=3s CMD test -S /run/hosting/_health.sock

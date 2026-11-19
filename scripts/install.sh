@@ -74,7 +74,7 @@ timezone=${FERRIX_TIMEZONE:-UTC}
 [[ $timezone =~ ^[a-zA-Z0-9_+/-]+$ && -f /usr/share/zoneinfo/$timezone && $timezone != *..* ]] || fail 'Invalid FERRIX_TIMEZONE.'
 cat > "$staging/.env" <<ENV
 FERRIX_IMAGE=$image
-FERRIX_STUDENT_PHP_IMAGE=ghcr.io/eci4ever/ferrix-student-php:${version}
+FERRIX_HOSTING_PHP_IMAGE=ghcr.io/eci4ever/ferrix-php-fpm:${version}
 FERRIX_DOMAIN=$domain
 FERRIX_PUBLIC_IP=$public_ip
 FERRIX_AUTO_DOMAIN=sslip.io

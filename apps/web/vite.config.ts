@@ -1,5 +1,6 @@
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
+import { localOriginRedirect } from './src/lib/dev-origin'
 import tailwindcss from '@tailwindcss/vite'
 import { fileURLToPath, URL } from 'node:url'
 
@@ -7,7 +8,17 @@ export default defineConfig(() => {
   const env = loadEnv('development', fileURLToPath(new URL('../..', import.meta.url)), '')
   const api = `http://${env.FERRIX_BIND || '127.0.0.1:8080'}`
   return {
-  plugins: [react(), tailwindcss()],
+  plugins: [{
+    name: 'ferrix-local-auth-origin',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const location = localOriginRedirect(env.FERRIX_AUTH_ORIGIN ?? '', req.headers.host, req.method, req.headers.accept, req.url)
+        if (!location) { next(); return }
+        res.writeHead(307, { Location: location, 'Cache-Control': 'no-store' })
+        res.end()
+      })
+    },
+  }, react(), tailwindcss()],
   resolve: { alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) } },
   build: {
     rollupOptions: {

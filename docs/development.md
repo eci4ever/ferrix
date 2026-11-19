@@ -196,3 +196,12 @@ macOS may request permission to trust the certificate. Restart the browser
 after installing it. Firefox with a separate trust store may need its own
 certificate import. Trust applies to this user's local Caddy authority.
 See [Caddy local HTTPS](https://caddyserver.com/docs/automatic-https#local-https).
+
+### Local authentication address
+
+Open the dashboard at the exact `FERRIX_AUTH_ORIGIN` from your `.env`. Vite
+redirects document visits from equivalent loopback names (`localhost`,
+`127.0.0.1`, `::1`) to that address on the same port, preserving the path and
+query. This keeps cookies and form origins consistent for login and student
+registration. API requests are not redirected; strict backend Origin checks
+remain in place. Other users' ports and production domains are not affected.
