@@ -323,6 +323,28 @@ async fn postgres_auth_security_and_tenant_isolation() {
         get(&app, "/api/v1/monitoring", &member).await.0,
         StatusCode::FORBIDDEN
     );
+    for section in [
+        "images",
+        "volumes",
+        "networks",
+        "swarm",
+        "events",
+        "disk-usage",
+        "health",
+    ] {
+        let path = format!("/api/v1/docker/{section}");
+        assert_eq!(get(&app, &path, "").await.0, StatusCode::UNAUTHORIZED);
+        assert_eq!(get(&app, &path, &member).await.0, StatusCode::FORBIDDEN);
+    }
+    assert_eq!(
+        get(&app, "/api/v1/docker/disk-usage", &owner).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        get(&app, "/api/v1/docker/unknown", &owner).await.0,
+        StatusCode::NOT_FOUND
+    );
+
     let member_id = member_id["user_id"].as_str().unwrap();
     assert_eq!(
         get(&app, "/api/v1/home-summary", &member).await.0,

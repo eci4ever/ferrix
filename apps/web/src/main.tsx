@@ -1,8 +1,8 @@
-import { StrictMode, useEffect, useRef, useState } from 'react'
+import { createContext, useContext, StrictMode, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createRootRoute, createRoute, createRouter, RouterProvider, Outlet, Link, Navigate, useRouter, useRouterState } from '@tanstack/react-router'
-import { Box, Layers3, ArrowRight, RefreshCw, Plus, Folder, CheckCircle2, CircleAlert } from 'lucide-react'
+import { Layers3, ArrowRight, RefreshCw, Plus, Folder, CheckCircle2, CircleAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Input } from '@/components/ui/input'
@@ -12,31 +12,34 @@ import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert'
 import { Empty, EmptyHeader, EmptyMedia, EmptyTitle, EmptyDescription } from '@/components/ui/empty'
 import { Skeleton } from '@/components/ui/skeleton'
 import { load, request } from '@/lib/api'
-import type { Project, SystemStatus, Container, HomeSummary } from '@/lib/api'
+import type { Project, SystemStatus, HomeSummary } from '@/lib/api'
 import { LoginPage, SecurityPage, TeamPage, AdminPage } from './auth'
 import type { Identity, Security, Session, Audit, Organization, Member, Invitation, User } from './auth'
 import { ServerClock } from '@/components/server-clock'
 import { AppSidebar } from '@/components/app-sidebar'
 import { SidebarProvider, SidebarInset, SidebarTrigger } from '@/components/ui/sidebar'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+import { TooltipProvider } from '@/components/ui/tooltip'
 import { Breadcrumb, BreadcrumbList, BreadcrumbItem, BreadcrumbLink, BreadcrumbPage, BreadcrumbSeparator } from '@/components/ui/breadcrumb'
 import { Separator } from '@/components/ui/separator'
 import { Card, CardHeader, CardTitle, CardDescription, CardAction, CardContent } from '@/components/ui/card'
 import { LandingPage } from './landing'
 import { ProjectServices, ServiceWorkspace } from './project-services'
 import { MonitoringPage } from './monitoring'
-import { DataTable } from '@/components/data-table'
+import { DockerPage } from './docker'
 import './index.css'
 
 function ErrorNotice({ message }: { message: string }) {
   return <Alert variant="destructive"><CircleAlert /><AlertTitle>Something needs attention</AlertTitle><AlertDescription>{message}</AlertDescription></Alert>
 }
 
+const WorkspaceRefresh = createContext(0)
+
 function Shell() {
   const { status, account, setup, organizations } = rootRoute.useLoaderData()
   const router = useRouter()
   const pathname = useRouterState({ select: state => state.location.pathname })
   const [refreshing, setRefreshing] = useState(false)
+  const [refreshVersion, setRefreshVersion] = useState(0)
   const [accountBusy, setAccountBusy] = useState(false)
   const [refreshError, setRefreshError] = useState('')
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
@@ -49,6 +52,7 @@ function Shell() {
   }, [theme])
   async function refresh() {
     setRefreshing(true); setRefreshError('')
+    setRefreshVersion(version => version + 1)
     try { await router.invalidate() }
     catch { setRefreshError('Refresh failed. Please try again.') }
     finally { setRefreshing(false) }
@@ -80,7 +84,7 @@ function Shell() {
       <div className="flex min-w-0 flex-1 flex-col gap-6 p-4 pt-2 md:p-6 md:pt-2">
         {refreshError ? <ErrorNotice message={refreshError} /> : null}
         {organizations.error ? <ErrorNotice message={organizations.error} /> : null}
-        <Outlet />
+        <WorkspaceRefresh.Provider value={refreshVersion}><Outlet /></WorkspaceRefresh.Provider>
       </div>
     </SidebarInset>
   </SidebarProvider></TooltipProvider>
@@ -156,22 +160,6 @@ function ProjectsPage() {
   </>
 }
 
-function ContainerText({ value }: { value: string }) {
-  return <Tooltip><TooltipTrigger asChild><span tabIndex={0} className="block max-w-40 truncate rounded-sm outline-offset-4 focus-visible:outline-2 sm:max-w-64">{value}</span></TooltipTrigger><TooltipContent><span className="break-all">{value}</span></TooltipContent></Tooltip>
-}
-
-function ContainersPage() {
-  const { containers } = containersRoute.useLoaderData()
-  return <><div className="flex flex-wrap items-center justify-between gap-4 [&_h1]:text-2xl [&_h1]:font-semibold [&_h1]:tracking-tight [&_p]:mt-1 [&_p]:text-sm [&_p]:text-muted-foreground"><div><h1>Containers</h1><p>A live view of containers on your connected Docker server.</p></div><Badge variant="outline">Read only</Badge></div>
-    {containers.data === null ? <ErrorNotice message={containers.error} /> : containers.data.length === 0 ? <section className="overflow-hidden rounded-xl border bg-card text-card-foreground [&>[data-slot=empty]]:min-h-72 [&_[data-slot=table-caption]]:p-4"><Empty><EmptyHeader><EmptyMedia variant="icon"><Box /></EmptyMedia><EmptyTitle>No containers found</EmptyTitle><EmptyDescription>Containers on this Docker server will appear here. Use Refresh to check again.</EmptyDescription></EmptyHeader></Empty></section> : <section className="overflow-hidden rounded-xl border bg-card text-card-foreground [&>[data-slot=empty]]:min-h-72 [&_[data-slot=table-caption]]:p-4"><div className="p-4"><DataTable<Container> label="Containers" data={containers.data} caption="All containers on the connected Docker server, including services outside Ferrix." columns={[
-      { id: 'name', label: 'Container', value: container => container.name || container.id, cell: container => <strong><ContainerText value={container.name || container.id.slice(0, 12)} /></strong> },
-      { id: 'image', label: 'Image', value: container => container.image, cell: container => <ContainerText value={container.image} /> },
-      { id: 'state', label: 'State', value: container => container.state || 'Unknown', cell: container => <Badge variant={container.state === 'running' ? 'secondary' : 'outline'}>{container.state || 'Unknown'}</Badge> },
-      { id: 'status', label: 'Status', value: container => container.status },
-    ]} /></div></section>}
-  </>
-}
-
 function Pending() {
   return <div className="flex flex-col gap-6 p-6" role="status" aria-label="Loading workspace"><Skeleton className="h-12 w-52" /><Skeleton className="h-56 w-full" /></div>
 }
@@ -192,7 +180,7 @@ const projectRoute = createRoute({ getParentRoute: () => rootRoute, path: '/proj
 const applicationRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects/$projectId/applications/$applicationId', component: function ApplicationDetail() { const { projectId, applicationId } = applicationRoute.useParams(); const { account } = rootRoute.useLoaderData(); return <ServiceWorkspace key={`${account.data?.organization_id}:${applicationId}`} projectId={projectId} serviceId={applicationId} canCompose={account.data?.system_role === 'admin'} canManage={account.data?.role === 'owner' || account.data?.role === 'admin'} /> } })
 const serviceRoute = createRoute({ getParentRoute: () => rootRoute, path: '/projects/$projectId/services/$serviceId', component: function ServiceDetail() { const { projectId, serviceId } = serviceRoute.useParams(); const { account } = rootRoute.useLoaderData(); return <ServiceWorkspace key={`${account.data?.organization_id}:${serviceId}`} projectId={projectId} serviceId={serviceId} canManage={account.data?.role === 'owner' || account.data?.role === 'admin'} canCompose={account.data?.system_role === 'admin'} /> } })
 const monitoringRoute = createRoute({ getParentRoute: () => rootRoute, path: '/monitoring', component: function Monitoring() { const { account } = rootRoute.useLoaderData(); return <MonitoringPage admin={account.data?.system_role === 'admin'} /> } })
-const containersRoute = createRoute({ getParentRoute: () => rootRoute, path: '/containers', component: ContainersPage, loader: async () => ({ containers: await load<Container[]>('/containers') }) })
+const containersRoute = createRoute({ getParentRoute: () => rootRoute, path: '/containers', component: function Docker() { const { account } = rootRoute.useLoaderData(); return <DockerPage admin={account.data?.system_role === 'admin'} refreshVersion={useContext(WorkspaceRefresh)} /> } })
 const securityRoute = createRoute({ getParentRoute: () => rootRoute, path: '/security', loader: async () => {
   const [sessions, security, audit] = await Promise.all([load<Session[]>('/auth/sessions'), load<Security>('/auth/security'), load<Audit[]>('/auth/audit')]); return { sessions, security, audit }
 }, component: function AccountSecurity() { const { sessions, security, audit } = securityRoute.useLoaderData(); const router = useRouter(); return sessions.data && security.data ? <SecurityPage sessions={sessions.data} security={security.data} audit={audit.data ?? []} refresh={() => router.invalidate()} /> : <ErrorNotice message={sessions.error ?? security.error ?? 'Could not load security settings.'} /> } })
