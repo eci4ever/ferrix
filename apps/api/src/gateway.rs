@@ -175,9 +175,16 @@ pub fn public_router(state: AppState) -> Router {
 async fn route(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
     let host = host(&headers).ok_or_else(missing)?;
     let mut upstream = "unused.invalid:80".to_owned();
+    let mut file_root = None;
     let kind = if let Some(Resource::Student(id)) = state.gateway.resource(&host) {
-        upstream = crate::student_hosting::upstream(&state, id).await?;
-        "application"
+        let (service, target, root) = crate::student_hosting::upstream(&state, id).await?;
+        upstream = target;
+        file_root = root;
+        if service == "php-fpm" {
+            "php-fpm"
+        } else {
+            "application"
+        }
     } else if let Some(Resource::Application(id)) = state.gateway.resource(&host) {
         let row:Option<(String,i32)>=sqlx::query_as("SELECT a.active_container_id,d.container_port FROM applications a JOIN deployments d ON d.id=a.active_deployment_id AND d.application_id=a.id WHERE a.id=$1 AND a.service_kind='application' AND a.active_container_id IS NOT NULL").bind(id).fetch_optional(&state.pool).await?;
         let (container, port) = row.ok_or_else(missing)?;
@@ -217,6 +224,11 @@ async fn route(State(state): State<AppState>, headers: HeaderMap) -> Result<Resp
         "x-ferrix-upstream",
         upstream.parse().map_err(|_| unavailable())?,
     );
+    if let Some(root) = file_root {
+        response
+            .headers_mut()
+            .insert("x-ferrix-root", root.parse().map_err(|_| unavailable())?);
+    }
     Ok(response)
 }
 

@@ -1,138 +1,144 @@
 # Hosting
 
-Hosting runs one shared MariaDB 11.4 server per Ferrix installation and
-one PHP 8.4/Apache container per approved student. Each student receives exactly
-one generated MariaDB database and non-root user. Students can create tables and
-manage data inside that database, but cannot create arbitrary databases or read
-another student's database. Database names and usernames are stable identifiers;
-display names and emails never become SQL identifiers.
+Hosting uses the existing Caddy proxy, **one shared PHP-FPM runtime** and one
+shared MariaDB server. Adding students does not create additional containers.
+Each approved student receives a persistent PHP directory, a dedicated Unix
+user and FPM pool, a private MariaDB database/user, and an automatic domain.
 
-## Administrator flow
+## Administrator and student flow
 
-1. Open **Hosting** in the sidebar and choose **Enable Hosting**.
-   This starts the shared server and opens student registration. Registration is
-   closed by default on fresh installations until the administrator enables it.
-2. Share `/student-register`. Students enter their name, email and a password of
-   at least 12 characters. Their hosting remains **pending** until approved.
-   They can sign in immediately to view their pending status. Platform signup
-   remains restricted to the first administrator or existing invitations.
-3. Verify the student's identity before choosing **Approve**. Email ownership is
-   not verified automatically; there is no email delivery service in this module.
-4. Ferrix queues provisioning and creates a dedicated database/user, persistent
-   web files volume, and PHP container with its automatic domain. **Retry** repairs
-   a failed provisioning attempt using the same identities and volumes.
-5. **Suspend** stops the PHP container, disables its public route and locks its
-   database account. **Resume** unlocks it and restarts the same web container;
-   files and database contents are preserved. **Reject** is available only for
-   pending registrations. Closing registration does not suspend existing sites.
+1. Open **Hosting** and enable the shared runtime. Registration defaults to closed
+   on new installations until the administrator enables it.
+2. Share `/student-register`. Students register with their name, email and a
+   password of at least 12 characters. They can sign in to see pending status.
+3. Verify the student before choosing **Approve**. Email ownership is not verified
+   automatically. Existing platform accounts are not converted by registration.
+4. Approval creates a database/user and configures a PHP-FPM pool and directory.
+   Students can upload their project folder and open the automatic HTTPS URL.
+5. **Suspend** removes the pool, terminates its PHP processes, locks its database
+   account and disables public routing. **Resume** restores the same user, files
+   and database. **Reject** applies only to pending registrations. Closing
+   registration leaves active hosting enabled.
 
-The PHP image must be available before approval. For local development:
+Uploads allow 256 files and 8 MiB per request, using relative ASCII paths of up
+ to 100 bytes. Hidden files, traversal and duplicate paths are rejected.
+Matching files are replaced atomically; other files remain. There is no shell,
+SFTP, Composer build, phpMyAdmin or automatic backup service in this version.
 
-```sh
-docker build -t ferrix-student-php:local deploy/student-php
-```
+## PHP connection
 
-Add `FERRIX_STUDENT_PHP_IMAGE=ferrix-student-php:local` to the private root `.env`
-and restart the API. The local nmfairus setup has been configured this way.
-On a VPS use the matching released image:
-`ghcr.io/eci4ever/ferrix-student-php:<version>`. The release workflow publishes
-this image for amd64 along with Ferrix; make the new GHCR package public before
-using it on a VPS. A release containing this module must be published first.
-The production Compose file and new installer accept `FERRIX_STUDENT_PHP_IMAGE`.
-
-## Student flow
-
-After signing in, students go directly to **My hosting**, where they can:
-
-- Check approval/provisioning status and open their website.
-- Read their own database connection details, including a password reveal button.
-- Upload a project folder containing `index.php`, PHP scripts and assets.
-  Each upload permits up to 256 files and 8 MiB total, using relative filenames
-  of up to 100 ASCII bytes. Hidden files, traversal and duplicate paths are
-  rejected. Matching paths are replaced; files omitted from the upload remain.
-
-PHP can connect without copying a password into source code:
+Each pool receives only its own credentials. Student PHP can use:
 
 ```php
 $pdo = new PDO(
     'mysql:host=' . getenv('DB_HOST') .
     ';dbname=' . getenv('DB_NAME') . ';charset=utf8mb4',
-    getenv('DB_USER'),
-    getenv('DB_PASSWORD'),
+    getenv('DB_USER'), getenv('DB_PASSWORD'),
     [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION]
 );
 ```
 
-Students cannot access platform Projects, Docker inventory, monitoring, member
-administration or another student's hosting API. Each student has a private
-organization membership, and server-side middleware restricts their sessions
-regardless of what URL they request. Existing platform users are not converted
-by submitting their email to student registration. Password hashing, session
-expiry, origin checks, MFA and account bans reuse Ferrix authentication.
+`DB_HOST` is the private alias `mariadb`. No database port is published. Each user
+can manage tables in its own generated database, with no global privileges or
+access to another student's database. Passwords are encrypted in Ferrix metadata;
+FPM configuration contains plaintext credentials in a separate root-only volume
+that is never mounted into Caddy or exposed inside a student's jail.
 
-## Runtime and persistence
+## Shared runtime and file isolation
 
-Names and labels are scoped to a persistent installation UUID stored in
-`student_hosting_settings`, so changing the dashboard origin does not create a
-new database server. The shared MariaDB has no host-published port. Web containers
-join the private database network and Caddy ingress. The gateway authorizes
-only active, non-banned students and verifies container ownership before routing.
-Local domains use `student-<user UUID>.localhost`; VPS domains use
-`student-<user UUID>.<IPv4-with-dashes>.sslip.io`. HTTPS follows existing Caddy
-configuration, including trust of the local root certificate.
+The `php-fpm` container is scoped to the Ferrix installation. Pools use stable,
+distinct Unix IDs allocated by migration 0008. Each has a filesystem chroot with
+its own `/public`, `/tmp` and minimal DNS configuration. Pool workers drop to
+the student's uid/gid. Private root-owned directories, Unix permissions and
+`open_basedir` prevent cross-student file access. The jail has no `/proc`, runtime
+configuration or other students' directories. Shell execution, dynamic extension
+loading, FFI, hard links and symbolic links are disabled in student PHP.
 
-Each PHP container runs as uid 33, with a read-only root filesystem, no host
-mounts, dropped capabilities, 256 MiB memory, 0.5 CPU, 64 PIDs and a 64 MiB
-scratch directory. PHP's execution limit is 30 seconds and memory limit 128 MiB.
-The shared MariaDB has 1 GiB memory, one CPU and a limit of 10 simultaneous
-connections per student user. Credentials are encrypted with the Ferrix auth
-key. Neither root credentials nor other students' credentials are returned.
+Caddy mounts two project-scoped volumes read-only:
 
-There is **no hard persistent-disk quota** in this first version. Upload limits
-apply per request; PHP code and SQL can create additional data. The database
-server and Docker host remain shared resources. This module does not include
-SFTP, Composer builds, phpMyAdmin, student deletion or automatic backup/restore.
-Use trusted classroom workloads and monitor disk usage before increasing class
-size. Websites are public independently of dashboard sign-in; students must
-implement application login themselves if their sites need it.
+- `hosting_files` at `/srv/hosting`: student jails and protected published views.
+- `hosting_sockets` at `/run/hosting`: root-only FastCGI sockets for each pool.
 
-Back up three things together: Ferrix PostgreSQL metadata and its `.env` auth
-key, the shared MariaDB volume, and student web file volumes. Removing containers
-alone preserves volumes. Do not prune volumes or rerun initialization against
-missing metadata. The administrator remains responsible for database dumps
-and restore procedures until backup/restore is implemented.
+A privileged control helper, never student PHP, publishes a **root-owned static
+view** for each domain. It copies only regular files through `O_NOFOLLOW` file
+operations and ignores symlinks. Students cannot write this view. PHP files are
+represented by empty placeholders for Caddy's file matcher, so PHP source is
+never copied into the static view. Caddy sends script requests to the student's
+own Unix socket, with `/public` as the FastCGI document root inside the chroot.
+Private suffixes and noncanonical PHP extension casing are blocked.
+
+Uploaded assets are published immediately. Files generated later by PHP are
+published by reconciliation, normally within a few seconds. Static publication
+is bounded to 1,024 files and 32 MiB per student. Over-limit or unsafe source files
+leave the last valid static view intact. Published directory switches are atomic.
+These publishing limits are not hard persistent-disk quotas: PHP and SQL can
+still create additional data. Monitor storage and back it up for classroom use.
+
+The FPM master uses `pm=ondemand`: each pool has up to two children, with idle
+processes removed after ten seconds. The shared runtime has a global process
+limit of 16, 1 GiB memory and one CPU. PHP scripts have a 64 MiB memory limit and
+30-second execution/termination limit; OPcache is disabled to avoid shared cache
+ambiguity across chroots. The master has only the capabilities required to
+create users, assign ownership, chroot, drop worker identities and terminate
+pool processes. Student workers do not retain those capabilities. This is
+shared process isolation, not a separate kernel/container boundary per student.
+
+MariaDB retains its existing volume, one CPU, 1 GiB limit and ten connections per
+student account. The displayed services are `mariadb` and `php-fpm` within the
+installation group in OrbStack. Ferrix retains their Docker lifecycle ownership.
+Automatic domains retain the same student UUID and existing Caddy HTTPS behavior.
+The gateway verifies active status, account bans and shared-runtime ownership;
+clients cannot supply a filesystem root or choose another student's socket.
+
+## Local and production setup
+
+For local development:
+
+```sh
+docker build -t ferrix-php-fpm:local deploy/student-php
+```
+
+Set `FERRIX_HOSTING_PHP_IMAGE=ferrix-php-fpm:local` in the private `.env`, recreate
+only Caddy with the updated Compose mounts, then restart the API. The FPM runtime
+is created on demand when Hosting is enabled. Its three persistent volumes are
+`<project>_hosting_files`, `<project>_hosting_sockets` and
+`<project>_hosting_runtime`. Keep the original `ferrix-students-db-<instance UUID>`
+MariaDB volume. Do not remove any volumes during the update.
+
+For production, release the matching image
+`ghcr.io/eci4ever/ferrix-php-fpm:<version>`, make the package public, and update the
+Ferrix image, Caddyfile and Compose configuration together. The new installer
+sets `FERRIX_HOSTING_PHP_IMAGE`; the old Apache image setting
+`FERRIX_STUDENT_PHP_IMAGE` is no longer used by shared FPM. Caddy must mount the
+same files/sockets volumes as FPM. The API accesses them through its Docker
+control plane; no student filesystem or socket is published on the host.
+
+Existing per-student containers are never silently deleted or overwritten.
+Legacy active websites retain their old HTTP routing until explicitly migrated.
+For installations with real legacy data, export those files first and arrange a
+controlled import into shared hosting; legacy upload/resume does not implicitly
+convert or discard the old volume. The current nmfairus installation's test
+students were explicitly removed before switching to shared FPM.
+
+Back up PostgreSQL metadata, the Ferrix `.env` auth key, the MariaDB volume and
+both Hosting files/runtime volumes. The metadata sequence and runtime user IDs
+must remain consistent when restored. Socket files can be regenerated. There
+are no automatic backups, disk quotas or hosting deletion UI yet.
 
 ## Verification
 
-Build the local PHP image, then run:
-
 ```sh
+docker build -t ferrix-student-php:fpm-test deploy/student-php
 python3 scripts/tests/student-hosting.py
 ```
 
-The test uses the current developer's PostgreSQL with a disposable schema, its
-own MariaDB/web containers, owned volumes, ingress network and Caddy proxy. It
-checks signup/approval, two students on one server, real PDO database isolation,
-blocked peer/platform API requests, PHP upload, suspend/resume persistence and
-browser flows. Only resources labeled with the disposable installation UUID
-are removed. Credentials are generated for the test and are not written to the
-repository. Browser screenshots are written under `/tmp/ferrix-student-hosting-*`.
+This test uses a disposable PostgreSQL schema and owned Docker resources. It
+checks that two approved students create only one shared PHP-FPM and MariaDB,
+that Caddy serves PHP/assets, distinct Unix identities and chroot boundaries,
+blocked cross-database access, hidden/source file protection, upload path checks,
+suspend/resume, container recreation, trusted local HTTPS and browser flows.
+All test students and test resources are removed afterwards.
 
-References: [MariaDB GRANT](https://mariadb.com/docs/server/reference/sql-statements/account-management-sql-statements/grant),
-[account locking](https://mariadb.com/docs/server/security/user-account-management/account-locking)
-and [PDO MySQL](https://www.php.net/ref.pdo-mysql).
-
-## Container grouping
-
-The shared database appears as `mariadb` inside the installation's Compose
-project in OrbStack. Its Docker name is `<project>-mariadb-1`, while PHP uses
-the short private hostname `mariadb`. The existing UUID-based volume name and
-legacy DNS alias are retained, preserving data and existing PHP connections.
-`FERRIX_HOSTING_COMPOSE_PROJECT` selects the display group; local development
-falls back to `COMPOSE_PROJECT_NAME`. Production Compose passes this explicitly.
-
-Ferrix still manages this database through its Docker API and ownership labels.
-It deliberately does not set a Compose config-hash, so ordinary Compose commands
-do not adopt it as a configured YAML service. Hosting reconciliation starts and
-checks it separately. Existing ungrouped containers require a controlled
-replacement with the same volume; never start both against that volume at once.
+References: [Caddy PHP FastCGI](https://caddyserver.com/docs/caddyfile/directives/php_fastcgi),
+[Caddy file server security](https://caddyserver.com/docs/caddyfile/directives/file_server),
+[PHP-FPM configuration](https://www.php.net/manual/en/install.fpm.configuration.php).

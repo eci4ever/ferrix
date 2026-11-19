@@ -115,6 +115,10 @@ async fn volume(state: &AppState, name: &str, user: Option<Uuid>) -> Result<()> 
     Ok(())
 }
 async fn exec(state: &AppState, container: &str, command: Vec<String>, input: &str) -> Result<()> {
+    let diagnostic = command
+        .first()
+        .is_some_and(|s| s == "/usr/local/bin/hosting-manager");
+    let mut diagnostic_output = String::new();
     let job = state
         .docker
         .create_exec(
@@ -147,7 +151,10 @@ async fn exec(state: &AppState, container: &str, command: Vec<String>, input: &s
     stdin.shutdown().await.map_err(|_| unavailable())?;
     // Never expose SQL or credentials returned by the database client.
     while let Some(chunk) = output.next().await {
-        chunk.map_err(|_| unavailable())?;
+        let chunk = chunk.map_err(|_| unavailable())?;
+        if diagnostic && diagnostic_output.len() < 4096 {
+            diagnostic_output.push_str(&chunk.to_string());
+        }
     }
     if state
         .docker
@@ -157,6 +164,9 @@ async fn exec(state: &AppState, container: &str, command: Vec<String>, input: &s
         .exit_code
         != Some(0)
     {
+        if diagnostic {
+            tracing::warn!(detail=%diagnostic_output,"Hosting manager failed");
+        }
         return Err(unavailable());
     }
     Ok(())
@@ -334,97 +344,152 @@ async fn provision(state: &AppState, user: Uuid) -> Result<()> {
     // Escape database-level grant wildcards as well as quoting identifiers.
     let grant = h.database_name.replace('_', "\\_");
     sql(state,&format!("CREATE DATABASE IF NOT EXISTS `{db}` CHARACTER SET utf8mb4; CREATE USER IF NOT EXISTS '{usr}'@'%' IDENTIFIED BY '{pass}'; ALTER USER '{usr}'@'%' IDENTIFIED BY '{pass}' ACCOUNT UNLOCK; GRANT ALL PRIVILEGES ON `{grant}`.* TO '{usr}'@'%'; ALTER USER '{usr}'@'%' WITH MAX_USER_CONNECTIONS 10;",db=h.database_name,usr=h.database_user)).await?;
-    let name = format!("ferrix-student-{}-{}", scope(state).await?, user.simple());
-    let vol = format!("{name}-files");
+    if h.container_id.is_some() {
+        // Never discard an older installation's per-student files implicitly.
+        return Err(unavailable());
+    }
+    ensure_runtime(state).await?;
+    sync_pools(state, Some(user)).await?;
+    sqlx::query("UPDATE student_hostings SET status='active',error=NULL WHERE user_id=$1")
+        .bind(user)
+        .execute(&state.pool)
+        .await?;
+    Ok(())
+}
+
+pub(crate) async fn shared_volumes(state: &AppState) -> Result<(String, String, String)> {
+    let project = compose_project().unwrap_or(format!("ferrix-hosting-{}", scope(state).await?));
+    Ok((
+        format!("{project}_hosting_files"),
+        format!("{project}_hosting_sockets"),
+        format!("{project}_hosting_runtime"),
+    ))
+}
+async fn runtime_name(state: &AppState) -> Result<String> {
+    Ok(format!(
+        "{}-php-fpm-1",
+        compose_project().unwrap_or(format!("ferrix-hosting-{}", scope(state).await?))
+    ))
+}
+async fn shared_volume(state: &AppState, name: &str, purpose: &str) -> Result<()> {
+    let project = compose_project().unwrap_or(format!("ferrix-hosting-{}", scope(state).await?));
+    let expected = HashMap::from([
+        ("io.ferrix.hosting.project".to_string(), project),
+        ("io.ferrix.hosting.purpose".to_string(), purpose.to_string()),
+    ]);
+    let info = match state.docker.inspect_volume(name).await {
+        Ok(info) => info,
+        Err(bollard::errors::Error::DockerResponseServerError {
+            status_code: 404, ..
+        }) => {
+            let mut all = labels(state, None).await?;
+            all.extend(expected.clone());
+            state
+                .docker
+                .create_volume(VolumeCreateRequest {
+                    name: Some(name.into()),
+                    labels: Some(all),
+                    ..Default::default()
+                })
+                .await
+                .map_err(|_| unavailable())?
+        }
+        Err(_) => return Err(unavailable()),
+    };
+    if !expected.iter().all(|(k, v)| info.labels.get(k) == Some(v)) {
+        return Err(unavailable());
+    }
+    Ok(())
+}
+async fn ensure_runtime(state: &AppState) -> Result<()> {
+    let name = runtime_name(state).await?;
     let net = network(state).await?;
-    let php = std::env::var("FERRIX_STUDENT_PHP_IMAGE")
-        .unwrap_or_else(|_| "ghcr.io/eci4ever/ferrix-student-php:latest".into());
-    image(state, &php).await?;
-    volume(state, &vol, Some(user)).await?;
+    let (files, sockets, config) = shared_volumes(state).await?;
+    for (name, purpose) in [
+        (&files, "files"),
+        (&sockets, "sockets"),
+        (&config, "runtime"),
+    ] {
+        shared_volume(state, name, purpose).await?;
+    }
     match state.docker.inspect_container(&name, None).await {
         Ok(_) => {
-            let existing = owned(state, &name, Some(user)).await?;
-            sqlx::query("UPDATE student_hostings SET container_id=$1 WHERE user_id=$2")
-                .bind(existing.id)
-                .bind(user)
-                .execute(&state.pool)
-                .await?;
+            owned(state, &name, None).await?;
         }
         Err(bollard::errors::Error::DockerResponseServerError {
             status_code: 404, ..
         }) => {
-            let mut config = ContainerCreateBody {
-                image: Some(php),
-                user: Some("33:33".into()),
-                labels: Some(labels(state, Some(user)).await?),
-                env: Some(vec![
-                    "DB_HOST=mariadb".into(),
-                    format!("DB_NAME={}", h.database_name),
-                    format!("DB_USER={}", h.database_user),
-                    format!("DB_PASSWORD={pass}"),
-                ]),
-                host_config: Some(HostConfig {
-                    network_mode: Some(net.clone()),
-                    memory: Some(256 * 1024 * 1024),
-                    nano_cpus: Some(500_000_000),
-                    pids_limit: Some(64),
-                    readonly_rootfs: Some(true),
-                    cap_drop: Some(vec!["ALL".into()]),
-                    security_opt: Some(vec!["no-new-privileges:true".into()]),
-                    tmpfs: Some(HashMap::from([
-                        (
-                            "/tmp".into(),
-                            "rw,noexec,nosuid,size=64m,uid=33,gid=33".into(),
-                        ),
-                        (
-                            "/var/run/apache2".into(),
-                            "rw,noexec,nosuid,size=8m,uid=33,gid=33".into(),
-                        ),
-                        (
-                            "/var/lock/apache2".into(),
-                            "rw,noexec,nosuid,size=8m,uid=33,gid=33".into(),
-                        ),
-                    ])),
-                    mounts: Some(vec![Mount {
-                        target: Some("/var/www/html".into()),
-                        source: Some(vol),
-                        typ: Some(MountTypeEnum::VOLUME),
-                        ..Default::default()
-                    }]),
-                    restart_policy: Some(RestartPolicy {
-                        name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                }),
-                networking_config: Some(NetworkingConfig {
-                    endpoints_config: Some(HashMap::from([(
-                        net.clone(),
-                        EndpointSettings::default(),
-                    )])),
-                }),
+            let php = std::env::var("FERRIX_HOSTING_PHP_IMAGE")
+                .unwrap_or_else(|_| "ghcr.io/eci4ever/ferrix-php-fpm:latest".into());
+            image(state, &php).await?;
+            let mut l = labels(state, None).await?;
+            if let Some(project) = compose_project() {
+                l.insert("com.docker.compose.project".into(), project);
+                l.insert("com.docker.compose.service".into(), "php-fpm".into());
+                l.insert("com.docker.compose.container-number".into(), "1".into());
+            }
+            let mount = |(name, path): (&str, &str)| Mount {
+                source: Some(name.into()),
+                target: Some(path.into()),
+                typ: Some(MountTypeEnum::VOLUME),
                 ..Default::default()
             };
-            crate::gateway::attach(state, &mut config)
-                .await
-                .map_err(|_| unavailable())?;
-            let created = state
+            state
                 .docker
                 .create_container(
                     Some(CreateContainerOptionsBuilder::default().name(&name).build()),
-                    config,
+                    ContainerCreateBody {
+                        image: Some(php),
+                        labels: Some(l),
+                        host_config: Some(HostConfig {
+                            network_mode: Some(net.clone()),
+                            memory: Some(1024 * 1024 * 1024),
+                            nano_cpus: Some(1_000_000_000),
+                            pids_limit: Some(128),
+                            cap_drop: Some(vec!["ALL".into()]),
+                            cap_add: Some(
+                                [
+                                    "CHOWN",
+                                    "DAC_OVERRIDE",
+                                    "SETUID",
+                                    "SETGID",
+                                    "SYS_CHROOT",
+                                    "KILL",
+                                ]
+                                .iter()
+                                .map(|s| (*s).into())
+                                .collect(),
+                            ),
+                            security_opt: Some(vec!["no-new-privileges:true".into()]),
+                            mounts: Some(vec![
+                                mount((&files, "/srv/hosting")),
+                                mount((&sockets, "/run/hosting")),
+                                mount((&config, "/runtime")),
+                            ]),
+                            tmpfs: Some(HashMap::from([(
+                                "/tmp".into(),
+                                "rw,nosuid,noexec,size=64m".into(),
+                            )])),
+                            restart_policy: Some(RestartPolicy {
+                                name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
+                                ..Default::default()
+                            }),
+                            ..Default::default()
+                        }),
+                        networking_config: Some(NetworkingConfig {
+                            endpoints_config: Some(HashMap::from([(
+                                net,
+                                EndpointSettings::default(),
+                            )])),
+                        }),
+                        ..Default::default()
+                    },
                 )
                 .await
                 .map_err(|_| unavailable())?;
-            sqlx::query("UPDATE student_hostings SET container_id=$1 WHERE user_id=$2")
-                .bind(created.id)
-                .bind(user)
-                .execute(&state.pool)
-                .await?;
         }
         Err(_) => return Err(unavailable()),
     }
-    // The image seeds an owned /var/www/html directory into newly created volumes.
     state
         .docker
         .start_container(
@@ -440,23 +505,65 @@ async fn provision(state: &AppState, user: Uuid) -> Result<()> {
         })
         .map_err(|_| unavailable())?;
     for _ in 0..30 {
-        let info = owned(state, &name, Some(user)).await?;
-        if info
-            .state
-            .as_ref()
-            .and_then(|s| s.health.as_ref())
-            .and_then(|h| h.status.as_ref())
-            .is_some_and(|s| s.to_string() == "healthy")
+        if exec(
+            state,
+            &name,
+            vec!["/usr/local/bin/hosting-manager".into(), "ready".into()],
+            "",
+        )
+        .await
+        .is_ok()
         {
-            sqlx::query("UPDATE student_hostings SET status='active',error=NULL WHERE user_id=$1")
-                .bind(user)
-                .execute(&state.pool)
-                .await?;
             return Ok(());
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
     Err(unavailable())
+}
+async fn pool_row(state: &AppState, h: &Hosting) -> Result<Value> {
+    Ok(
+        json!({"id":h.user_id.simple().to_string(),"uid":h.unix_uid,"database":h.database_name,"username":h.database_user,"password":open(state,h.user_id,&h.password_cipher)?}),
+    )
+}
+async fn manager(state: &AppState, operation: &str, payload: Value) -> Result<()> {
+    let name = runtime_name(state).await?;
+    owned(state, &name, None).await?;
+    exec(
+        state,
+        &name,
+        vec!["/usr/local/bin/hosting-manager".into(), operation.into()],
+        &payload.to_string(),
+    )
+    .await
+}
+async fn sync_pools(state: &AppState, include: Option<Uuid>) -> Result<()> {
+    let rows:Vec<Hosting>=sqlx::query_as(&format!("{SELECT} WHERE (h.status='active' OR h.user_id=$1) AND h.container_id IS NULL AND NOT u.banned ORDER BY h.user_id")).bind(include).fetch_all(&state.pool).await?;
+    let mut students = Vec::new();
+    for row in &rows {
+        students.push(pool_row(state, row).await?);
+    }
+    manager(state, "sync", json!({"students":students})).await?;
+    // A graceful reload must recreate the approved pool socket before activation.
+    if let Some(user) = include {
+        let path = format!("/run/hosting/{}.sock", user.simple());
+        let name = runtime_name(state).await?;
+        for _ in 0..30 {
+            if exec(
+                state,
+                &name,
+                vec!["test".into(), "-S".into(), path.clone()],
+                "",
+            )
+            .await
+            .is_ok()
+            {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        return Err(unavailable());
+    }
+    Ok(())
 }
 pub(super) async fn suspend(state: &AppState, user: Uuid) -> Result<()> {
     let h: Hosting = sqlx::query_as(&format!("{SELECT} WHERE h.user_id=$1"))
@@ -476,6 +583,8 @@ pub(super) async fn suspend(state: &AppState, user: Uuid) -> Result<()> {
             )
             .await
             .map_err(|_| unavailable())?;
+    } else {
+        manager(state, "suspend", json!({"id":user.simple().to_string()})).await?;
     }
     sql(
         state,
@@ -483,44 +592,63 @@ pub(super) async fn suspend(state: &AppState, user: Uuid) -> Result<()> {
     )
     .await
 }
-pub(crate) async fn upstream(state: &AppState, user: Uuid) -> Result<String> {
-    let container:Option<String>=sqlx::query_scalar("SELECT h.container_id FROM student_hostings h JOIN auth_users u ON u.id=h.user_id WHERE h.user_id=$1 AND h.status='active' AND NOT u.banned").bind(user).fetch_optional(&state.pool).await?.flatten();
-    let info = owned(state, &container.ok_or_else(missing)?, Some(user)).await?;
+pub(crate) async fn upstream(
+    state: &AppState,
+    user: Uuid,
+) -> Result<(String, String, Option<String>)> {
+    let row:Option<Option<String>>=sqlx::query_scalar("SELECT h.container_id FROM student_hostings h JOIN auth_users u ON u.id=h.user_id WHERE h.user_id=$1 AND h.status='active' AND NOT u.banned").bind(user).fetch_optional(&state.pool).await?;
+    let container = row.ok_or_else(missing)?;
+    // Keep older installations readable until their files are explicitly migrated.
+    if let Some(container) = container {
+        let info = owned(state, &container, Some(user)).await?;
+        if info.state.as_ref().and_then(|s| s.running) != Some(true) {
+            return Err(unavailable());
+        }
+        let network = state.gateway.ingress_network().ok_or_else(unavailable)?;
+        let ip = info
+            .network_settings
+            .and_then(|s| s.networks)
+            .and_then(|mut n| n.remove(network))
+            .and_then(|n| n.ip_address)
+            .and_then(|ip| ip.parse::<std::net::IpAddr>().ok())
+            .ok_or_else(unavailable)?;
+        if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
+            return Err(unavailable());
+        }
+        return Ok((
+            "application".into(),
+            std::net::SocketAddr::new(ip, 80).to_string(),
+            None,
+        ));
+    }
+    let info = owned(state, &runtime_name(state).await?, None).await?;
     if info.state.as_ref().and_then(|s| s.running) != Some(true) {
         return Err(unavailable());
     }
-    let network = state.gateway.ingress_network().ok_or_else(unavailable)?;
-    let ip = info
-        .network_settings
-        .and_then(|s| s.networks)
-        .and_then(|mut n| n.remove(network))
-        .and_then(|n| n.ip_address)
-        .and_then(|ip| ip.parse::<std::net::IpAddr>().ok())
-        .ok_or_else(unavailable)?;
-    if ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() {
-        return Err(unavailable());
-    }
-    Ok(std::net::SocketAddr::new(ip, 80).to_string())
+    Ok((
+        "php-fpm".into(),
+        format!("unix//run/hosting/{}.sock", user.simple()),
+        Some(format!("/srv/hosting/{}/site", user.simple())),
+    ))
 }
 pub(super) async fn upload(
     state: &AppState,
     h: &Hosting,
     files: Vec<(String, Vec<u8>)>,
 ) -> Result<()> {
-    let container = h.container_id.as_ref().ok_or_else(unavailable)?;
-    owned(state, container, Some(h.user_id)).await?;
-    // No archive extraction or shell interpolation. The unprivileged PHP process
-    // writes only validated relative paths inside its own persistent web volume.
-    let script = r#"$root='/var/www/html';$files=json_decode(stream_get_contents(STDIN),true,512,JSON_THROW_ON_ERROR);foreach($files as $file){$path=$file['path'];if(!preg_match('~^[A-Za-z0-9_/-]+(?:[.][A-Za-z0-9_/-]+)*$~',$path))exit(2);$current=$root;foreach(explode('/',$path) as $part){if($part===''||$part==='.'||$part==='..'||str_starts_with($part,'.'))exit(2);$current.='/'.$part;if(is_link($current))exit(2);} $dest=$root.'/'.$path;if(!is_dir(dirname($dest))&&!mkdir(dirname($dest),0755,true))exit(3);$data=hex2bin($file['hex']);if($data===false||file_put_contents($dest,$data,LOCK_EX)===false)exit(4);}"#;
+    if h.container_id.is_some() {
+        return Err(invalid(
+            "This legacy hosting must be migrated to shared PHP-FPM before uploading.",
+        ));
+    }
     let payload = files
         .into_iter()
         .map(|(path, data)| json!({"path":path,"hex":hex::encode(data)}))
         .collect::<Vec<_>>();
-    exec(
+    manager(
         state,
-        container,
-        vec!["php".into(), "-r".into(), script.into()],
-        &serde_json::to_string(&payload).map_err(|_| unavailable())?,
+        "upload",
+        json!({"id":h.user_id.simple().to_string(),"files":payload}),
     )
     .await
 }
@@ -565,6 +693,10 @@ async fn reconcile(state: &AppState) -> Result<()> {
         .await?;
     if ensure_server(state).await.is_err() {
         sqlx::query("UPDATE student_hosting_settings SET server_state='failed',server_error='Shared MariaDB is unavailable. Check Docker and retry.' WHERE singleton").execute(&state.pool).await?;
+        return Err(unavailable());
+    }
+    if ensure_runtime(state).await.is_err() || sync_pools(state, None).await.is_err() {
+        sqlx::query("UPDATE student_hosting_settings SET server_state='failed',server_error='Shared PHP-FPM is unavailable. Check its image, pool configuration and shared volumes.' WHERE singleton").execute(&state.pool).await?;
         return Err(unavailable());
     }
     sqlx::query("UPDATE student_hosting_settings SET server_state='running',server_error=NULL WHERE singleton").execute(&state.pool).await?;

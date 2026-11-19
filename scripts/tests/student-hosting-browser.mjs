@@ -12,6 +12,14 @@ async function login(page,email,password){
  await Promise.all([page.waitForURL(url=>url.pathname!=='/login'),page.getByRole('button',{name:'Login',exact:true}).click()])
 }
 try{
+ const aliasSignup=await browser.newPage()
+ await aliasSignup.goto(origin.replace('127.0.0.1','localhost')+'/student-register')
+ await expect(aliasSignup).toHaveURL(origin+'/student-register')
+ await aliasSignup.getByLabel('Name',{exact:true}).fill('Alias registration test')
+ await aliasSignup.getByLabel('Email',{exact:true}).fill('alias-registration@example.test')
+ await aliasSignup.getByLabel('Password',{exact:true}).fill(process.env.STUDENT_TEST_PASSWORD)
+ await aliasSignup.getByRole('button',{name:'Register as student',exact:true}).click()
+ await expect(aliasSignup.getByRole('heading',{name:'Registration received',exact:true})).toBeVisible()
  const page=await browser.newPage({viewport:{width:1440,height:1050}})
  await login(page,'alice@example.test',process.env.STUDENT_TEST_PASSWORD)
  await expect(page).toHaveURL(origin+'/student-hosting')
@@ -34,7 +42,7 @@ try{
  const admin=await browser.newPage()
  await login(admin,'teacher@example.test',process.env.STUDENT_TEST_TEACHER_PASSWORD)
  await admin.goto(origin+'/student-hosting')
- await expect(admin.getByRole('heading',{name:'Shared MariaDB',exact:true})).toBeVisible()
+ await expect(admin.getByRole('heading',{name:'Shared PHP-FPM & MariaDB',exact:true})).toBeVisible()
  await expect(admin.getByRole('table',{name:'Students',exact:true}).getByText('alice@example.test')).toBeVisible()
  await admin.screenshot({path:'/tmp/ferrix-student-hosting-admin.png',fullPage:true})
  await admin.getByRole('button',{name:'Close registration',exact:true}).click()
