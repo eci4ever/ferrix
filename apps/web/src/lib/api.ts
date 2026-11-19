@@ -14,7 +14,8 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
     throw new Error(body?.error ?? `Request failed (${response.status}). Check that the API is running.`)
   }
   if (response.status === 204) return undefined as T
-  return response.json()
+  const body = await response.text()
+  return body.trim() ? JSON.parse(body) as T : undefined as T
 }
 
 export async function load<T>(path: string): Promise<{ data: T; error: null } | { data: null; error: string }> {
