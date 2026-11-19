@@ -8,7 +8,7 @@ test('create, publish and roll back a static website from a project', async ({ p
   try {
     await writeFile(join(build, 'index.html'), 'Documentation')
     const createdAt = new Date().toISOString()
-    const site = { id: 'website', project_id: 'project', name: 'Documentation', domain: null as string | null, active_release_id: null as string | null, created_at: createdAt }
+    const site = { id: 'website', project_id: 'project', name: 'Documentation', automatic_url: 'http://site-website.localhost:9080/', domain: null as string | null, active_release_id: null as string | null, created_at: createdAt }
     const releases: { id: string; bytes: number; created_at: string }[] = []
     await page.route('**/api/v1/**', async route => {
       const request = route.request()
@@ -63,6 +63,7 @@ test('create, publish and roll back a static website from a project', async ({ p
       await expect(page.getByText('Build published.')).toBeVisible()
       await expect(page.getByRole('button', { name: 'Publish build' })).toBeEnabled()
     }
+    await expect(page.getByRole('link', { name: 'Open website', exact: true })).toHaveAttribute('href', site.automatic_url)
     await expect(page.getByRole('link', { name: 'Open docs.example.test' })).toHaveAttribute('href', 'https://docs.example.test/')
     await expect(page.getByRole('link', { name: 'Preview', exact: true })).toHaveAttribute('href', '/api/v1/static-websites/website/preview/')
     await expect(page.getByRole('link', { name: 'Preview', exact: true })).toHaveAttribute('target', '_blank')

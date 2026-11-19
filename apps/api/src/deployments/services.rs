@@ -226,7 +226,12 @@ async fn list(
     Path(environment): Path<Uuid>,
 ) -> Result<Json<Vec<Application>>, ApiError> {
     environment_access(&state, &id, environment).await?;
-    Ok(Json(sqlx::query_as(&format!("SELECT {APP_COLUMNS} FROM applications a WHERE environment_id=$1 ORDER BY created_at DESC,id")).bind(environment).fetch_all(&state.pool).await?))
+    let rows:Vec<Application>=sqlx::query_as(&format!("SELECT {APP_COLUMNS} FROM applications a WHERE environment_id=$1 ORDER BY created_at DESC,id")).bind(environment).fetch_all(&state.pool).await?;
+    Ok(Json(
+        rows.into_iter()
+            .map(|app| app.with_gateway(&state))
+            .collect(),
+    ))
 }
 async fn create(
     State(state): State<AppState>,

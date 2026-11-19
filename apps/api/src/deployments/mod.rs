@@ -92,6 +92,8 @@ struct Environment {
 }
 #[derive(Serialize, sqlx::FromRow)]
 struct Application {
+    #[sqlx(default)]
+    automatic_url: Option<String>,
     database_engine: Option<String>,
     kind: String,
     deployed: bool,
@@ -142,9 +144,19 @@ async fn environment_access(
     if !sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM environments e JOIN projects p ON p.id=e.project_id WHERE e.id=$1 AND p.organization_id=$2)").bind(environment).bind(id.organization_id).fetch_one(&state.pool).await? { return Err(missing()); }
     Ok(())
 }
+impl Application {
+    fn with_gateway(mut self, state: &AppState) -> Self {
+        if self.kind == "application" {
+            self.automatic_url = state
+                .gateway
+                .url(crate::gateway::Resource::Application(self.id));
+        }
+        self
+    }
+}
 async fn app_access(state: &AppState, id: &Identity, app: Uuid) -> Result<Application, ApiError> {
     sqlx::query_as::<_,Application>(&format!("SELECT {APP_COLUMNS} FROM applications a JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id WHERE a.id=$1 AND p.organization_id=$2"))
-        .bind(app).bind(id.organization_id).fetch_optional(&state.pool).await?.ok_or_else(missing)
+        .bind(app).bind(id.organization_id).fetch_optional(&state.pool).await?.map(|app|app.with_gateway(state)).ok_or_else(missing)
 }
 async fn environments(
     State(state): State<AppState>,
@@ -428,6 +440,7 @@ mod encryption_tests {
     #[tokio::test]
     async fn environment_cipher_is_bound_to_the_application() {
         let mut state = AppState {
+            gateway: Default::default(),
             pool: sqlx::postgres::PgPoolOptions::new()
                 .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
                 .unwrap(),
@@ -450,4 +463,12 @@ mod encryption_tests {
         std::sync::Arc::make_mut(&mut state.auth).key = [43; 32];
         assert!(decrypt(&state, app, Some(&cipher)).is_err());
     }
+}
+
+pub(crate) async fn inspect_gateway_container(
+    state: &AppState,
+    app: Uuid,
+    container: &str,
+) -> Result<bollard::models::ContainerInspectResponse, ApiError> {
+    worker::inspect_owned(state, app, container).await
 }

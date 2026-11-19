@@ -17,7 +17,23 @@ https:// {
         on_demand
     }
     encode zstd gzip
-    @private path /_ferrix /_ferrix/*
-    respond @private 404
-    reverse_proxy ferrix:8081
+    route {
+        @private path /_ferrix /_ferrix/*
+        respond @private 404
+        request_header -X-Ferrix-Upstream
+        request_header -X-Ferrix-Service-Type
+        forward_auth ferrix:8081 {
+            uri /_ferrix/route
+            copy_headers X-Ferrix-Upstream X-Ferrix-Service-Type
+        }
+        @application header X-Ferrix-Service-Type application
+        reverse_proxy @application {http.request.header.X-Ferrix-Upstream} {
+            header_up -X-Ferrix-Upstream
+            header_up -X-Ferrix-Service-Type
+        }
+        reverse_proxy ferrix:8081 {
+            header_up -X-Ferrix-Upstream
+            header_up -X-Ferrix-Service-Type
+        }
+    }
 }

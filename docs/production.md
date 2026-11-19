@@ -4,7 +4,7 @@ Ferrix runs as three Compose services: Ferrix (Rust API and compiled React front
 
 ## Requirements
 
-- Linux amd64 (Intel/AMD 64-bit) with a DNS domain pointing to the VPS.
+- Linux amd64 (Intel/AMD 64-bit) with a public IPv4 address. A custom DNS domain is optional.
 - Inbound TCP 80 and 443 available, including the host/provider firewall.
 - Root access, curl, openssl, util-linux and zoneinfo data.
 - Docker Engine with Compose v2. Automatic Docker installation is limited to Debian/Ubuntu, via Docker's installation script. Existing Docker installations are retained.
@@ -92,10 +92,9 @@ The runtime image includes Docker CLI and Compose for managed Compose deployment
 ## Host a static website
 
 1. Open a project environment and choose **Create Service → Static Website**.
-2. A system administrator with manager access to that organization assigns a
-   DNS hostname they control. Point the domain's A/AAAA records at the server
-   and ensure TCP 80 and 443 are reachable. Use a separate domain from the
-   dashboard when hosting third-party content.
+2. Use the generated automatic domain, or have a system administrator with
+   organization manager access assign a custom hostname. For a custom hostname,
+   point its A/AAAA records at the server. Ensure TCP 80 and 443 are reachable.
 3. Select your build output folder and publish it. The root must contain
    `index.html`. Each build supports up to 512 files and 8 MiB total. Each
    organization can keep up to 10 websites.
@@ -107,10 +106,40 @@ The runtime image includes Docker CLI and Compose for managed Compose deployment
 
 Static releases are part of the PostgreSQL backup. The website listener runs
 on internal container port 8081 and must not be published directly. The
-dashboard stays on port 8080 behind its own Caddy host rule. Static hosting
-serves files and directory indexes requested with a trailing slash. Configure
-the site's generator to emit HTML for its routes if its URLs need deep links.
+dashboard stays on port 8080 behind its own Caddy host rule. Static hosting serves files and directory indexes. HTML navigation to a missing
+extensionless path falls back to root `index.html` for SPA routing. Missing
+assets such as `.js` files still return 404.
 
 For an existing installation, back up the database, then update the installed
 Compose and Caddy configuration from the same release as the image. Preserve
 the existing `.env` and named volumes, including Caddy certificate storage.
+
+## Automatic domains with Caddy
+
+Set `FERRIX_AUTO_DOMAIN=sslip.io` and `FERRIX_PUBLIC_IP` to the VPS public IPv4
+address in `/opt/ferrix/.env`. The installer detects the address through
+`https://api.ipify.org` unless explicitly supplied. Leaving `FERRIX_DOMAIN`
+blank generates `ferrix.<ip-with-dashes>.sslip.io` for the dashboard too.
+
+Published Static Websites receive `https://site-<uuid>.<ip-with-dashes>.sslip.io/`;
+deployed Docker Applications receive `https://app-<uuid>.<ip-with-dashes>.sslip.io/`.
+No DNS account or custom domain is required. Open the link on the service page.
+URLs remain stable across redeploys while the configured public IP is unchanged.
+IPv6-only automatic domains are not supported in this version.
+
+Caddy joins the project-owned ingress network and routes Application traffic
+to the active deployment's container port. New deployments attach automatically;
+redeploy older Applications once after enabling the feature. Database and
+Compose services stay private. Only registered published sites or deployed
+Applications can authorize automatic certificate issuance. Public certificate
+issuance depends on reachable ports 80/443, public DNS and CA availability.
+The website listener on 8081 and Caddy's administration interface are not exposed.
+
+Existing VPS installations must update the image, Compose file and Caddyfile
+from the same release, preserve secrets/volumes, add the above settings, then
+run `docker compose up -d`. The ingress name defaults to the Compose project
+name plus `_ingress`; Ferrix and Caddy must use the same network. If the VPS IP
+changes, update `FERRIX_PUBLIC_IP` and restart Ferrix; generated URLs will change.
+
+References: [Caddy forward authentication](https://caddyserver.com/docs/caddyfile/directives/forward_auth)
+and [sslip.io DNS and TLS](https://sslip.io/).

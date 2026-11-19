@@ -19,6 +19,7 @@ fn config() -> Arc<AuthConfig> {
 }
 fn app(pool: sqlx::PgPool) -> axum::Router {
     router(AppState {
+        gateway: Default::default(),
         pool,
         docker: bollard::Docker::connect_with_local_defaults().unwrap(),
         auth: config(),

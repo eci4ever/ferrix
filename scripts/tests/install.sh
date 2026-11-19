@@ -34,6 +34,7 @@ od -An -N32 -tx1 /dev/urandom | tr -d ' \n'
 printf '\n'
 MOCK
 chmod +x /mocks/*
+export FERRIX_PUBLIC_IP=203.0.113.10
 export PATH=/mocks:$PATH FERRIX_DOMAIN=deploy.example.com FERRIX_TIMEZONE=UTC
 # Unsupported ARM hosts fail before installation.
 if TEST_MACHINE_ARCH=aarch64 bash /src/scripts/install.sh >/tmp/result 2>&1; then exit 1; fi
@@ -55,3 +56,13 @@ for invalid in 'https://deploy.example.com' 'a.-bad.com' '127.0.0.1' 'a..com'; d
   if FERRIX_DOMAIN="$invalid" bash /src/scripts/install.sh >/tmp/result 2>&1; then exit 1; fi
 done
 echo 'Installer tests passed: pull failure, fresh install, permissions, existing install preservation, invalid hostnames.'
+
+# Only this ephemeral container's installation fixture is removed.
+rm /opt/ferrix/.env /opt/ferrix/compose.yaml /opt/ferrix/Caddyfile
+FERRIX_DOMAIN= bash /src/scripts/install.sh </dev/null >/tmp/result 2>&1
+grep -q '^FERRIX_DOMAIN=ferrix.203-0-113-10.sslip.io$' /opt/ferrix/.env
+grep -q '^FERRIX_AUTO_DOMAIN=sslip.io$' /opt/ferrix/.env
+for invalid in '127.0.0.1' '192.168.1.1' '172.16.0.1' '999.1.2.3' '1.2.3.04'; do
+  if FERRIX_PUBLIC_IP="$invalid" bash /src/scripts/install.sh >/tmp/result 2>&1; then exit 1; fi
+done
+echo 'Automatic domain installer tests passed.'

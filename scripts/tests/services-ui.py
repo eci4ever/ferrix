@@ -55,6 +55,9 @@ try:
     isolated_url = urllib.parse.urlunsplit(parsed._replace(query=urllib.parse.urlencode(query)))
     preview = env | {'DATABASE_URL': isolated_url, 'FERRIX_BIND': f'127.0.0.1:{api_port}', 'FERRIX_AUTH_ORIGIN': f'http://127.0.0.1:{web_port}', 'FERRIX_AUTH_KEY': secrets.token_hex(32), 'FERRIX_WEB_PORT': str(web_port)}
     preview.pop('FERRIX_STATIC_DIR', None)
+    preview['FERRIX_AUTO_DOMAIN'] = 'off'
+    preview['FERRIX_PUBLIC_IP'] = ''
+    preview['FERRIX_WEBSITE_BIND'] = '127.0.0.1:0'  # Prevent dotenv from reloading the development port.
     with tempfile.TemporaryFile() as api_log, tempfile.TemporaryFile() as web_log:
         api = subprocess.Popen([str(root / 'target/debug/ferrix-api')], cwd=root, env=preview, stdout=api_log, stderr=subprocess.STDOUT, start_new_session=True)
         web = subprocess.Popen(['npm', 'run', 'dev'], cwd=root / 'apps/web', env=preview, stdout=web_log, stderr=subprocess.STDOUT, start_new_session=True)

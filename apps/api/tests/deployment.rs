@@ -135,6 +135,7 @@ async fn docker_deployment_flow_and_isolation() {
         .unwrap();
     sqlx::migrate!("./migrations").run(&pool).await.unwrap();
     let state = AppState {
+        gateway: Default::default(),
         pool: pool.clone(),
         docker: bollard::Docker::connect_with_defaults().unwrap(),
         auth: Arc::new(AuthConfig {
