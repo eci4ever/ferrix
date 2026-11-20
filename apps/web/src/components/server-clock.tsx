@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Badge } from '@/components/ui/badge'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { request } from '@/lib/api'
 
 type ClockResponse = { unix_ms: number; timezone: string; utc_offset: string }
@@ -41,8 +42,9 @@ export function ServerClock() {
     }
   }, [])
   const time = sample ? new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23', timeZone: sample.timezone }).format(new Date(sample.unix_ms + Math.max(0, tick - sample.receivedAt))) : null
-  return <Badge variant="outline" className="gap-2" aria-label={sample ? `Server time, ${sample.timezone}, ${sample.utc_offset}` : 'Server time unavailable'}>
+  const description = sample ? `Server time · ${sample.timezone} · ${sample.utc_offset}` : 'Server time unavailable'
+  return <Tooltip><TooltipTrigger asChild><Badge tabIndex={0} variant="outline" className="gap-2 whitespace-nowrap" aria-label={description}>
     <span><span className="hidden sm:inline">Server Time: </span><span className="tabular-nums">{time ?? 'Unavailable'}</span></span>
     {sample ? <span className="hidden text-muted-foreground xl:inline">{sample.timezone} | {sample.utc_offset}</span> : null}
-  </Badge>
+  </Badge></TooltipTrigger><TooltipContent>{description}</TooltipContent></Tooltip>
 }
