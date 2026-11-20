@@ -148,10 +148,6 @@ pub async fn setup(
         .bind(user)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("UPDATE projects SET organization_id=$1 WHERE organization_id IS NULL")
-        .bind(org)
-        .execute(&mut *tx)
-        .await?;
     let token = sessions::issue(&mut tx, user, org, &headers).await?;
     log(&mut tx, user, org, "installation.configured").await?;
     tx.commit().await?;

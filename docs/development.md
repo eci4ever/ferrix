@@ -235,3 +235,24 @@ Hosting instance label or retired Compose application UUIDs. Remove retired
 containers before their labeled volumes/networks. Never use a global prune or
 remove another user's resources. Keep PostgreSQL, Caddy certificate storage,
 ingress and active Application/Database volumes.
+
+### Database integrity and indexes
+
+Migration 0011 requires every project's `organization_id` and adds a deferred
+composite foreign key from `(applications.id, active_deployment_id)` to
+`deployments(application_id, id)`. A service cannot activate another service's
+deployment or delete its current deployment independently. Activation, redeploy
+and cascading service/project deletion remain transactional. Existing orphan
+ownership or invalid active pointers stop migration without silently reassigning
+or deleting data; fix those records explicitly before retrying startup.
+
+Membership lookups use `(user_id, organization_id)` and organization audit queries
+use `(organization_id, created_at DESC)`. Additional expiry indexes support bounded
+auth housekeeping, including `LEAST(expires_at, absolute_expires_at)` for sessions
+and a partial index on unconfirmed MFA enrollments. Existing tenant/project,
+deployment queue and history indexes remain in place.
+
+PostgreSQL regression tests cover invalid ownership/pointers, deferred activation,
+cascading deletes, failed-migration recovery, expiry preservation, locked renewals,
+bounded cleanup, concurrent cleaners and worker startup/shutdown. Run against your
+own test database with `cargo test --test database_integrity -- --include-ignored`.
