@@ -413,3 +413,41 @@ pub async fn reset_password(
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
+
+#[derive(serde::Deserialize)]
+pub(crate) struct ProfileInput {
+    name: String,
+    avatar: String,
+}
+
+pub(crate) async fn profile(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    id: super::Identity,
+) -> Result<axum::Json<serde_json::Value>, ApiError> {
+    let (name, email, avatar): (String, String, String) =
+        sqlx::query_as("SELECT name,email,avatar FROM auth_users WHERE id=$1")
+            .bind(id.user_id)
+            .fetch_one(&state.pool)
+            .await?;
+    Ok(axum::Json(
+        serde_json::json!({"name":name,"email":email,"avatar":avatar}),
+    ))
+}
+
+pub(crate) async fn save_profile(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    id: super::Identity,
+    axum::Json(input): axum::Json<ProfileInput>,
+) -> Result<axum::http::StatusCode, ApiError> {
+    let name = name(&input.name)?;
+    if !["initials", "🌿", "🚀", "🐱", "🌊", "⭐"].contains(&input.avatar.as_str()) {
+        return Err(super::bad("Choose an available avatar."));
+    }
+    sqlx::query("UPDATE auth_users SET name=$2,avatar=$3 WHERE id=$1")
+        .bind(id.user_id)
+        .bind(name)
+        .bind(input.avatar)
+        .execute(&state.pool)
+        .await?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}
