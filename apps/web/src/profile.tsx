@@ -1,11 +1,13 @@
 import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { request } from '@/lib/api'
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card'
+import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert'
 import { Field, FieldLabel, FieldDescription } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
+
+const panel = 'flex flex-col gap-4 rounded-xl border bg-card p-6 text-card-foreground'
 
 export type Profile = { name: string; email: string; avatar: string; avatar_url?: string | null }
 
@@ -16,10 +18,12 @@ export function ProfilePage({ profile, refresh }: { profile: Profile; refresh: (
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
-  return <section className="grid max-w-2xl gap-6">
+  return <div className="flex flex-col gap-6">
     <h1 className="text-2xl font-semibold">Profile</h1>
-    <Card><CardHeader><CardTitle>Personal details</CardTitle></CardHeader><CardContent>
-      <form className="grid gap-4" onSubmit={async event => {
+    {error && <Alert variant="destructive" role="alert"><AlertTitle>Profile could not be saved</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
+    {notice && <Alert role="status"><AlertTitle>Account notice</AlertTitle><AlertDescription>{notice}</AlertDescription></Alert>}
+    <section className={panel}><h2 className="font-semibold">Personal details</h2>
+      <form className="flex flex-col gap-4" onSubmit={async event => {
         event.preventDefault()
         setBusy(true); setError(''); setNotice('')
         try {
@@ -37,11 +41,9 @@ export function ProfilePage({ profile, refresh }: { profile: Profile; refresh: (
             {['initials','🌿','🚀','🐱','🌊','⭐'].map((value, index) => <label key={value} className="flex items-center gap-2 rounded-md border p-3"><RadioGroupItem value={value} aria-label={['Use initials','Leaf','Rocket','Cat','Wave','Star'][index]} /><span>{value === 'initials' ? 'Initials' : value}</span></label>)}
           </RadioGroup>
         </fieldset>
-        {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
-        {notice && <p role="status" className="text-sm">{notice}</p>}
-        <Button className="w-fit" disabled={busy}>{busy ? 'Saving…' : 'Save profile'}</Button>
+        <Button disabled={busy}>{busy ? 'Saving…' : 'Save profile'}</Button>
       </form>
-    </CardContent></Card>
-    <Card><CardHeader><CardTitle>Account security</CardTitle></CardHeader><CardContent><p className="mb-4 text-sm text-muted-foreground">Manage your password, two-factor authentication and signed-in sessions.</p><Button asChild variant="outline"><Link to="/security">Manage security and sessions</Link></Button></CardContent></Card>
-  </section>
+    </section>
+    <section className={panel}><h2 className="font-semibold">Account security</h2><p className="text-sm text-muted-foreground">Manage your password, two-factor authentication and signed-in sessions.</p><Button asChild variant="outline"><Link to="/security">Manage security and sessions</Link></Button></section>
+  </div>
 }
