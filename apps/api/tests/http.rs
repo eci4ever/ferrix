@@ -177,6 +177,67 @@ async fn postgres_auth_security_and_tenant_isolation() {
         StatusCode::CONFLICT
     );
     let (_, identity, _) = get(&app, "/api/v1/auth/session", &owner).await;
+    assert_eq!(
+        get(&app, "/api/v1/auth/profile", "").await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let saved = post(
+        &app,
+        "/api/v1/auth/profile",
+        json!({"name":"Updated Owner","avatar":"🚀"}),
+        &owner,
+    )
+    .await;
+    assert_eq!(saved.0, StatusCode::NO_CONTENT);
+    assert_eq!(post(&app, "/api/v1/auth/profile", json!({"name":"Updated Owner","avatar":"🚀","avatar_url":"https://example.com/photo.png"}), &owner).await.0, StatusCode::NO_CONTENT);
+    let profile = get(&app, "/api/v1/auth/profile", &owner).await.1;
+    assert_eq!(profile["avatar_url"], "https://example.com/photo.png");
+    assert_eq!(
+        post(
+            &app,
+            "/api/v1/auth/profile",
+            json!({"name":"Owner","avatar":"initials","avatar_url":"javascript:alert(1)"}),
+            &owner
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(profile["name"], "Updated Owner");
+    assert_eq!(profile["avatar"], "🚀");
+    assert_eq!(
+        get(&app, "/api/v1/auth/session", &owner).await.1["name"],
+        "Updated Owner"
+    );
+    assert_eq!(
+        post(
+            &app,
+            "/api/v1/auth/profile",
+            json!({"name":" ","avatar":"🚀"}),
+            &owner
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        post(
+            &app,
+            "/api/v1/auth/profile",
+            json!({"name":"Owner","avatar":"bad"}),
+            &owner
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    post(
+        &app,
+        "/api/v1/auth/profile",
+        json!({"name":"Owner","avatar":"initials"}),
+        &owner,
+    )
+    .await;
     let owner_id = identity["user_id"].as_str().unwrap();
     let org1 = identity["organization_id"].as_str().unwrap();
     assert_eq!(identity["email"], "owner@example.com");

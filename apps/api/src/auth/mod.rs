@@ -14,6 +14,10 @@ use sha2::{Digest, Sha256};
 
 pub fn routes(state: AppState) -> Router<AppState> {
     Router::new()
+        .route(
+            "/profile",
+            get(accounts::profile).post(accounts::save_profile),
+        )
         .route("/session", get(sessions::current))
         .route("/sign-out", post(sessions::sign_out))
         .route("/sessions", get(sessions::list))
