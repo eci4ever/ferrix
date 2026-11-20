@@ -59,7 +59,6 @@ impl AuthConfig {
 
 #[derive(Clone, Serialize, FromRow)]
 pub struct Identity {
-    pub hosting_student: bool,
     pub session_id: Uuid,
     pub user_id: Uuid,
     pub name: String,
@@ -120,42 +119,13 @@ pub(super) fn cookie_token(headers: &HeaderMap, config: &AuthConfig) -> Option<S
 }
 pub(super) async fn resolve(state: &AppState, headers: &HeaderMap) -> Result<Identity, ApiError> {
     let t = cookie_token(headers, &state.auth).ok_or_else(invalid)?;
-    sqlx::query_as::<_,Identity>("SELECT EXISTS(SELECT 1 FROM student_hostings h WHERE h.user_id=u.id) hosting_student,s.id session_id,u.id user_id,u.name,u.email,u.system_role,s.active_organization_id organization_id,o.name organization_name,m.role,s.authenticated_at,s.expires_at FROM auth_sessions s JOIN auth_users u ON u.id=s.user_id JOIN auth_members m ON m.user_id=u.id AND m.organization_id=s.active_organization_id JOIN auth_organizations o ON o.id=m.organization_id WHERE s.token_hash=$1 AND s.expires_at>now() AND s.absolute_expires_at>now() AND NOT u.banned")
+    sqlx::query_as::<_,Identity>("SELECT s.id session_id,u.id user_id,u.name,u.email,u.system_role,s.active_organization_id organization_id,o.name organization_name,m.role,s.authenticated_at,s.expires_at FROM auth_sessions s JOIN auth_users u ON u.id=s.user_id JOIN auth_members m ON m.user_id=u.id AND m.organization_id=s.active_organization_id JOIN auth_organizations o ON o.id=m.organization_id WHERE s.token_hash=$1 AND s.expires_at>now() AND s.absolute_expires_at>now() AND NOT u.banned")
  .bind(digest(&t)).fetch_optional(&state.pool).await?.ok_or_else(invalid)
-}
-// Student sessions are restricted on the server, including direct API requests.
-fn student_allowed(id: &Identity, path: &str) -> bool {
-    if !id.hosting_student {
-        return true;
-    }
-    path.starts_with("/student-hosting")
-        || path.starts_with("/api/v1/student-hosting")
-        || matches!(
-            path,
-            "/api/v1/server-time"
-                | "/api/v1/auth/session"
-                | "/session"
-                | "/sign-out"
-                | "/sessions"
-                | "/sessions/revoke-others"
-                | "/reauthenticate"
-                | "/change-password"
-                | "/security"
-                | "/audit"
-                | "/mfa/enroll"
-                | "/mfa/confirm"
-                | "/mfa/disable"
-                | "/organizations"
-        )
-        || (path.starts_with("/sessions/") && path.ends_with("/revoke"))
 }
 // Background clock polling authenticates without extending session inactivity expiry.
 pub async fn identify(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
     match resolve(&state, req.headers()).await {
         Ok(id) => {
-            if !student_allowed(&id, req.uri().path()) {
-                return forbidden().into_response();
-            }
             req.extensions_mut().insert(id);
             next.run(req).await
         }
@@ -168,9 +138,6 @@ pub async fn protect(State(state): State<AppState>, mut req: Request, next: Next
         Ok(id) => id,
         Err(e) => return e.into_response(),
     };
-    if !student_allowed(&id, req.uri().path()) {
-        return forbidden().into_response();
-    }
     let renewed: Result<Option<DateTime<Utc>>, sqlx::Error> = sqlx::query_scalar("UPDATE auth_sessions SET expires_at=LEAST(now()+interval '3 days',absolute_expires_at),updated_at=now() WHERE id=$1 AND updated_at<now()-interval '1 day' AND expires_at>now() AND absolute_expires_at>now() RETURNING expires_at").bind(id.session_id).fetch_optional(&state.pool).await;
     let cookie = match renewed {
         Ok(Some(expires)) => {

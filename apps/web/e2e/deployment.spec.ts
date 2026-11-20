@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 
-test('Create Service supports Application, PostgreSQL and Compose', async ({ page, request }) => {
+test('Create Service offers only Application and Database', async ({ page, request }) => {
   test.setTimeout(180_000)
   const base = process.env.FERRIX_E2E_URL
   if (!base || process.env.FERRIX_E2E_DISPOSABLE !== '1') throw new Error('Use an isolated preview database with FERRIX_E2E_URL and FERRIX_E2E_DISPOSABLE=1.')
@@ -104,18 +104,6 @@ test('Create Service supports Application, PostgreSQL and Compose', async ({ pag
   await expect(page.getByLabel('Username', { exact: true })).toHaveAttribute('readonly', '')
   await page.getByRole('button', { name: 'Cancel', exact: true }).click()
 
-  await page.goto(projectUrl)
-  await page.getByRole('button', { name: 'Create Service', exact: true }).click()
-  await page.getByRole('menuitem', { name: 'Compose', exact: true }).click()
-  await page.getByLabel('Service name', { exact: true }).fill('Compose UI')
-  await page.getByRole('button', { name: 'Create Compose', exact: true }).click()
-  await page.getByRole('link', { name: 'Compose UI', exact: true }).click()
-  await page.getByRole('button', { name: 'Deploy', exact: true }).click()
-  await expect(page.getByText('succeeded', { exact: true })).toBeVisible({ timeout: 60_000 })
-  const composeAddress = page.getByRole('link', { name: /127\.0\.0\.1:\d+/ })
-  await expect(composeAddress).toBeVisible()
-  expect(await (await request.get((await composeAddress.getAttribute('href'))!)).text()).toContain('Welcome to nginx')
-  await checkControls()
   await page.screenshot({ path: '/private/tmp/ferrix-service-controls-desktop.png', fullPage: true, animations: 'disabled' })
   await page.setViewportSize({ width: 390, height: 844 })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
@@ -129,12 +117,14 @@ test('Create Service supports Application, PostgreSQL and Compose', async ({ pag
   await expect(page.getByRole('link', { name: 'nginx', exact: true })).toHaveCount(0)
   await page.getByRole('button', { name: 'Database', exact: true }).click()
   await page.getByRole('menuitem', { name: 'All types', exact: true }).click()
-  await page.getByLabel('Filter services', { exact: true }).fill('Compose')
-  await expect(page.getByRole('link', { name: 'Compose UI', exact: true })).toBeVisible()
+  await page.getByLabel('Filter services', { exact: true }).fill('nginx')
+  await expect(page.getByRole('link', { name: 'nginx', exact: true })).toBeVisible()
   await expect(page.getByRole('link', { name: 'PostgreSQL UI', exact: true })).toHaveCount(0)
   await page.getByLabel('Filter services', { exact: true }).fill('')
   await page.getByRole('button', { name: 'Create Service', exact: true }).click()
   await expect(page.getByRole('menuitem', { name: 'Application', exact: true })).toBeVisible()
+  await expect(page.getByRole('menuitem', { name: 'Compose', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('menuitem', { name: 'Static Website', exact: true })).toHaveCount(0)
   await page.screenshot({ path: '/private/tmp/ferrix-services-desktop.png', fullPage: true, animations: 'disabled' })
   await page.keyboard.press('Escape')
   await expect(page.getByRole('menu')).toHaveCount(0)
@@ -147,7 +137,7 @@ test('Create Service supports Application, PostgreSQL and Compose', async ({ pag
   await expect(page.getByRole('button', { name: 'Delete service', exact: true })).toBeDisabled()
   await page.getByRole('button', { name: 'Cancel', exact: true }).click()
   await expect(page.getByRole('link', { name: 'nginx', exact: true })).toBeVisible()
-  for (const name of ['nginx', 'PostgreSQL UI', 'Compose UI']) {
+  for (const name of ['nginx', 'PostgreSQL UI']) {
     await page.getByRole('button', { name: `Delete ${name}`, exact: true }).click()
     await page.getByLabel('Type the service name to confirm', { exact: true }).fill(name)
     if (name !== 'nginx') {

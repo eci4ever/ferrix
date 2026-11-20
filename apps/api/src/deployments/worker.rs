@@ -60,9 +60,6 @@ pub(super) async fn inspect_owned(
     Ok(info)
 }
 pub(super) async fn runtime(state: &AppState, app: &Application) -> Result<Value, ApiError> {
-    if app.kind == "compose" {
-        return super::services::compose::runtime(state, app.id).await;
-    }
     let Some(container) = &app.active_container_id else {
         return Ok(json!({"state":"not_deployed","host_port":null}));
     };
@@ -89,15 +86,7 @@ pub(super) async fn runtime(state: &AppState, app: &Application) -> Result<Value
     }
 }
 pub(super) async fn logs(state: &AppState, app: &Application) -> Result<Value, ApiError> {
-    let containers = if app.kind == "compose" {
-        super::services::compose::containers(state, app.id)
-            .await?
-            .into_iter()
-            .filter_map(|c| c.id)
-            .collect::<Vec<_>>()
-    } else {
-        app.active_container_id.iter().cloned().collect()
-    };
+    let containers: Vec<_> = app.active_container_id.iter().cloned().collect();
     let read = async {
         let mut output = String::new();
         for container in containers {
@@ -132,8 +121,8 @@ pub(super) async fn phase(conn: &mut PgConnection, job: Uuid, text: &str) -> Res
     Ok(())
 }
 async fn execute(state: &AppState, conn: &mut PgConnection, job: &Job) -> Result<(), String> {
-    if job.service_kind == "compose" {
-        return super::services::compose::execute(state, conn, job).await;
+    if !matches!(job.service_kind.as_str(), "application" | "database") {
+        return Err("This service type is no longer supported.".into());
     }
     phase(conn, job.id, "Pulling Docker image…").await?;
     let options = CreateImageOptionsBuilder::default()
@@ -368,7 +357,7 @@ async fn cleanup(state: &AppState, conn: &mut PgConnection) -> Result<(), String
         let Some(container_id) = container.id else {
             continue;
         };
-        let removable:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM deployments d JOIN applications a ON a.id=d.application_id WHERE d.id=$1 AND a.id=$2 AND a.service_kind!='compose' AND d.status IN ('succeeded','failed') AND a.active_container_id IS DISTINCT FROM $3)")
+        let removable:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM deployments d JOIN applications a ON a.id=d.application_id WHERE d.id=$1 AND a.id=$2 AND a.service_kind IN ('application','database') AND d.status IN ('succeeded','failed') AND a.active_container_id IS DISTINCT FROM $3)")
             .bind(deployment).bind(app).bind(&container_id).fetch_one(&mut *conn).await.map_err(|_|"Could not verify cleanup ownership.")?;
         if removable && labels_match(Some(&labels), app) {
             let removed = tokio::time::timeout(
@@ -412,7 +401,7 @@ async fn cycle(
     let job=sqlx::query_as::<_,Job>("WITH next AS (SELECT id FROM deployments WHERE status='queued' ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1), claimed AS (UPDATE deployments d SET status='running',started_at=now() FROM next WHERE d.id=next.id RETURNING d.*) SELECT d.id,d.application_id,d.image,d.container_port,d.env_cipher,d.service_kind,d.service_cipher,p.organization_id,p.id AS project_id,e.id AS environment_id FROM claimed d JOIN applications a ON a.id=d.application_id JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id")
         .fetch_optional(&mut *conn).await.map_err(|_|"Could not claim queued deployment.")?;
     if let Some(job) = job {
-        let authorized:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM deployments d LEFT JOIN auth_users u ON u.id=d.requested_by LEFT JOIN auth_members m ON m.user_id=u.id AND m.organization_id=$2 WHERE d.id=$1 AND (d.requested_by IS NULL OR (NOT u.banned AND m.role IN ('owner','admin') AND (d.service_kind!='compose' OR u.system_role='admin'))))")
+        let authorized:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM deployments d LEFT JOIN auth_users u ON u.id=d.requested_by LEFT JOIN auth_members m ON m.user_id=u.id AND m.organization_id=$2 WHERE d.id=$1 AND (d.requested_by IS NULL OR (NOT u.banned AND m.role IN ('owner','admin') AND d.service_kind IN ('application','database'))))")
             .bind(job.id).bind(job.organization_id).fetch_one(&mut *conn).await.map_err(|_|"Could not verify deployment authorization.")?;
         let result = if authorized {
             tokio::select! {

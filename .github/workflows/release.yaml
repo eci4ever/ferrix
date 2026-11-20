@@ -88,21 +88,3 @@ jobs:
           cache-to: type=gha,scope=release-amd64,mode=max
           provenance: true
           sbom: true
-
-      - name: Publish shared PHP-FPM image
-        uses: docker/build-push-action@v6
-        with:
-          context: deploy/student-php
-          platforms: linux/amd64
-          push: true
-          tags: |
-            ${{ needs.source.outputs.image }}-php-fpm:${{ needs.source.outputs.version }}
-            ${{ needs.source.outputs.image }}-php-fpm:sha-${{ needs.source.outputs.commit }}
-            ${{ needs.source.outputs.stable == 'true' && format('{0}-php-fpm:latest', needs.source.outputs.image) || '' }}
-          labels: |
-            org.opencontainers.image.source=https://github.com/${{ github.repository }}
-            org.opencontainers.image.revision=${{ needs.source.outputs.commit }}
-          cache-from: type=gha,scope=php-fpm-amd64
-          cache-to: type=gha,scope=php-fpm-amd64,mode=max
-          provenance: true
-          sbom: true

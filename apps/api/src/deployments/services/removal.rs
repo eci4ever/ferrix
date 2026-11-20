@@ -37,10 +37,7 @@ pub(super) async fn remove(
     Json(input): Json<Confirmation>,
 ) -> Result<StatusCode, ApiError> {
     id.manager()?;
-    let app = app_access(&state, &id, service).await?;
-    if app.kind == "compose" {
-        id.admin()?;
-    }
+    app_access(&state, &id, service).await?;
     let mut tx = state.pool.begin().await?;
     let current: String =
         sqlx::query_scalar("SELECT name FROM applications WHERE id=$1 FOR UPDATE")

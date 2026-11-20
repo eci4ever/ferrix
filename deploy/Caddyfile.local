@@ -10,36 +10,16 @@ http:// {
         @private path /_ferrix /_ferrix/*
         respond @private 404
         request_header -X-Ferrix-Upstream
-        request_header -X-Ferrix-Root
         request_header -X-Ferrix-Service-Type
         forward_auth {$FERRIX_WEBSITE_UPSTREAM} {
             uri /_ferrix/route
-            copy_headers X-Ferrix-Upstream X-Ferrix-Service-Type X-Ferrix-Root
-        }
-        @hosting header X-Ferrix-Service-Type php-fpm
-        handle @hosting {
-            route {
-                root * {http.request.header.X-Ferrix-Root}
-                @privateFiles path_regexp privateFiles (?i)(?:^|/)\.|\.(?:inc|ini|sql|conf|log|bak|phtml|phar|php[.~].*)$
-                respond @privateFiles 404
-                @nonCanonicalPhp path_regexp nonCanonicalPhp \.(?:P[hH][pP]|pH[pP]|phP)(?:$|/)
-                respond @nonCanonicalPhp 404
-                php_fastcgi {http.request.header.X-Ferrix-Upstream} {
-                    root /public
-                }
-                @phpSource path_regexp phpSource (?i)\.php(?:$|/)
-                respond @phpSource 404
-                file_server
-            }
+            copy_headers X-Ferrix-Upstream X-Ferrix-Service-Type
         }
         @application header X-Ferrix-Service-Type application
         reverse_proxy @application {http.request.header.X-Ferrix-Upstream} {
             header_up -X-Ferrix-Upstream
             header_up -X-Ferrix-Service-Type
         }
-        reverse_proxy {$FERRIX_WEBSITE_UPSTREAM} {
-            header_up -X-Ferrix-Upstream
-            header_up -X-Ferrix-Service-Type
-        }
+        respond 404
     }
 }

@@ -1,7 +1,7 @@
 use crate::{ApiError, AppState};
 use axum::{
     Router,
-    extract::State,
+    extract::{Query, State},
     http::{HeaderMap, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
@@ -24,9 +24,7 @@ pub struct GatewayConfig {
 }
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Resource {
-    Site(Uuid),
     Application(Uuid),
-    Student(Uuid),
 }
 impl GatewayConfig {
     pub fn from_env() -> Result<Self, String> {
@@ -95,9 +93,6 @@ impl GatewayConfig {
             network: Some(network),
         })
     }
-    pub(crate) fn ingress_network(&self) -> Option<&str> {
-        self.network.as_deref()
-    }
     pub(crate) fn url(&self, resource: Resource) -> Option<String> {
         let host = self.hostname(resource)?;
         let secure = !self.local || self.https;
@@ -112,9 +107,7 @@ impl GatewayConfig {
 
     fn hostname(&self, resource: Resource) -> Option<String> {
         let (prefix, id) = match resource {
-            Resource::Site(id) => ("site", id),
             Resource::Application(id) => ("app", id),
-            Resource::Student(id) => ("student", id),
         };
         Some(format!(
             "{prefix}-{}.{}",
@@ -130,17 +123,10 @@ impl GatewayConfig {
         }
         let id = Uuid::parse_str(id).ok()?;
         let resource = match kind {
-            "site" => Resource::Site(id),
             "app" => Resource::Application(id),
-            "student" => Resource::Student(id),
             _ => return None,
         };
         (self.hostname(resource).as_deref() == Some(host)).then_some(resource)
-    }
-    pub(crate) fn reserved(&self, host: &str) -> bool {
-        self.suffix
-            .as_ref()
-            .is_some_and(|suffix| host.ends_with(&format!(".{suffix}")))
     }
 }
 fn unavailable() -> ApiError {
@@ -163,29 +149,29 @@ fn host(headers: &HeaderMap) -> Option<String> {
 }
 
 pub fn public_router(state: AppState) -> Router {
-    let files = crate::static_websites::public_router_with_config(
-        state.pool.clone(),
-        state.gateway.clone(),
-    );
     Router::new()
         .route("/_ferrix/route", get(route))
+        .route("/_ferrix/tls-ask", get(tls_ask))
         .with_state(state)
-        .merge(files)
+}
+async fn tls_ask(
+    State(state): State<AppState>,
+    Query(input): Query<HashMap<String, String>>,
+) -> Result<StatusCode, ApiError> {
+    let name = input.get("domain").ok_or_else(missing)?;
+    let Some(Resource::Application(id)) = state.gateway.resource(name) else {
+        return Err(missing());
+    };
+    let allowed: bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM applications WHERE id=$1 AND service_kind='application' AND active_container_id IS NOT NULL)").bind(id).fetch_one(&state.pool).await?;
+    if !allowed {
+        return Err(missing());
+    }
+    Ok(StatusCode::NO_CONTENT)
 }
 async fn route(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
     let host = host(&headers).ok_or_else(missing)?;
-    let mut upstream = "unused.invalid:80".to_owned();
-    let mut file_root = None;
-    let kind = if let Some(Resource::Student(id)) = state.gateway.resource(&host) {
-        let (service, target, root) = crate::student_hosting::upstream(&state, id).await?;
-        upstream = target;
-        file_root = root;
-        if service == "php-fpm" {
-            "php-fpm"
-        } else {
-            "application"
-        }
-    } else if let Some(Resource::Application(id)) = state.gateway.resource(&host) {
+    let upstream;
+    let kind = if let Some(Resource::Application(id)) = state.gateway.resource(&host) {
         let row:Option<(String,i32)>=sqlx::query_as("SELECT a.active_container_id,d.container_port FROM applications a JOIN deployments d ON d.id=a.active_deployment_id AND d.application_id=a.id WHERE a.id=$1 AND a.service_kind='application' AND a.active_container_id IS NOT NULL").bind(id).fetch_optional(&state.pool).await?;
         let (container, port) = row.ok_or_else(missing)?;
         let info = crate::deployments::inspect_gateway_container(&state, id, &container).await?;
@@ -206,15 +192,7 @@ async fn route(State(state): State<AppState>, headers: HeaderMap) -> Result<Resp
         upstream = SocketAddr::new(ip, u16::try_from(port).map_err(|_| unavailable())?).to_string();
         "application"
     } else {
-        let id = match state.gateway.resource(&host) {
-            Some(Resource::Site(id)) => Some(id),
-            _ => None,
-        };
-        let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM static_websites WHERE (domain=$1 OR id=$2) AND active_release_id IS NOT NULL)").bind(host).bind(id).fetch_one(&state.pool).await?;
-        if !exists {
-            return Err(missing());
-        }
-        "static"
+        return Err(missing());
     };
     let mut response = StatusCode::NO_CONTENT.into_response();
     response
@@ -224,11 +202,6 @@ async fn route(State(state): State<AppState>, headers: HeaderMap) -> Result<Resp
         "x-ferrix-upstream",
         upstream.parse().map_err(|_| unavailable())?,
     );
-    if let Some(root) = file_root {
-        response
-            .headers_mut()
-            .insert("x-ferrix-root", root.parse().map_err(|_| unavailable())?);
-    }
     Ok(response)
 }
 
@@ -277,8 +250,8 @@ mod tests {
             network: None,
         };
         let id = Uuid::new_v4();
-        let host = c.hostname(Resource::Site(id)).unwrap();
-        assert_eq!(c.resource(&host), Some(Resource::Site(id)));
+        let host = c.hostname(Resource::Application(id)).unwrap();
+        assert_eq!(c.resource(&host), Some(Resource::Application(id)));
         assert!(c.resource(&format!("{host}.evil.test")).is_none());
         assert!(
             c.resource(&format!("app-{}.localhost", id.hyphenated()))
@@ -289,14 +262,18 @@ mod tests {
                 .unwrap()
                 .starts_with("http://app-")
         );
-        assert!(c.url(Resource::Site(id)).unwrap().ends_with(":9080/"));
+        assert!(
+            c.url(Resource::Application(id))
+                .unwrap()
+                .ends_with(":9080/")
+        );
         let secure = GatewayConfig {
             https: true,
             port: 443,
             ..c.clone()
         };
         assert_eq!(
-            secure.url(Resource::Site(id)),
+            secure.url(Resource::Application(id)),
             Some(format!("https://{host}/"))
         );
         let remote = GatewayConfig {
@@ -306,9 +283,9 @@ mod tests {
         };
         assert!(
             remote
-                .url(Resource::Site(id))
+                .url(Resource::Application(id))
                 .unwrap()
-                .starts_with("https://site-")
+                .starts_with("https://app-")
         );
     }
 }
