@@ -277,27 +277,11 @@ async fn docker_deployment_flow_and_isolation() {
         let info=state.docker.inspect_container(second["container_id"].as_str().unwrap(),None).await.unwrap();
         assert!(info.host_config.unwrap().port_bindings.is_none_or(|p|p.is_empty()),"database must not publish a host port");
         // Ordinary organization admins cannot create a host-level Compose project.
-        sqlx::query("UPDATE auth_members SET role='admin' WHERE user_id=$1").bind(member_id).execute(&pool).await.unwrap();
-        assert_eq!(call(&app,&create_service,&member,Some(json!({"kind":"compose","name":"forbidden-compose","yaml":"services: {web: {image: nginx:alpine}}"}))).await.0,StatusCode::FORBIDDEN);
-        sqlx::query("UPDATE auth_members SET role='member' WHERE user_id=$1").bind(member_id).execute(&pool).await.unwrap();
-        assert_eq!(call(&app,&create_service,&owner,Some(json!({"kind":"compose","name":"unsafe","yaml":"services: {web: {image: nginx:alpine, volumes: ['/:/host']}}"}))).await.0,StatusCode::UNPROCESSABLE_ENTITY);
-        let yaml="services:\n  web:\n    image: nginx:alpine\n    ports: [\"80\"]\n    environment:\n      LITERAL: ${LITERAL}\n      SLASH: ${SLASH}\n      QUOTE: ${QUOTE}\n";
-        let variables="LITERAL=$(whoami)${NOT_REAL}\nSLASH=C:\\temp\\\nQUOTE=it's fine";
-        let (code,stack,_)=call(&app,&create_service,&owner,Some(json!({"kind":"compose","name":"Web stack","yaml":yaml,"environment":variables}))).await;
-        assert_eq!(code,StatusCode::CREATED,"{stack}");
-        let stack:Uuid=stack["id"].as_str().unwrap().parse().unwrap();added_services.push(stack);
-        assert_eq!(call(&app,&format!("/api/v1/services/{stack}/deploy"),&owner,Some(json!({}))).await.0,StatusCode::ACCEPTED);
-        wait_status(&app,&owner,stack,"succeeded").await;
-        let runtime=call(&app,&format!("/api/v1/services/{stack}/runtime"),&owner,None).await.1;
-        assert_eq!(runtime["state"],"running","{runtime}");
-        nginx_responds(&state,runtime["containers"][0]["ports"][0]["port"].as_i64().unwrap()).await;
-        let info=state.docker.inspect_container(runtime["containers"][0]["id"].as_str().unwrap(),None).await.unwrap();
-        let variables=info.config.unwrap().env.unwrap();
-        assert!(variables.contains(&"LITERAL=$(whoami)${NOT_REAL}".to_owned()),"literal interpolation mismatch: {variables:?}");
-        assert!(variables.contains(&"SLASH=C:\\temp\\".to_owned()),"backslash interpolation mismatch: {variables:?}");
-        assert!(variables.contains(&"QUOTE=it's fine".to_owned()));
+        for kind in ["compose","static_website"] {
+            assert_eq!(call(&app,&create_service,&owner,Some(json!({"kind":kind,"name":"removed"}))).await.0,StatusCode::UNPROCESSABLE_ENTITY);
+        }
         let services=call(&app,&create_service,&member,None).await.1;
-        assert_eq!(services.as_array().unwrap().len(),3);
+        assert_eq!(services.as_array().unwrap().len(),2);
         assert_eq!(call(&app,&format!("/api/v1/environments/{environment}/applications"),&owner,None).await.1.as_array().unwrap().len(),1);
 
         assert_eq!(remove_service(&app,database,&member,"PostgreSQL",true).await,StatusCode::FORBIDDEN);
@@ -307,11 +291,8 @@ async fn docker_deployment_flow_and_isolation() {
         assert_eq!(call(&app,&format!("/api/v1/services/{database}/environment"),&owner,Some(json!({"environment":"POSTGRES_PASSWORD=overwrite"}))).await.0,StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(call(&app,&format!("/api/v1/services/{database}/environment"),&owner,Some(json!({"environment":"TZ=UTC"}))).await.0,StatusCode::NO_CONTENT);
         assert_eq!(call(&app,&format!("/api/v1/services/{database}/environment"),&owner,None).await.1["environment"],"TZ=UTC");
-        sqlx::query("UPDATE auth_members SET role='admin' WHERE user_id=$1").bind(member_id).execute(&pool).await.unwrap();
-        assert_eq!(call(&app,&format!("/api/v1/services/{stack}/control"),&member,Some(json!({"operation":"stop"}))).await.0,StatusCode::FORBIDDEN);
-        sqlx::query("UPDATE auth_members SET role='member' WHERE user_id=$1").bind(member_id).execute(&pool).await.unwrap();
         let states=call(&app,&format!("/api/v1/environments/{environment}/service-status"),&member,None).await.1;
-        assert_eq!(states.as_array().unwrap().len(),3);
+        assert_eq!(states.as_array().unwrap().len(),2);
         assert!(states.as_array().unwrap().iter().all(|s|s["state"]=="running"),"{states}");
         // Other organizations cannot delete or discover this service.
         let other=call(&app,"/api/v1/auth/organizations",&owner,Some(json!({"name":"Deletion isolation"}))).await.1;
@@ -326,12 +307,6 @@ async fn docker_deployment_flow_and_isolation() {
         assert_eq!(call(&app,&format!("/api/v1/services/{database}"),&owner,None).await.0,StatusCode::NOT_FOUND);
         let remaining:i64=sqlx::query_scalar("SELECT count(*) FROM deployments WHERE application_id=$1").bind(database).fetch_one(&pool).await.unwrap();
         assert_eq!(remaining,0);
-        // Destructive removal affects only the Compose service's labeled data.
-        let volume=format!("ferrix-delete-test-{}",stack.simple());
-        state.docker.create_volume(bollard::models::VolumeCreateRequest{name:Some(volume.clone()),labels:Some(std::collections::HashMap::from([("io.ferrix.managed".into(),"true".into()),("io.ferrix.application".into(),stack.to_string())])),..Default::default()}).await.unwrap();
-        assert_eq!(remove_service(&app,stack,&owner,"Web stack",true).await,StatusCode::NO_CONTENT);
-        assert!(state.docker.inspect_volume(&volume).await.is_err());
-        assert!(state.docker.inspect_container(runtime["containers"][0]["id"].as_str().unwrap(),None).await.is_err());
         assert!(state.docker.inspect_network(&format!("ferrix-env-{}",environment.replace('-', "")),None).await.is_ok(),"shared environment network remains");
         let app_name:String=sqlx::query_scalar("SELECT name FROM applications WHERE id=$1").bind(application_id).fetch_one(&pool).await.unwrap();
         assert_eq!(remove_service(&app,application_id,&owner,&app_name,false).await,StatusCode::NO_CONTENT);

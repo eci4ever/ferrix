@@ -1,7 +1,6 @@
 use super::*;
 use serde::de::DeserializeOwned;
 use std::collections::HashMap;
-pub(super) mod compose;
 mod control;
 pub(super) mod database;
 mod removal;
@@ -149,10 +148,6 @@ impl DatabaseConfig {
         Ok(())
     }
 }
-#[derive(Clone, Serialize, Deserialize)]
-pub(super) struct ComposeConfig {
-    pub yaml: String,
-}
 // A distinct authenticated context prevents swapping service config and environment ciphertexts.
 pub(super) fn seal<T: Serialize>(
     state: &AppState,
@@ -213,12 +208,6 @@ enum NewService {
         #[serde(default = "default_database")]
         username: String,
     },
-    Compose {
-        name: String,
-        yaml: String,
-        #[serde(default)]
-        environment: String,
-    },
 }
 async fn list(
     State(state): State<AppState>,
@@ -226,7 +215,7 @@ async fn list(
     Path(environment): Path<Uuid>,
 ) -> Result<Json<Vec<Application>>, ApiError> {
     environment_access(&state, &id, environment).await?;
-    let rows:Vec<Application>=sqlx::query_as(&format!("SELECT {APP_COLUMNS} FROM applications a WHERE environment_id=$1 ORDER BY created_at DESC,id")).bind(environment).fetch_all(&state.pool).await?;
+    let rows:Vec<Application>=sqlx::query_as(&format!("SELECT {APP_COLUMNS} FROM applications a WHERE environment_id=$1 AND service_kind IN ('application','database') ORDER BY created_at DESC,id")).bind(environment).fetch_all(&state.pool).await?;
     Ok(Json(
         rows.into_iter()
             .map(|app| app.with_gateway(&state))
@@ -242,7 +231,7 @@ async fn create(
     id.manager()?;
     environment_access(&state, &id, environment).await?;
     let service = Uuid::new_v4();
-    let (kind, label, image, port, cipher, env) = match input {
+    let (kind, label, image, port, cipher, env): (_, _, _, _, _, Option<Vec<u8>>) = match input {
         NewService::Application { config } => {
             return create_application(State(state), id, Path(environment), Json(config)).await;
         }
@@ -275,23 +264,6 @@ async fn create(
                 engine.port(),
                 seal(&state, service, &config)?,
                 None,
-            )
-        }
-        NewService::Compose {
-            name: label,
-            yaml,
-            environment,
-        } => {
-            id.admin()?;
-            compose::validate(&yaml)?;
-            let values = parse_environment(&environment)?;
-            (
-                "compose",
-                name(&label)?,
-                "compose",
-                80,
-                seal(&state, service, &ComposeConfig { yaml })?,
-                encrypt(&state, service, &values)?,
             )
         }
     };
@@ -345,18 +317,6 @@ async fn configuration(
                 json!({"kind":"database","name":app.name,"engine":config.engine,"root_password":config.root_password,"database_name":config.database_name,"username":config.username,"password":config.password,"connection_uri":url.as_str(),"credentials_locked":locked}),
             ))
         }
-        "compose" => {
-            id.admin()?;
-            let config: ComposeConfig = open(&state, service, &cipher(&state, service).await?)?;
-            let env: Option<Vec<u8>> =
-                sqlx::query_scalar("SELECT env_cipher FROM applications WHERE id=$1")
-                    .bind(service)
-                    .fetch_one(&state.pool)
-                    .await?;
-            Ok(Json(
-                json!({"kind":"compose","name":app.name,"yaml":config.yaml,"environment":decrypt(&state,service,env.as_deref())?.join("\n")}),
-            ))
-        }
         _ => Err(missing()),
     }
 }
@@ -365,13 +325,6 @@ struct DatabaseEdit {
     name: String,
     #[serde(flatten)]
     config: DatabaseConfig,
-}
-#[derive(Deserialize)]
-struct ComposeEdit {
-    name: String,
-    yaml: String,
-    #[serde(default)]
-    environment: String,
 }
 async fn save(
     State(state): State<AppState>,
@@ -434,31 +387,7 @@ async fn save(
             .map_err(database_error)?;
             tx.commit().await?;
         }
-        "compose" => {
-            id.admin()?;
-            let edit: ComposeEdit = serde_json::from_value(value)
-                .map_err(|_| invalid("Invalid Compose configuration."))?;
-            compose::validate(&edit.yaml)?;
-            let values = parse_environment(&edit.environment)?;
-            sqlx::query("UPDATE applications SET name=$1,service_cipher=$2,env_cipher=$3,updated_at=now() WHERE id=$4").bind(name(&edit.name)?).bind(seal(&state,service,&ComposeConfig{yaml:edit.yaml})?).bind(encrypt(&state,service,&values)?).bind(service).execute(&state.pool).await.map_err(database_error)?;
-        }
         _ => return Err(missing()),
     }
     Ok(Json(app_access(&state, &id, service).await?))
-}
-pub(super) fn labels(
-    app: Uuid,
-    deployment: Uuid,
-    organization: Uuid,
-    project: Uuid,
-    environment: Uuid,
-) -> HashMap<String, String> {
-    HashMap::from([
-        ("io.ferrix.managed".into(), "true".into()),
-        ("io.ferrix.application".into(), app.to_string()),
-        ("io.ferrix.deployment".into(), deployment.to_string()),
-        ("io.ferrix.organization".into(), organization.to_string()),
-        ("io.ferrix.project".into(), project.to_string()),
-        ("io.ferrix.environment".into(), environment.to_string()),
-    ])
 }

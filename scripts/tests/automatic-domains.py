@@ -82,40 +82,6 @@ try:
         api('/auth/setup', {'name': 'Domains test', 'email': 'domains@example.test', 'password': secrets.token_urlsafe(32)})
         project = api('/projects', {'name': 'Automatic domain test'})
         environment = api(f'/projects/{project["id"]}/environments')['environments'][0]['id']
-        site = api(f'/environments/{environment}/static-websites', {'name': 'Interactive website'})
-        site_path = f'/static-websites/{site["id"]}'
-        assert site['automatic_url'].endswith(f'.localhost:{edge_port}/')
-        api(site_path + '/publish', {'files': [{'path': path, 'hex': value.encode().hex()} for path, value in files.items()]})
-        for attempt in range(30):
-            try:
-                with gateway(site['automatic_url']) as response:
-                    assert response.read().decode() == html
-                    assert 'sandbox' not in response.headers.get('Content-Security-Policy', '')
-                break
-            except OSError:
-                if attempt == 29:
-                    raise
-                time.sleep(.25)
-        for path, expected in files.items():
-            with gateway(site['automatic_url'], '/' + path) as response:
-                assert response.read().decode() == expected
-        with gateway(site['automatic_url'], '/deep/client/route/', {'Accept': 'text/html'}) as response:
-            assert response.read().decode() == html
-        for path in ['/missing.js', '/_ferrix/route', '/_ferrix/tls-ask?domain=anything.test']:
-            try:
-                gateway(site['automatic_url'], path)
-                raise AssertionError('Unregistered assets/private routes must fail')
-            except urllib.error.HTTPError as error:
-                assert error.code == 404
-        try:
-            gateway(f'http://unknown.localhost:{edge_port}/', extra={'X-Ferrix-Service-Type': 'application', 'X-Ferrix-Upstream': f'host.docker.internal:{api_port}'})
-            raise AssertionError('Forged upstream headers accepted')
-        except urllib.error.HTTPError as error:
-            assert error.code == 404
-        with gateway(site['automatic_url'], extra={'X-Ferrix-Service-Type': 'application', 'X-Ferrix-Upstream': f'host.docker.internal:{api_port}'}) as response:
-            assert response.read().decode() == html
-        with client.open(origin + '/api/v1' + site_path + '/preview/') as response:
-            assert 'sandbox' in response.headers['Content-Security-Policy']
         app = api(f'/environments/{environment}/services', {'kind': 'application', 'name': 'Interactive application', 'image': 'nginx:alpine', 'container_port': 80})
         applications.append(app['id'])
         stable_url = app['automatic_url']
@@ -134,6 +100,23 @@ try:
             subprocess.run(['docker', 'exec', '-i', first, 'sh', '-c', 'mkdir -p /usr/share/nginx/html/assets; cat > /usr/share/nginx/html/' + path], input=value, text=True, env=env, check=True)
         with gateway(stable_url) as response:
             assert response.read().decode() == html
+        config='server { listen 80; root /usr/share/nginx/html; location / { try_files $uri $uri/ /index.html; } }'
+        subprocess.run(['docker','exec','-i',first,'sh','-c','cat > /etc/nginx/conf.d/default.conf; nginx -s reload'],input=config,text=True,env=env,check=True)
+        for attempt in range(30):
+            try:
+                with gateway(stable_url,'/deep/client/route/',{'Accept':'text/html'}) as response:assert response.read().decode()==html
+                break
+            except urllib.error.HTTPError:
+                if attempt==29:raise
+                time.sleep(.2)
+        for path in ['/_ferrix/route','/_ferrix/tls-ask?domain=anything.test']:
+            try:gateway(stable_url,path);raise AssertionError('Private route accepted')
+            except urllib.error.HTTPError as error:assert error.code==404
+        try:
+            gateway(f'http://unknown.localhost:{edge_port}/',extra={'X-Ferrix-Service-Type':'application','X-Ferrix-Upstream':f'host.docker.internal:{api_port}'})
+            raise AssertionError('Forged upstream accepted')
+        except urllib.error.HTTPError as error:assert error.code==404
+        with gateway(stable_url,extra={'X-Ferrix-Upstream':f'host.docker.internal:{api_port}'}) as response:assert response.read().decode()==html
         # Real browser verifies native .localhost resolution, module JS, fetch, CSS, clicks and deep-link reload.
         browser_test = r'''import {chromium} from 'playwright';
 const browser=await chromium.launch(); const page=await browser.newPage(); const errors=[];page.on('pageerror',e=>errors.push(e.message));
@@ -145,7 +128,7 @@ if(errors.length)throw Error(errors.join('\n'));await browser.close();console.lo
             file.write(browser_test)
             browser_file = Path(file.name)
         try:
-            subprocess.run(['node', str(browser_file), site['automatic_url'], site['automatic_url'] + 'deep/client/route/', stable_url], cwd=root / 'apps/web', env=env, check=True)
+            subprocess.run(['node', str(browser_file), stable_url, stable_url + 'deep/client/route/'], cwd=root / 'apps/web', env=env, check=True)
         finally:
             browser_file.unlink(missing_ok=True)
         saved=api(f'/services/{app["id"]}/configuration')
@@ -183,23 +166,22 @@ if(errors.length)throw Error(errors.join('\n'));await browser.close();console.lo
                 if copy.returncode==0: break
                 if attempt==39: raise RuntimeError('Caddy test CA unavailable')
                 time.sleep(.25)
-            remote_site=api(site_path)['site']['automatic_url']
             remote_app=api(f'/services/{app["id"]}')['automatic_url']
-            for address,expected in [(remote_site,html.encode()),(remote_app,b'Welcome to nginx')]:
+            for address,expected in [(remote_app,b'Welcome to nginx')]:
                 host=urllib.parse.urlsplit(address).hostname
                 output=subprocess.check_output(['curl','--silent','--show-error','--fail','--cacert',str(fixture/'root.crt'),'--noproxy','*','--resolve',f'{host}:{tls_port}:127.0.0.1',f'https://{host}:{tls_port}/'],env=env)
                 assert expected in output
-            host=urllib.parse.urlsplit(remote_site).hostname
-            other=urllib.parse.urlsplit(remote_app).hostname
+            host=urllib.parse.urlsplit(remote_app).hostname
+            other='dashboard.ferrix.test'
             code=subprocess.check_output(['curl','--silent','--cacert',str(fixture/'root.crt'),'--noproxy','*','--resolve',f'{host}:{tls_port}:127.0.0.1','-H',f'Host: {other}:{tls_port}','-o','/dev/null','-w','%{http_code}',f'https://{host}:{tls_port}/'],env=env,text=True)
             assert code=='421','SNI/Host mismatch must be rejected'
             print('TLS: production Caddyfile, sslip.io automatic hostnames, trusted test certificates and strict SNI/Host isolation passed.')
             subprocess.run(['docker','rm','-f',proxy_tls],env=env,stdout=subprocess.DEVNULL,check=True)
         # Both hostname modes deny a deleted resource.
-        api(site_path, {'name': 'Interactive website'}, method='DELETE')
+        api(f'/services/{app["id"]}', {'name': 'Interactive application','remove_data':False}, method='DELETE')
         try:
-            gateway(site['automatic_url'])
-            raise AssertionError('Deleted website still resolves')
+            gateway(remote_app)
+            raise AssertionError('Deleted Application still resolves')
         except urllib.error.HTTPError as error:
             assert error.code == 404
         print('Caddy: static assets, SPA fallback, isolation, spoof protection and stable Application redeploy URL passed.')

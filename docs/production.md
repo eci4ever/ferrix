@@ -87,32 +87,13 @@ python3 scripts/tests/production.py ferrix:local
 
 The smoke test uses Caddy's internal CA only for localhost verification, creates a disposable database, and removes only its own Compose project and volumes when finished. It requires Compose 2.24.4+ for its test override. Public production HTTPS continues using Caddy's automatic public certificates.
 
-The runtime image includes Docker CLI and Compose for managed Compose deployments. Hosted service databases and Compose named volumes require separate data backups; the Ferrix metadata dump does not contain those volumes.
+The runtime talks directly to Docker through Bollard. Database volumes require separate data backups; the Ferrix metadata dump does not contain database service data.
 
 ## Host a static website
 
-1. Open a project environment and choose **Create Service → Static Website**.
-2. Use the generated automatic domain, or have a system administrator with
-   organization manager access assign a custom hostname. For a custom hostname,
-   point its A/AAAA records at the server. Ensure TCP 80 and 443 are reachable.
-3. Select your build output folder and publish it. The root must contain
-   `index.html`. Each build supports up to 512 files and 8 MiB total. Each
-   organization can keep up to 10 websites.
-4. Open the HTTPS link. Caddy obtains and renews certificates on demand.
-   Ferrix authorizes issuance only for a registered domain with a published
-   build. If issuance fails, check DNS, firewall rules and Caddy logs.
-5. Choose **Roll back** on a retained release to activate it again. Ferrix
-   retains the five most recent uploads per website.
-
-Static releases are part of the PostgreSQL backup. The website listener runs
-on internal container port 8081 and must not be published directly. The
-dashboard stays on port 8080 behind its own Caddy host rule. Static hosting serves files and directory indexes. HTML navigation to a missing
-extensionless path falls back to root `index.html` for SPA routing. Missing
-assets such as `.js` files still return 404.
-
-For an existing installation, back up the database, then update the installed
-Compose and Caddy configuration from the same release as the image. Preserve
-the existing `.env` and named volumes, including Caddy certificate storage.
+Use **Create Service → Application** with an Nginx or Caddy image containing your
+website files. Set the container port to 80 (or the port used by the image),
+deploy, then open its automatic HTTPS domain. See the [deployment guide](deployments.md#static-websites-through-application).
 
 ## Automatic domains with Caddy
 
@@ -121,16 +102,14 @@ address in `/opt/ferrix/.env`. The installer detects the address through
 `https://api.ipify.org` unless explicitly supplied. Leaving `FERRIX_DOMAIN`
 blank generates `ferrix.<ip-with-dashes>.sslip.io` for the dashboard too.
 
-Published Static Websites receive `https://site-<uuid>.<ip-with-dashes>.sslip.io/`;
-deployed Docker Applications receive `https://app-<uuid>.<ip-with-dashes>.sslip.io/`.
+Docker Applications receive `https://app-<uuid>.<ip-with-dashes>.sslip.io/`.
 No DNS account or custom domain is required. Open the link on the service page.
 URLs remain stable across redeploys while the configured public IP is unchanged.
 IPv6-only automatic domains are not supported in this version.
 
 Caddy joins the project-owned ingress network and routes Application traffic
 to the active deployment's container port. New deployments attach automatically;
-redeploy older Applications once after enabling the feature. Database and
-Compose services stay private. Only registered published sites or deployed
+redeploy older Applications once after enabling the feature. Databases stay private. Only deployed
 Applications can authorize automatic certificate issuance. Public certificate
 issuance depends on reachable ports 80/443, public DNS and CA availability.
 The website listener on 8081 and Caddy's administration interface are not exposed.

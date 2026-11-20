@@ -51,16 +51,6 @@ Do not use a wildcard safe.directory. Existing GitHub credentials and commit ide
 
 The dashboard reads authenticated `GET /api/v1/server-time` for the server timestamp, IANA timezone and current UTC offset. It ticks locally between synchronizations every 60 seconds and synchronizes again when the tab becomes visible. Clock requests validate the session without extending its inactivity expiry. The timezone follows a valid `TZ` environment override (for containers), otherwise the server OS, falling back to UTC if unavailable.
 
-### Static website preview
-
-The Static Website page enables **Preview** after a build is published. It opens
-the active release in a new tab without a domain or `FERRIX_WEBSITE_BIND`.
-Preview requires a valid session and membership in the website's organization.
-HTML, inline styles and relative image/CSS assets are supported. Scripts, forms
-and embedded frames are disabled by a CSP sandbox to isolate uploads from the
-dashboard. Root-relative asset URLs and interactive builds require the website's
-dedicated hostname instead. Preview follows the active release after rollback.
-
 ## Pull request CI
 
 The `CI` GitHub Actions workflow runs on every pull request, including updates,
@@ -113,7 +103,7 @@ No database migration is required.
 Authenticated `GET /api/v1/home-summary` returns counts for the session's active
 organization, including ordinary members. Projects and services cover all rows,
 independent of the Projects list's 100-row limit. Service totals include
-applications, databases and Compose services across every environment.
+applications and databases across every environment.
 Deployments count requests created in the last 24 hours, broken down into
 succeeded, failed and queued/running. Projects created in the last seven days
 are counted separately.
@@ -155,20 +145,19 @@ docker compose --profile websites up -d proxy
 | mac2 | 8091 | 9081 |
 | mac3 | 8092 | 9082 |
 
-Static Website and Docker Application pages show an **Automatic domain**.
+Docker Application pages show an **Automatic domain**.
 Use **Open website** to run JavaScript, modules, forms and root-relative assets
-on a separate origin. Local URLs use `site-<uuid>.localhost:<port>` and
-`app-<uuid>.localhost:<port>`. Port 80 is omitted from nmfairus URLs, so they open as `http://site-<uuid>.localhost/`
-or `http://app-<uuid>.localhost/`. Port 80 is reserved for nmfairus; mac2 and
+on a separate origin. Local URLs use `app-<uuid>.localhost:<port>`. Port 80 is omitted from nmfairus URLs, so they open as `http://app-<uuid>.localhost/`
+Port 80 is reserved for nmfairus; mac2 and
 mac3 retain their separate ports to avoid conflicts.
-UUIDs remain stable across publishes and redeploys.
-Publish a static build or deploy an Application first. Applications deployed
+UUIDs remain stable across redeploys.
+Deploy an Application first. Applications deployed
 before automatic domains were configured need one redeploy to join ingress.
-Database and Compose services are not automatically exposed.
+Database services are not automatically exposed.
 
 The ingress network and its ownership label are scoped to the Compose project.
-Never reuse another user's network. The authenticated dashboard preview keeps
-its script sandbox; use the automatic URL for interactive testing.
+Never reuse another user's network. Use the Application's automatic URL for
+interactive testing.
 
 `python3 scripts/tests/automatic-domains.py` exercises real Caddy, Docker and
 Playwright with disposable resources in the current user's database. It also
@@ -179,7 +168,7 @@ DNS and ACME issuance require a real VPS.
 
 The nmfairus profile uses HTTPS on port 443 and redirects HTTP on port 80.
 Automatic URLs become `https://app-<uuid>.localhost/` and
-`https://site-<uuid>.localhost/`. Other users retain their isolated HTTP ports.
+`https://app-<uuid>.localhost/`. Other users retain their isolated HTTP ports.
 `FERRIX_WEBSITE_HTTPS=true`, `FERRIX_WEBSITE_HTTPS_PORT=443` and
 `FERRIX_LOCAL_CADDYFILE=Caddyfile.local-https` select this mode.
 Caddy stores its local certificate authority in the project-scoped
@@ -202,6 +191,25 @@ See [Caddy local HTTPS](https://caddyserver.com/docs/automatic-https#local-https
 Open the dashboard at the exact `FERRIX_AUTH_ORIGIN` from your `.env`. Vite
 redirects document visits from equivalent loopback names (`localhost`,
 `127.0.0.1`, `::1`) to that address on the same port, preserving the path and
-query. This keeps cookies and form origins consistent for login and student
-registration. API requests are not redirected; strict backend Origin checks
+query. This keeps cookies and form origins consistent for login and account
+setup. API requests are not redirected; strict backend Origin checks
 remain in place. Other users' ports and production domains are not affected.
+
+### Docker-only scope and retired data
+
+Ferrix supports Application and Database services. Static websites run inside
+Applications using Nginx/Caddy images; automatic domains and HTTPS remain.
+Shared/student Hosting, Compose services and the dedicated Static Website
+service have been removed from the UI, API, runtime and release workflow.
+
+Historical migrations remain unchanged for existing installations. Migration
+0009 deactivates publicly registered student accounts; migration 0010 removes
+those old accounts/metadata, Compose service records and Static Website stored
+releases/files. Administrators, ordinary team accounts, Application/Database
+services and their projects remain intact. Cleanup is permanent.
+
+For existing Docker resources, scope cleanup to the current installation's old
+Hosting instance label or retired Compose application UUIDs. Remove retired
+containers before their labeled volumes/networks. Never use a global prune or
+remove another user's resources. Keep PostgreSQL, Caddy certificate storage,
+ingress and active Application/Database volumes.

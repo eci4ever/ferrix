@@ -32,11 +32,8 @@ pub(super) async fn change(
     id.manager()?;
     let mut tx = state.pool.begin().await?;
     // Serialize lifecycle operations with deployment snapshots and deletion.
-    let app = sqlx::query_as::<_,Application>(&format!("SELECT {APP_COLUMNS} FROM applications a JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id WHERE a.id=$1 AND p.organization_id=$2 FOR UPDATE OF a"))
+    let app = sqlx::query_as::<_,Application>(&format!("SELECT {APP_COLUMNS} FROM applications a JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id WHERE a.id=$1 AND p.organization_id=$2 AND a.service_kind IN ('application','database') FOR UPDATE OF a"))
         .bind(service).bind(id.organization_id).fetch_optional(&mut *tx).await?.ok_or_else(missing)?;
-    if app.kind == "compose" {
-        id.admin()?;
-    }
     let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM deployments WHERE application_id=$1 AND status IN ('queued','running'))").bind(service).fetch_one(&mut *tx).await?;
     if pending {
         return Err(ApiError(
@@ -44,15 +41,7 @@ pub(super) async fn change(
             "Wait for the pending deployment to finish before changing runtime state.",
         ));
     }
-    let containers = if app.kind == "compose" {
-        compose::containers(&state, service)
-            .await?
-            .into_iter()
-            .filter_map(|c| c.id)
-            .collect::<Vec<_>>()
-    } else {
-        app.active_container_id.into_iter().collect()
-    };
+    let containers: Vec<_> = app.active_container_id.into_iter().collect();
     if containers.is_empty() {
         return Err(ApiError(
             StatusCode::CONFLICT,
@@ -122,7 +111,7 @@ pub(super) async fn statuses(
 ) -> Result<Json<Value>, ApiError> {
     environment_access(&state, &id, environment).await?;
     let apps: Vec<Application> = sqlx::query_as(&format!(
-        "SELECT {APP_COLUMNS} FROM applications a WHERE environment_id=$1"
+        "SELECT {APP_COLUMNS} FROM applications a WHERE environment_id=$1 AND service_kind IN ('application','database')"
     ))
     .bind(environment)
     .fetch_all(&state.pool)
@@ -156,12 +145,8 @@ pub(super) async fn statuses(
                                     let labels = c.labels.as_ref();
                                     labels.and_then(|l| l.get("io.ferrix.application"))
                                         == Some(&app.id.to_string())
-                                        && if app.kind == "compose" {
-                                            labels.and_then(|l| l.get("com.docker.compose.project"))
-                                                == Some(&compose::project(app.id))
-                                        } else {
-                                            c.id.is_some() && c.id == app.active_container_id
-                                        }
+                                        && c.id.is_some()
+                                        && c.id == app.active_container_id
                                 })
                                 .collect::<Vec<_>>();
                             if owned.is_empty() {
@@ -218,10 +203,7 @@ pub(super) async fn environment(
     Path(service): Path<Uuid>,
 ) -> Result<Json<Value>, ApiError> {
     id.manager()?;
-    let app = app_access(&state, &id, service).await?;
-    if app.kind == "compose" {
-        id.admin()?;
-    }
+    app_access(&state, &id, service).await?;
     let cipher: Option<Vec<u8>> =
         sqlx::query_scalar("SELECT env_cipher FROM applications WHERE id=$1")
             .bind(service)
@@ -239,9 +221,6 @@ pub(super) async fn save_environment(
 ) -> Result<StatusCode, ApiError> {
     id.manager()?;
     let app = app_access(&state, &id, service).await?;
-    if app.kind == "compose" {
-        id.admin()?;
-    }
     let values = parse_environment(&input.environment)?;
     if app.kind == "database" {
         let config: DatabaseConfig = open(&state, service, &cipher(&state, service).await?)?;

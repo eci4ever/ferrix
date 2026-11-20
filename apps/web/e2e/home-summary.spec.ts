@@ -15,13 +15,13 @@ test('Home shows summary totals, attention links, empty and failure states on mo
       '/api/v1/status': { database: true, docker: true, version: 'test' },
       '/api/v1/projects': [],
       '/api/v1/server-time': { unix_ms: Date.now(), timezone: 'UTC', utc_offset: '+00:00' },
-      '/api/v1/home-summary': { projects: empty ? 0 : 102, projects_new_7d: 0, services: empty ? 0 : 8, applications: empty ? 0 : 4, databases: empty ? 0 : 3, compose: empty ? 0 : 1, deployments_24h: 0, succeeded_24h: 0, failed_24h: 0, in_progress_24h: 0, needs_attention: empty ? 0 : 1, attention: empty ? [] : [{ id: 'service', project_id: 'project', name: 'Failed service' }] },
+      '/api/v1/home-summary': { projects: empty ? 0 : 102, projects_new_7d: 0, services: empty ? 0 : 8, applications: empty ? 0 : 4, databases: empty ? 0 : 3, deployments_24h: 0, succeeded_24h: 0, failed_24h: 0, in_progress_24h: 0, needs_attention: empty ? 0 : 1, attention: empty ? [] : [{ id: 'service', project_id: 'project', name: 'Failed service' }] },
     }
     return route.fulfill({ json: bodies[path] ?? {} })
   })
   await page.goto('/dashboard')
   await expect(page.getByText('102', { exact: true })).toBeVisible()
-  await expect(page.getByText('4 applications · 3 databases · 1 Compose · 0 websites')).toBeVisible()
+  await expect(page.getByText('4 applications · 3 databases')).toBeVisible()
   await expect(page.getByRole('link', { name: 'Failed service', exact: true })).toHaveAttribute('href', '/projects/project/services/service')
   await page.setViewportSize({ width: 320, height: 900 })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)

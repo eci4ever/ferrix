@@ -44,7 +44,7 @@ pub(crate) async fn list(
     State(state): State<AppState>,
     id: Identity,
 ) -> Result<Json<Vec<Project>>, ApiError> {
-    Ok(Json(sqlx::query_as::<_, Project>("SELECT p.id, p.name, p.description, p.created_at, (SELECT count(*) FROM applications a JOIN environments e ON e.id=a.environment_id WHERE e.project_id=p.id) + (SELECT count(*) FROM static_websites s JOIN environments e ON e.id=s.environment_id WHERE e.project_id=p.id) AS service_count FROM projects p WHERE p.organization_id=$1 ORDER BY p.created_at DESC, p.id DESC LIMIT 100")
+    Ok(Json(sqlx::query_as::<_, Project>("SELECT p.id, p.name, p.description, p.created_at, (SELECT count(*) FROM applications a JOIN environments e ON e.id=a.environment_id WHERE e.project_id=p.id AND a.service_kind IN ('application','database')) AS service_count FROM projects p WHERE p.organization_id=$1 ORDER BY p.created_at DESC, p.id DESC LIMIT 100")
         .bind(id.organization_id).fetch_all(&state.pool).await?))
 }
 

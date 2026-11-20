@@ -17,7 +17,7 @@ Authentication setup and security behavior: [Auth guide](docs/auth.md).
 | Routing | TanStack Router |
 | UI | shadcn/ui, Tailwind CSS |
 
-Environment, Application, databases and Compose deployment flow: [Deployment guide](docs/deployments.md).
+Environment, Application and database deployment flow: [Deployment guide](docs/deployments.md).
 
 Production VPS installation and release workflow: [Production guide](docs/production.md).
 
@@ -59,7 +59,7 @@ Port PostgreSQL pembangunan ialah `5433`, dengan volume `ferrix_postgres`. Kelay
 - Dashboard dengan navigasi Projects dan Containers, keadaan kosong, ralat dan borang projek.
 - Log permintaan dan graceful shutdown untuk Ctrl+C/SIGTERM.
 
-Projek ialah kumpulan aplikasi. Buka projek untuk mengurus environment dan pilih Create Service untuk Application, database (PostgreSQL, MongoDB, MariaDB, Redis) atau Compose; simpan konfigurasi dan deploy melalui worker queue. Data UI datang daripada API sebenar, tanpa data contoh.
+Projek ialah kumpulan aplikasi. Buka projek untuk mengurus environment dan pilih Create Service untuk Application, database (PostgreSQL, MongoDB, MariaDB, Redis) sahaja; simpan konfigurasi dan deploy melalui worker queue. Data UI datang daripada API sebenar, tanpa data contoh.
 
 ## API
 
@@ -106,7 +106,7 @@ cd apps/web && npm run build
 1. Domain dan HTTPS aplikasi melalui reverse proxy, dengan alamat stabil selepas redeploy.
 2. Persistent volumes dan private registry credentials.
 3. Tindakan stop/restart, rollback serta pemantauan readiness aplikasi.
-4. Git/Dockerfile builds, Compose dan server jauh.
+4. Git/Dockerfile builds dan server jauh.
 
 API dan worker deployment kini berada dalam satu proses Rust. Kerja Docker berjalan dalam worker queue, bukan handler HTTP. Lihat [deployment guide](docs/deployments.md) untuk had MVP dan pengesahan.
 

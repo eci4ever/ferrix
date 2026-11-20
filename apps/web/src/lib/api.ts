@@ -25,7 +25,7 @@ export async function load<T>(path: string): Promise<{ data: T; error: null } | 
 
 export type HomeSummary = {
   projects: number; projects_new_7d: number
-  services: number; applications: number; databases: number; compose: number; websites: number
+  services: number; applications: number; databases: number
   deployments_24h: number; succeeded_24h: number; failed_24h: number; in_progress_24h: number
   needs_attention: number
   attention: { id: string; name: string; project_id: string }[]

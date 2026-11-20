@@ -19,8 +19,6 @@ services:
     restart: unless-stopped
     init: true
     environment:
-      FERRIX_HOSTING_COMPOSE_PROJECT: ${COMPOSE_PROJECT_NAME:-ferrix}
-      FERRIX_HOSTING_PHP_IMAGE: ${FERRIX_HOSTING_PHP_IMAGE:-ghcr.io/eci4ever/ferrix-php-fpm:latest}
       FERRIX_WEBSITE_BIND: 0.0.0.0:8081
       FERRIX_AUTO_DOMAIN: ${FERRIX_AUTO_DOMAIN:-}
       FERRIX_PUBLIC_IP: ${FERRIX_PUBLIC_IP:-}
@@ -54,8 +52,6 @@ services:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data
       - caddy_config:/config
-      - hosting_files:/srv/hosting:ro
-      - hosting_sockets:/run/hosting:ro
     depends_on:
       ferrix:
         condition: service_healthy
@@ -64,17 +60,6 @@ volumes:
   postgres:
   caddy_data:
   caddy_config:
-
-  hosting_files:
-    name: ${COMPOSE_PROJECT_NAME:-ferrix}_hosting_files
-    labels:
-      io.ferrix.hosting.project: ${COMPOSE_PROJECT_NAME:-ferrix}
-      io.ferrix.hosting.purpose: files
-  hosting_sockets:
-    name: ${COMPOSE_PROJECT_NAME:-ferrix}_hosting_sockets
-    labels:
-      io.ferrix.hosting.project: ${COMPOSE_PROJECT_NAME:-ferrix}
-      io.ferrix.hosting.purpose: sockets
 
 networks:
   ingress:

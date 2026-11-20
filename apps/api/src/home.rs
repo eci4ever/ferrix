@@ -11,10 +11,7 @@ WITH org_projects AS MATERIALIZED (
     SELECT a.id, a.name, a.service_kind, e.project_id
     FROM applications a JOIN environments e ON e.id = a.environment_id
     JOIN org_projects p ON p.id = e.project_id
-    UNION ALL
-    SELECT s.id, s.name, 'static_website', e.project_id
-    FROM static_websites s JOIN environments e ON e.id=s.environment_id
-    JOIN org_projects p ON p.id=e.project_id
+    WHERE a.service_kind IN ('application','database')
 ), recent_deployments AS MATERIALIZED (
     SELECT d.status FROM deployments d JOIN org_services s ON s.id = d.application_id
     WHERE d.created_at >= now() - interval '24 hours'
@@ -32,8 +29,6 @@ SELECT json_build_object(
     'services', (SELECT count(*) FROM org_services),
     'applications', (SELECT count(*) FROM org_services WHERE service_kind = 'application'),
     'databases', (SELECT count(*) FROM org_services WHERE service_kind = 'database'),
-    'websites', (SELECT count(*) FROM org_services WHERE service_kind = 'static_website'),
-    'compose', (SELECT count(*) FROM org_services WHERE service_kind = 'compose'),
     'deployments_24h', (SELECT count(*) FROM recent_deployments),
     'succeeded_24h', (SELECT count(*) FROM recent_deployments WHERE status = 'succeeded'),
     'failed_24h', (SELECT count(*) FROM recent_deployments WHERE status = 'failed'),

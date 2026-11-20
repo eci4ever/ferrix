@@ -53,10 +53,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let (worker_shutdown, receiver) = tokio::sync::watch::channel(false);
     let state_shutdown = receiver.clone();
-    let hosting_worker = tokio::spawn(ferrix_api::student_hosting::run_worker(
-        state.clone(),
-        receiver.clone(),
-    ));
     let worker = tokio::spawn(ferrix_api::deployments::run_worker(state.clone(), receiver));
     let public = if let Ok(bind) = std::env::var("FERRIX_WEBSITE_BIND") {
         let listener = tokio::net::TcpListener::bind(bind).await?;
@@ -85,7 +81,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         public.await??;
     }
     worker.await?;
-    hosting_worker.await?;
     pool.close().await;
     Ok(())
 }

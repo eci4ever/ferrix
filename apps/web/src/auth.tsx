@@ -13,7 +13,7 @@ import { Table, TableHeader, TableHead, TableBody, TableRow, TableCell } from '@
 import { DataTable } from '@/components/data-table'
 import { request } from '@/lib/api'
 
-export type Identity = { hosting_student?: boolean; session_id: string; user_id: string; name: string; email: string; system_role: string; organization_id: string; organization_name: string; role: string }
+export type Identity = { session_id: string; user_id: string; name: string; email: string; system_role: string; organization_id: string; organization_name: string; role: string }
 export type Session = { id: string; created_at: string; expires_at: string; user_agent: string; ip_address: string; current: boolean }
 export type Member = { id: string; name: string; email: string; role: string }
 export type Organization = { id: string; name: string; role: string }

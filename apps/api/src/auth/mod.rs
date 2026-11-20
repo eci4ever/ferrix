@@ -58,11 +58,6 @@ pub fn routes(state: AppState) -> Router<AppState> {
         ))
         .route("/setup", get(accounts::setup_status).post(accounts::setup))
         .route("/sign-in", post(accounts::sign_in))
-        .route("/student-register", post(crate::student_hosting::register))
-        .route(
-            "/student-registration",
-            get(crate::student_hosting::public_status),
-        )
         .route("/reset-password", post(accounts::reset_password))
         .route("/accept-invitation", post(organizations::accept))
         .layer(DefaultBodyLimit::max(16 * 1024))

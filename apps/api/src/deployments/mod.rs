@@ -155,7 +155,7 @@ impl Application {
     }
 }
 async fn app_access(state: &AppState, id: &Identity, app: Uuid) -> Result<Application, ApiError> {
-    sqlx::query_as::<_,Application>(&format!("SELECT {APP_COLUMNS} FROM applications a JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id WHERE a.id=$1 AND p.organization_id=$2"))
+    sqlx::query_as::<_,Application>(&format!("SELECT {APP_COLUMNS} FROM applications a JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id WHERE a.id=$1 AND p.organization_id=$2 AND a.service_kind IN ('application','database')"))
         .bind(app).bind(id.organization_id).fetch_optional(&state.pool).await?.map(|app|app.with_gateway(state)).ok_or_else(missing)
 }
 async fn environments(
@@ -375,10 +375,7 @@ async fn deploy(
     Path(app): Path<Uuid>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     id.manager()?;
-    let row = app_access(&state, &id, app).await?;
-    if row.kind == "compose" {
-        id.admin()?;
-    }
+    app_access(&state, &id, app).await?;
     let mut tx = state.pool.begin().await?;
     sqlx::query_scalar::<_, Uuid>("SELECT id FROM applications WHERE id=$1 FOR UPDATE")
         .bind(app)
