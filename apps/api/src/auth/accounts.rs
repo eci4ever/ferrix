@@ -418,19 +418,21 @@ pub async fn reset_password(
 pub(crate) struct ProfileInput {
     name: String,
     avatar: String,
+    #[serde(default)]
+    avatar_url: Option<String>,
 }
 
 pub(crate) async fn profile(
     axum::extract::State(state): axum::extract::State<AppState>,
     id: super::Identity,
 ) -> Result<axum::Json<serde_json::Value>, ApiError> {
-    let (name, email, avatar): (String, String, String) =
-        sqlx::query_as("SELECT name,email,avatar FROM auth_users WHERE id=$1")
+    let (name, email, avatar, avatar_url): (String, String, String, Option<String>) =
+        sqlx::query_as("SELECT name,email,avatar,avatar_url FROM auth_users WHERE id=$1")
             .bind(id.user_id)
             .fetch_one(&state.pool)
             .await?;
     Ok(axum::Json(
-        serde_json::json!({"name":name,"email":email,"avatar":avatar}),
+        serde_json::json!({"name":name,"email":email,"avatar":avatar,"avatar_url":avatar_url}),
     ))
 }
 
@@ -443,10 +445,30 @@ pub(crate) async fn save_profile(
     if !["initials", "🌿", "🚀", "🐱", "🌊", "⭐"].contains(&input.avatar.as_str()) {
         return Err(super::bad("Choose an available avatar."));
     }
-    sqlx::query("UPDATE auth_users SET name=$2,avatar=$3 WHERE id=$1")
+    let avatar_url = input.avatar_url.filter(|value| !value.trim().is_empty());
+    let avatar_url = avatar_url
+        .map(|value| {
+            let value = value.trim();
+            let url =
+                url::Url::parse(value).map_err(|_| super::bad("Enter a valid HTTPS image URL."))?;
+            if value.len() > 2048
+                || url.scheme() != "https"
+                || url.host_str().is_none()
+                || !url.username().is_empty()
+                || url.password().is_some()
+            {
+                return Err(super::bad(
+                    "Enter an HTTPS image URL without credentials, up to 2048 bytes.",
+                ));
+            }
+            Ok(value.to_owned())
+        })
+        .transpose()?;
+    sqlx::query("UPDATE auth_users SET name=$2,avatar=$3,avatar_url=$4 WHERE id=$1")
         .bind(id.user_id)
         .bind(name)
         .bind(input.avatar)
+        .bind(avatar_url)
         .execute(&state.pool)
         .await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
