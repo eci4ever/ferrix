@@ -91,6 +91,8 @@ try:
   api(alice,f'/student-hosting/{aid}/approve',{},403)
   assert api(alice,'/student-hosting')[0]['status']=='pending'
   api(alice,f'/student-hosting/{aid}/upload',{'files':[{'path':'index.php','hex':'00'}]},409)
+  api(alice,f'/student-hosting/{aid}/files',{'operation':'list','path':''},409)
+  api(alice,f'/student-hosting/{aid}/database',{'operation':'export'},409)
   for user in [aid,bid]:api(admin,f'/student-hosting/{user}/approve',{},202)
   a=ready(aid);b=ready(bid)
   server=json.loads(subprocess.check_output(['docker','inspect',schema+'-mariadb-1'],text=True))[0]
@@ -106,6 +108,49 @@ try:
   api(alice,f'/student-hosting/{aid}/upload',{'files':[{'path':'index.php','hex':code.encode().hex()},{'path':'assets/test.txt','hex':b'asset'.hex()}]},204)
   with site(aid) as r:assert r.status==200 and r.read()==b'persistent ISOLATED'
   with site(aid,'/assets/test.txt') as r:assert r.read()==b'asset'
+  # File Manager: own-tree CRUD and hard authorization on every operation.
+  def files(who,user,operation,path='',expected=200,**extra):
+   return api(who,f'/student-hosting/{user}/files',dict(operation=operation,path=path,**extra),expected)
+  def database(who,user,operation,expected=200,**extra):
+   return api(who,f'/student-hosting/{user}/database',dict(operation=operation,**extra),expected)
+  assert any(e['name']=='assets' and e['directory'] for e in files(alice,aid,'list')['entries'])
+  files(alice,aid,'mkdir','manager')
+  files(alice,aid,'write','manager/hello.php',hex=b'<?php echo "manager works";'.hex())
+  assert bytes.fromhex(files(alice,aid,'read','manager/hello.php')['hex'])==b'<?php echo "manager works";'
+  with site(aid,'/manager/hello.php') as r:assert r.read()==b'manager works'
+  files(alice,aid,'rename','manager/hello.php',name='renamed.php')
+  files(alice,aid,'write','manager/exists.txt',hex='00')
+  files(alice,aid,'rename','manager/renamed.php',name='exists.txt',expected=422)
+  files(alice,aid,'delete','manager',expected=422)
+  for operation in ['list','read','write','mkdir','rename','delete']:
+   files(alice,bid,operation,'index.php',expected=404,hex='00',name='x.php')
+  for path in ['../index.php','/index.php','a/../../x','.env','a/.env','a//b','a\\b']:
+   files(alice,aid,'read',path,expected=422)
+  files(alice,aid,'rename','manager/renamed.php',name='../foreign.php',expected=422)
+  for filename in ['renamed.php','exists.txt']:files(alice,aid,'delete','manager/'+filename)
+  files(alice,aid,'delete','manager')
+  assert not any(e['name']=='manager' for e in files(alice,aid,'list')['entries'])
+  # SQL goes through PDO with the student's credentials, never the root account.
+  database(alice,aid,'import',sql="CREATE TABLE transfer(id INT PRIMARY KEY, content VARBINARY(100), calculated INT AS (id+1) STORED); INSERT INTO transfer(id,content) VALUES(7,UNHEX('00ff27225c')); INSERT INTO notes VALUES(2,'export import');")
+  dump=bytes.fromhex(database(alice,aid,'export')['hex']).decode('utf-8')
+  assert 'CREATE TABLE' in dump and 'transfer' in dump and 'export import' in dump
+  database(alice,bid,'import',expected=404,sql='SELECT 1;')
+  database(alice,bid,'export',expected=404)
+  database(alice,aid,'import',expected=422,sql='USE `'+b['database_name']+'`;')
+  database(alice,aid,'import',expected=422,sql='INSERT INTO `'+b['database_name']+'`.notes VALUES(9, "forbidden");')
+  database(alice,aid,'import',expected=422,sql="GRANT ALL ON *.* TO 'intruder'@'%';")
+  database(alice,aid,'import',expected=422,sql="SELECT 'forbidden' INTO OUTFILE '/tmp/ferrix-sql-escape';")
+  database(alice,aid,'import',expected=422,sql="\\! touch /tmp/ferrix-sql-escape")
+  database(alice,aid,'import',sql='DROP TABLE transfer; DELETE FROM notes WHERE id=2;')
+  database(alice,aid,'import',sql=dump)
+  dbcheck="<?php $p=new PDO('mysql:host='.getenv('DB_HOST').';dbname='.getenv('DB_NAME'),getenv('DB_USER'),getenv('DB_PASSWORD'));echo json_encode($p->query('SELECT id,HEX(content),calculated FROM transfer')->fetch(PDO::FETCH_NUM));"
+  files(alice,aid,'write','dbcheck.php',hex=dbcheck.encode().hex())
+  with site(aid,'/dbcheck.php') as r:assert json.loads(r.read())==[7,'00FF27225C',8]
+  files(alice,aid,'delete','dbcheck.php')
+  # A same-account export can be imported into another student's own database;
+  # no database name or USE/root privileges are embedded in it.
+  database(bob,bid,'import',sql=dump)
+  assert 'export import' in bytes.fromhex(database(bob,bid,'export')['hex']).decode('utf-8')
   isolation="<?php echo json_encode(['uid'=>posix_geteuid(),'foreign'=>@file_get_contents('/srv/hosting/"+uuid.UUID(bid).hex+"/public/index.php')===false,'config'=>@file_get_contents('/runtime/students.json')===false,'shell'=>!function_exists('shell_exec'),'symlink'=>!function_exists('symlink')]);"
   api(alice,f'/student-hosting/{aid}/upload',{'files':[{'path':'isolation.php','hex':isolation.encode().hex()},{'path':'source.PHP','hex':b'<?php echo "PRIVATE-SOURCE";'.hex()}]},204)
   with site(aid,'/isolation.php') as r:
@@ -114,6 +159,9 @@ try:
   # root-owned static view that Caddy serves.
   link_script='import os; os.symlink('+repr('/srv/hosting/'+uuid.UUID(bid).hex+'/public/index.php')+','+repr('/srv/hosting/'+uuid.UUID(aid).hex+'/public/escape.txt')+')'
   subprocess.run(['docker','exec',schema+'-php-fpm-1','python3','-c',link_script],env=env,check=True)
+  for operation in ['read','write','delete','rename']:
+   files(alice,aid,operation,'escape.txt',expected=422,hex='00',name='safe.txt')
+  files(alice,aid,'list','escape.txt',expected=422)
   api(alice,f'/student-hosting/{aid}/upload',{'files':[{'path':'refresh.txt','hex':b'refresh'.hex()}]},204)
   with site(aid,'/escape.txt') as r:assert r.read()==b'persistent ISOLATED'
   assert site(aid,'/source.PHP').status==404
@@ -128,6 +176,8 @@ try:
   api(admin,f'/student-hosting/{aid}/suspend',{},204)
   assert site(aid).status==404
   api(alice,f'/student-hosting/{aid}/upload',{'files':[{'path':'index.php','hex':'00'}]},409)
+  api(alice,f'/student-hosting/{aid}/files',{'operation':'list','path':''},409)
+  api(alice,f'/student-hosting/{aid}/database',{'operation':'export'},409)
   api(admin,f'/student-hosting/{aid}/approve',{},202);ready(aid)
   with site(aid) as r:assert r.read()==b'persistent ISOLATED'
   web=subprocess.Popen(['npm','run','dev'],cwd=root/'apps/web',env=runtime,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)

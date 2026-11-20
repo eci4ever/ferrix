@@ -25,6 +25,38 @@ Uploads allow 256 files and 8 MiB per request, using relative ASCII paths of up
 Matching files are replaced atomically; other files remain. There is no shell,
 SFTP, Composer build, phpMyAdmin or automatic backup service in this version.
 
+## File Manager and database transfer
+
+Active students can use **File Manager** to browse folders, create files/folders,
+edit UTF-8 text, upload/download files, rename and delete items. The displayed
+`public_html` is their existing jail's `/public` directory; no additional
+container is created. Only empty folders can be deleted. The text editor accepts
+up to 1 MiB; file read/write and downloads accept up to 8 MiB. Directory listings
+are bounded to 1,024 entries. Paths retain the upload rules above. Symlinks and
+special files are never listed or followed. Every path component is opened
+relative to an already-open directory with `O_NOFOLLOW`. Renames cannot overwrite
+another item. Writes replace file contents atomically; keep a copy before editing.
+
+**Export SQL** downloads tables and data from the student's own database, up to
+16 MiB. InnoDB data is read in one repeatable-read transaction. Binary data and
+generated columns are supported; views, routines and triggers are excluded.
+**Import SQL** accepts UTF-8 SQL up to 8 MiB, with confirmation before running.
+Export a backup first: DDL and earlier successful statements cannot be rolled
+back if a later statement fails. The importer accepts SQL through PDO, not mysql
+client commands such as `source`, `system` or `DELIMITER`.
+
+Every file/database request checks the authenticated identity against the
+hosting owner and requires active hosting. Platform administrators can manage
+any student's hosting; students receive 404 for another student's ID, including
+write/import requests. Client requests cannot choose a database, user, UID or
+container. SQL operations drop to the student's Unix UID/GID, clear supplementary
+groups and connect with only that student's MariaDB credentials. No root SQL
+account is used for import/export; MariaDB denies cross-database SQL, global
+grants and server file access, and PDO local infile is disabled. SQL, passwords
+and file contents are not included in diagnostic logs. Database transfers are
+rate-limited and time-bounded. Runtime upgrades must include both the API and
+the updated PHP-FPM image containing `hosting-database.php`.
+
 ## PHP connection
 
 Each pool receives only its own credentials. Student PHP can use:
