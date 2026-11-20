@@ -3,6 +3,7 @@ pub mod deployments;
 mod docker_inventory;
 pub mod gateway;
 mod home;
+pub mod housekeeping;
 mod monitoring;
 mod projects;
 mod server_time;

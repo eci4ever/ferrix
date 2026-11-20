@@ -12,7 +12,7 @@ python3 scripts/setup-auth-env.py
 
 Keep `.env` private. `FERRIX_AUTH_ORIGIN` must be the exact browser origin, without a trailing slash, e.g. `http://127.0.0.1:5173`. For deployment, configure an HTTPS origin, preserve a random 32-byte hex `FERRIX_AUTH_KEY`. The API refuses missing/invalid configuration. Back up the encryption key with the database; losing it makes enrolled TOTP secrets unreadable. Do not rotate the key without migrating encrypted secrets.
 
-Start PostgreSQL and the API from the clone root, then the web app as described in development.md. API startup applies the new migrations. Open the configured origin. The first-run screen asks only for a name, email and password. The first successful registration automatically becomes the platform administrator. A transaction with an installation lock permits exactly one first administrator and creates `My Organization` with an owner membership. Existing unassigned projects are attached to this initial organization. Public sign-up is then closed.
+Start PostgreSQL and the API from the clone root, then the web app as described in development.md. API startup applies the new migrations. Open the configured origin. The first-run screen asks only for a name, email and password. The first successful registration automatically becomes the platform administrator. A transaction with an installation lock permits exactly one first administrator and creates `My Organization` with an owner membership. Every project requires an organization; legacy unassigned projects must receive explicit ownership before migration 0011. Public sign-up is then closed.
 
 No installation token is required. Existing FERRIX_SETUP_TOKEN entries in older .env files are ignored and can be removed. No default user or password is installed.
 
@@ -97,3 +97,20 @@ Implemented: first owner, invitation-only additional accounts, system administra
 Not included: OAuth/social login, passkeys/WebAuthn, SSO/SCIM, API keys, custom dynamic roles, automatic email delivery/verification, impersonation, organization deletion and account deletion. These require separate workflows; no stub or bypass endpoint pretends to support them.
 
 Reference configuration reviewed: [Dokploy auth.ts on canary](https://github.com/Dokploy/dokploy/blob/canary/packages/server/src/lib/auth.ts), [Better Auth organization plugin](https://better-auth.com/docs/plugins/organization), [admin plugin](https://better-auth.com/docs/plugins/admin), and [OWASP session management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html). Dokploy uses bcrypt; Ferrix uses Argon2id. Dokploy self-hosted configuration disables Secure cookies; Ferrix instead requires them for HTTPS origins. The 30-day absolute session cap is an additional Ferrix control.
+
+## Expired-record housekeeping
+
+The API cleans expired sessions (either inactivity or absolute deadline),
+throttle buckets, invitations, password-reset tokens and unconfirmed expired MFA
+enrollments once at startup and every 15 minutes. Authorization still rejects
+expired records immediately; cleanup timing never extends token validity.
+Enabled MFA, recovery codes, users, memberships, audit and deployment history
+are retained. Accepted invitations are removed only after their expiry time.
+
+Each target is processed in batches of 1,000, at most 10 batches per sweep.
+Each batch commits separately, skips locked rows and has a five-second statement
+limit plus a one-second lock timeout. Active token consumption/renewal is not
+blocked by housekeeping; concurrent cleaners can safely process separate rows.
+Idle cleanup does not reserve a pool connection, and API shutdown stops the worker.
+Large backlogs drain over subsequent sweeps. Errors are logged and retried on the
+next interval; no cleanup tables or external scheduler are required.
