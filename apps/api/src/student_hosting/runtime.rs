@@ -708,3 +708,78 @@ async fn reconcile(state: &AppState) -> Result<()> {
     }
     Ok(())
 }
+
+// Output is private user data. Never merge stderr or log the payload/result.
+pub(super) async fn operation(
+    state: &AppState,
+    h: &Hosting,
+    mode: &str,
+    mut payload: Value,
+) -> Result<Value> {
+    if h.container_id.is_some() {
+        return Err(invalid("Migrate this hosting to shared PHP-FPM first."));
+    }
+    payload["id"] = json!(h.user_id.simple().to_string());
+    let name = runtime_name(state).await?;
+    owned(state, &name, None).await?;
+    let job = state
+        .docker
+        .create_exec(
+            &name,
+            CreateExecOptions {
+                attach_stdin: Some(true),
+                attach_stdout: Some(true),
+                attach_stderr: Some(true),
+                cmd: Some(vec!["/usr/local/bin/hosting-manager", mode]),
+                ..Default::default()
+            },
+        )
+        .await
+        .map_err(|_| unavailable())?;
+    let StartExecResults::Attached {
+        input: mut stdin,
+        mut output,
+    } = state
+        .docker
+        .start_exec(&job.id, None)
+        .await
+        .map_err(|_| unavailable())?
+    else {
+        return Err(unavailable());
+    };
+    // Write concurrently: Docker's stdin and stdout can both exceed pipe capacity.
+    let input = payload.to_string();
+    let writer = async {
+        stdin.write_all(input.as_bytes()).await?;
+        stdin.shutdown().await
+    };
+    let reader = async {
+        let mut result = Vec::new();
+        while let Some(chunk) = output.next().await {
+            let chunk = chunk.map_err(|_| unavailable())?;
+            if let bollard::container::LogOutput::StdOut { message } = chunk {
+                if result.len() + message.len() > 34 * 1024 * 1024 {
+                    return Err(unavailable());
+                }
+                result.extend_from_slice(&message);
+            }
+        }
+        Ok::<_, ApiError>(result)
+    };
+    let (written, result) = tokio::join!(writer, reader);
+    written.map_err(|_| unavailable())?;
+    let result = result?;
+    if state
+        .docker
+        .inspect_exec(&job.id)
+        .await
+        .map_err(|_| unavailable())?
+        .exit_code
+        != Some(0)
+    {
+        return Err(invalid(
+            "Operation failed. Check the path, file size or SQL permissions. Folders must be empty before deletion; imports may have applied earlier statements.",
+        ));
+    }
+    serde_json::from_slice(&result).map_err(|_| unavailable())
+}

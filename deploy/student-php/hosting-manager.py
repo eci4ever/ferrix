@@ -138,6 +138,82 @@ def write_files(row,files):
     finally:os.close(root_fd)
     publish(row,force=True)
 
+def file_operation(row, payload):
+    sid,uid=validate(row)
+    operation=payload['operation'];relative=payload.get('path','')
+    assert relative=='' or safe_path(relative)
+    fd=os.open(ROOT/sid/'public',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
+    try:
+        parts=relative.split('/') if relative else []
+        for part in (parts if operation=='list' else parts[:-1]):
+            child=os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=fd)
+            os.close(fd);fd=child
+        if operation=='list':
+            entries=[]
+            for name in sorted(os.listdir(fd)):
+                if not safe_path((relative+'/' if relative else '')+name):continue
+                info=os.stat(name,dir_fd=fd,follow_symlinks=False)
+                if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):continue
+                if len(entries)>=1024:raise ValueError('Directory limit exceeded')
+                entries.append(dict(name=name,directory=stat.S_ISDIR(info.st_mode),size=info.st_size))
+            return dict(entries=entries)
+        assert parts
+        name=parts[-1]
+        if operation=='read':
+            data=read_regular(fd,name)
+            if len(data)>8*1024*1024:raise ValueError('File exceeds 8 MiB')
+            return dict(hex=data.hex())
+        if operation=='mkdir':
+            os.mkdir(name,0o750,dir_fd=fd)
+            os.chown(name,uid,uid,dir_fd=fd,follow_symlinks=False)
+        elif operation=='write':
+            data=bytes.fromhex(payload['hex']);assert len(data)<=8*1024*1024
+            # Refuse symlinks and directories, including existing destinations.
+            try:assert stat.S_ISREG(os.stat(name,dir_fd=fd,follow_symlinks=False).st_mode)
+            except FileNotFoundError:pass
+            temporary='.edit-'+uuid.uuid4().hex
+            out=os.open(temporary,os.O_WRONLY|os.O_CREAT|os.O_EXCL|os.O_NOFOLLOW,0o640,dir_fd=fd)
+            try:
+                with os.fdopen(out,'wb') as handle:handle.write(data);os.fchown(handle.fileno(),uid,uid)
+                os.replace(temporary,name,src_dir_fd=fd,dst_dir_fd=fd)
+            finally:
+                try:os.unlink(temporary,dir_fd=fd)
+                except FileNotFoundError:pass
+        elif operation in ('rename','delete'):
+            info=os.stat(name,dir_fd=fd,follow_symlinks=False)
+            assert stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)
+            if operation=='delete':
+                # Only empty folders can be deleted. Never recurse through user trees.
+                if stat.S_ISDIR(info.st_mode):os.rmdir(name,dir_fd=fd)
+                else:os.unlink(name,dir_fd=fd)
+            else:
+                target=payload['name'];assert safe_path(target) and '/' not in target
+                # Linux renameat2(RENAME_NOREPLACE) prevents overwrite races.
+                import ctypes
+                libc=ctypes.CDLL(None,use_errno=True)
+                if libc.renameat2(fd,os.fsencode(name),fd,os.fsencode(target),1)!=0:
+                    raise OSError(ctypes.get_errno(),'Rename failed')
+        else:raise ValueError('Unknown file operation')
+    finally:os.close(fd)
+    publish(row,force=True)
+    return dict(ok=True)
+
+def database_operation(row,payload):
+    sid,uid=validate(row)
+    assert payload['operation'] in ('import','export')
+    sql=payload.get('sql','');assert isinstance(sql,str) and len(sql.encode())<=8*1024*1024
+    # Fixed trusted PHP code; SQL is data passed to PDO, never CLI commands or PHP.
+    # Drop UID/GID and supplementary groups before PHP starts. DB grants remain
+    # the authoritative boundary, even for USE, qualified SQL and malicious dumps.
+    request=dict(row,operation=payload['operation'],sql=sql)
+    result=subprocess.run(['php','-d','display_errors=0','-d','log_errors=0',
+        '-d','memory_limit=96M','-d','max_execution_time=30',
+        '/usr/local/share/hosting-database.php'],input=json.dumps(request).encode(),
+        stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,timeout=40,
+        user=uid,group=uid,extra_groups=[],cwd='/',env={'PATH':'/usr/local/bin:/usr/bin:/bin'})
+    if result.returncode or len(result.stdout)>34*1024*1024:raise ValueError('Database operation failed')
+    return json.loads(result.stdout)
+
 def collect(fd,prefix='',result=None):
     result=[] if result is None else result
     for name in sorted(os.listdir(fd)):
@@ -230,6 +306,10 @@ pm.process_idle_timeout = 5s
             write_pools(old)
         else:
             payload=json.load(sys.stdin)
+            if mode in ('files','database'):
+                row=next(r for r in old if r['id']==payload['id']);validate(row)
+                result=file_operation(row,payload) if mode=='files' else database_operation(row,payload)
+                print(json.dumps(result));return
             if mode=='upload':
                 row=next(r for r in old if r['id']==payload['id']);write_files(row,payload['files']);return
             if mode=='sync':rows=payload['students']

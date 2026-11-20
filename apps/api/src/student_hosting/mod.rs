@@ -1,3 +1,4 @@
+mod files;
 mod runtime;
 use crate::{ApiError, AppState, auth::Identity};
 use axum::{
@@ -89,6 +90,8 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .route("/student-hosting/{id}/suspend", post(suspend))
         .route("/student-hosting/{id}/reject", post(reject))
         .route("/student-hosting/{id}/upload", post(upload))
+        .route("/student-hosting/{id}/files", post(files::files))
+        .route("/student-hosting/{id}/database", post(files::database))
         .layer(DefaultBodyLimit::max(18 * 1024 * 1024))
         .route_layer(axum::middleware::from_fn_with_state(
             state,
