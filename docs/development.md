@@ -54,10 +54,32 @@ The dashboard reads authenticated `GET /api/v1/server-time` for the server times
 ## Pull request CI
 
 The `CI` GitHub Actions workflow runs on every pull request, including updates,
-on pushes to `main`, and can also be started manually. Its independent jobs check Rust formatting,
-Clippy with warnings denied, all Rust tests (including ignored PostgreSQL
-integration tests), and the frontend production build. Rust uses the stable
-toolchain; the frontend uses Node.js 24 and npm 12.2.2 with the committed lockfile.
+on pushes to `main`, and can also be started manually. A small change-detection
+job selects the existing build jobs from the complete Git diff:
+
+| Changed files | Checks selected |
+| --- | --- |
+| `apps/web/**` (including npm lockfile, vendor and assets) | Frontend |
+| `apps/api/**`, `Cargo.toml`, `Cargo.lock`, `.cargo/**`, Rust toolchain/lint config | Rust and PostgreSQL |
+| Workflow files, scripts, Dockerfile/Compose configuration or unrecognized shared paths | Both |
+| Only `docs/**`, root Markdown files or license files | Neither build job |
+| Manual run, unavailable diff or failed detection | Both |
+
+PRs use the merge-base (three-dot) diff; pushes compare the complete before/after
+range. Renames include both source and destination, and deletions are included.
+The workflow itself always starts and preserves the required check names:
+`Frontend build` and `Rust checks and PostgreSQL tests`. Unneeded jobs are skipped
+at job level, avoiding pending checks caused by workflow-level path filters.
+Detection tests run on every invocation; a failed detector cannot skip builds.
+
+Selected jobs check Rust formatting, Clippy with warnings denied, all Rust tests
+(including ignored PostgreSQL integration tests), and the frontend production
+build. Rust uses the stable toolchain; the frontend uses Node.js 24 and npm
+12.2.2 with the committed lockfile. To test the selector locally:
+
+```sh
+python3 -m unittest discover -s scripts/ci -p 'test_*.py' -v
+```
 
 Each Rust job gets a temporary PostgreSQL 17 service and its own `ferrix_ci`
 database. No developer `.env`, external database or repository secrets are needed.

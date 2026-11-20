@@ -14,7 +14,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Detect changed components
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      rust: ${{ steps.paths.outputs.rust }}
+      frontend: ${{ steps.paths.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # Complete history supports merge-base diffs and multi-commit pushes.
+          fetch-depth: 0
+      - name: Test changed-file detection
+        run: python3 -m unittest discover -s scripts/ci -p 'test_*.py' -v
+      - name: Select CI components
+        id: paths
+        env:
+          CI_EVENT: ${{ github.event_name }}
+          CI_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+          CI_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 scripts/ci/changes.py
+
   rust:
+    needs: changes
+    # Fail closed if detection fails or its output is missing; preserve check names.
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.rust != 'false') }}
     name: Rust checks and PostgreSQL tests
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -54,6 +79,8 @@ jobs:
         run: cargo +stable test --locked --workspace -- --include-ignored
 
   frontend:
+    needs: changes
+    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.frontend != 'false') }}
     name: Frontend build
     runs-on: ubuntu-24.04
     timeout-minutes: 10
