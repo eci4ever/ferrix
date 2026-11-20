@@ -41,7 +41,7 @@ test('Create Service offers only Application and Database', async ({ page, reque
     await expect(page.getByLabel('Environment variables', { exact: true })).toBeVisible()
     await page.getByRole('tab', { name: 'Logs', exact: true }).click()
     await expect(page.getByRole('heading', { name: 'Container logs', exact: true })).toBeVisible()
-    await page.getByRole('tab', { name: 'General', exact: true }).click()
+    await page.getByRole('tab', { name: 'Overview', exact: true }).click()
   }
 
   await page.getByRole('button', { name: 'Project Environment', exact: true }).click()
@@ -60,7 +60,7 @@ test('Create Service offers only Application and Database', async ({ page, reque
   await expect(page.getByRole('heading', { name: 'nginx', exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Configuration', exact: true }).click()
   await expect(page.getByLabel('Environment variables', { exact: true })).toHaveValue('FERRIX_UI_TEST=literal-value')
-  await expect(page.getByRole('button', { name: 'Deploy', exact: true })).toBeDisabled()
+  await expect(page.getByRole('heading', { name: 'Service configuration', exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Cancel', exact: true }).click()
   await page.getByRole('button', { name: 'Deploy', exact: true }).click()
   const applicationAddress = page.getByRole('link', { name: /^Open http:\/\/127\.0\.0\.1:/ })
@@ -95,7 +95,9 @@ test('Create Service offers only Application and Database', async ({ page, reque
   await page.getByRole('link', { name: 'PostgreSQL UI', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'PostgreSQL UI', exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Deploy', exact: true }).click()
+  await page.getByRole('tab', { name: 'Deployments', exact: true }).click()
   await expect(page.getByText('succeeded', { exact: true })).toBeVisible({ timeout: 60_000 })
+  await page.getByRole('tab', { name: 'Overview', exact: true }).click()
   await checkControls()
   await page.getByRole('button', { name: 'Connection details', exact: true }).click()
   await expect(page.getByLabel('Connection URL', { exact: true })).toHaveAttribute('type', 'password')
