@@ -120,6 +120,17 @@ responses are capped at 8 MiB and three seconds. Unsupported transports report
 unavailable. An HTTP fixture test protects legacy storage-field compatibility.
 No database migration is required.
 
+### Delete projects
+
+Organization owners/admins can delete projects from either the card or table
+view. The dialog requires the exact project name and blocks projects that still
+contain services. `DELETE /api/v1/projects/{id}` enforces the same checks on the
+server, scopes access to the active organization and deletes only an empty
+project and its environments. The transaction locks the project and environment
+rows before checking for services, preventing concurrent service/environment
+creation from bypassing the check. Remove services explicitly first; retained
+Docker volumes are not removed by deleting the project.
+
 ### Project runtime summaries
 
 Project cards poll authenticated `GET /api/v1/projects/service-status` every ten

@@ -56,7 +56,7 @@ test('service breadcrumbs, tabs and runtime status remain clear', async ({ page 
   await expect(page.getByText('1 failed', { exact: true })).toBeVisible()
   await page.getByRole('button', { name: 'Table view', exact: true }).click()
   await expect(page.getByRole('columnheader', { name: 'Services', exact: true })).toBeVisible()
-  await expect(page.getByRole('row').filter({ hasText: 'Portal' }).getByRole('cell').last()).toHaveText('3')
+  await expect(page.getByRole('row').filter({ hasText: 'Portal' }).getByRole('cell').nth(2)).toHaveText('3')
   await page.getByLabel('Filter projects').fill('not-a-project')
   await page.getByRole('button', { name: 'Clear search', exact: true }).click()
   await expect(page.getByRole('link', { name: 'Portal', exact: true })).toBeVisible()

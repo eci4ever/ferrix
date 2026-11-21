@@ -42,6 +42,10 @@ pub fn router(state: AppState) -> Router {
             get(projects::list).post(projects::create),
         )
         .route("/api/v1/containers", get(containers))
+        .route(
+            "/api/v1/projects/{id}",
+            axum::routing::delete(projects::remove),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::sessions::protect,
