@@ -103,13 +103,16 @@ impl FromRequestParts<AppState> for Identity {
     }
 }
 pub(super) fn cookie_token(headers: &HeaderMap, config: &AuthConfig) -> Option<String> {
+    named_cookie_token(headers, &config.cookie_name)
+}
+pub(super) fn named_cookie_token(headers: &HeaderMap, name: &str) -> Option<String> {
     let mut tokens = headers
         .get_all(header::COOKIE)
         .iter()
         .filter_map(|v| v.to_str().ok())
         .flat_map(|v| v.split(';'))
         .filter_map(|v| v.trim().split_once('='))
-        .filter(|(k, _)| *k == config.cookie_name)
+        .filter(|(k, _)| *k == name)
         .map(|(_, v)| v);
     let t = tokens.next()?;
     if tokens.next().is_some() || t.len() != 64 || !t.bytes().all(|c| c.is_ascii_hexdigit()) {
@@ -221,11 +224,13 @@ pub(super) async fn issue(
     Ok(t)
 }
 pub(super) fn signed_in(state: &AppState, t: &str) -> Response {
-    (
+    let mut response = (
         [(header::SET_COOKIE, state.auth.cookie(t, 259200))],
         Json(serde_json::json!({"ok":true})),
     )
-        .into_response()
+        .into_response();
+    login::clear(state, &mut response);
+    response
 }
 pub async fn current(
     State(state): State<AppState>,

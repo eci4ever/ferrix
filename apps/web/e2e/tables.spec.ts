@@ -58,6 +58,7 @@ test('Tables sort, search and paginate while service cards remain direct links',
   const card = page.locator('[data-slot="card"]').filter({ has: page.getByRole('link', { name: 'Clickable service', exact: true }) })
   await card.click({ position: { x: 100, y: 120 } })
   await expect(page).toHaveURL(/\/services\/service$/)
+  await page.getByRole('tab', { name: 'Deployments', exact: true }).click()
   await page.getByRole('textbox', { name: 'Search Deployment history', exact: true }).fill('2026-11-25')
   await page.getByRole('button', { name: 'Progress', exact: true }).click()
   await expect(page.getByText('deployment-24-output', { exact: true })).toBeVisible()

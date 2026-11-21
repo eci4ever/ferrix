@@ -2,6 +2,10 @@ export type Project = { id: string; name: string; description: string; created_a
 export type SystemStatus = { database: boolean; docker: boolean; version: string }
 export type Container = { id: string; name: string; image: string; state: string; status: string }
 
+export class ApiRequestError extends Error {
+  constructor(message: string, public readonly status: number) { super(message); this.name = 'ApiRequestError' }
+}
+
 export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let response: Response
   try {
@@ -11,7 +15,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!response.ok) {
     const body = await response.json().catch(() => null)
-    throw new Error(body?.error ?? `Request failed (${response.status}). Check that the API is running.`)
+    throw new ApiRequestError(body?.error ?? `Request failed (${response.status}). Check that the API is running.`, response.status)
   }
   if (response.status === 204) return undefined as T
   const body = await response.text()
