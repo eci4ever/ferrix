@@ -305,6 +305,7 @@ async fn postgres_auth_security_and_tenant_isolation() {
     assert_eq!(runtime_summary.1["projects"][0]["available"], true);
     assert_eq!(runtime_summary.1["projects"][0]["running"], 0);
     check_home_summary(&app, &pool, &owner, org1, org2).await;
+    check_project_deletion(&app, &pool, &owner, org1, org2).await;
     assert_eq!(
         post(
             &app,
@@ -424,6 +425,19 @@ async fn postgres_auth_security_and_tenant_isolation() {
     let projects = get(&app, "/api/v1/projects", &member).await.1;
     assert_eq!(projects.as_array().unwrap().len(), 1);
     assert_eq!(projects[0]["name"], "Organization one project");
+    assert_eq!(
+        call(
+            &app,
+            "DELETE",
+            &format!("/api/v1/projects/{}", projects[0]["id"].as_str().unwrap()),
+            json!({"name":"Organization one project"}),
+            &member,
+            Some(ORIGIN)
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
     assert_eq!(
         get(&app, "/api/v1/auth/admin/users", &member).await.0,
         StatusCode::FORBIDDEN
@@ -767,6 +781,144 @@ async fn postgres_auth_security_and_tenant_isolation() {
         .await
         .unwrap();
     admin.close().await;
+}
+
+async fn check_project_deletion(
+    app: &axum::Router,
+    pool: &sqlx::PgPool,
+    owner: &str,
+    org1: &str,
+    org2: &str,
+) {
+    let project = post(
+        app,
+        "/api/v1/projects",
+        json!({"name":"Delete test"}),
+        owner,
+    )
+    .await
+    .1;
+    let project_id = project["id"].as_str().unwrap();
+    let path = format!("/api/v1/projects/{project_id}");
+    assert_eq!(
+        call(
+            app,
+            "DELETE",
+            &path,
+            json!({"name":"Delete test"}),
+            "",
+            Some(ORIGIN)
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        call(
+            app,
+            "DELETE",
+            &path,
+            json!({"name":"Delete test "}),
+            owner,
+            Some(ORIGIN)
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let env: uuid::Uuid =
+        sqlx::query_scalar("SELECT id FROM environments WHERE project_id=$1::uuid")
+            .bind(project_id)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    let service = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO applications(id,environment_id,name,image,container_port) VALUES($1,$2,'Keep service','nginx:alpine',80)").bind(service).bind(env).execute(pool).await.unwrap();
+    assert_eq!(
+        call(
+            app,
+            "DELETE",
+            &path,
+            json!({"name":"Delete test"}),
+            owner,
+            Some(ORIGIN)
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    assert!(
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM applications WHERE id=$1)")
+            .bind(service)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    );
+    sqlx::query("DELETE FROM applications WHERE id=$1")
+        .bind(service)
+        .execute(pool)
+        .await
+        .unwrap();
+    post(
+        app,
+        "/api/v1/auth/organizations/switch",
+        json!({"organization_id":org2}),
+        owner,
+    )
+    .await;
+    assert_eq!(
+        call(
+            app,
+            "DELETE",
+            &path,
+            json!({"name":"Delete test"}),
+            owner,
+            Some(ORIGIN)
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    post(
+        app,
+        "/api/v1/auth/organizations/switch",
+        json!({"organization_id":org1}),
+        owner,
+    )
+    .await;
+    assert_eq!(
+        call(
+            app,
+            "DELETE",
+            &path,
+            json!({"name":"Delete test"}),
+            owner,
+            Some(ORIGIN)
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert!(
+        !sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM environments WHERE id=$1)")
+            .bind(env)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        call(
+            app,
+            "DELETE",
+            &path,
+            json!({"name":"Delete test"}),
+            owner,
+            Some(ORIGIN)
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
 }
 
 async fn check_home_summary(

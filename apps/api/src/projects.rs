@@ -1,5 +1,9 @@
 use crate::{ApiError, AppState, auth::Identity};
-use axum::{Json, extract::State, http::StatusCode};
+use axum::{
+    Json,
+    extract::{Path, State},
+    http::StatusCode,
+};
 use bollard::query_parameters::ListContainersOptionsBuilder;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -193,4 +197,55 @@ pub(crate) async fn create(
         .await?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, Json(project)))
+}
+
+#[derive(Deserialize)]
+pub(crate) struct DeleteProject {
+    name: String,
+}
+
+pub(crate) async fn remove(
+    State(state): State<AppState>,
+    id: Identity,
+    Path(project): Path<Uuid>,
+    Json(input): Json<DeleteProject>,
+) -> Result<StatusCode, ApiError> {
+    id.manager()?;
+    let mut tx = state.pool.begin().await?;
+    let name: Option<String> = sqlx::query_scalar(
+        "SELECT name FROM projects WHERE id=$1 AND organization_id=$2 FOR UPDATE",
+    )
+    .bind(project)
+    .bind(id.organization_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let name = name.ok_or(ApiError(
+        StatusCode::NOT_FOUND,
+        "Project not found in this organization.",
+    ))?;
+    if input.name != name {
+        return Err(ApiError(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "Enter the project name exactly to confirm deletion.",
+        ));
+    }
+    // Block new environments and service inserts through their foreign-key locks.
+    sqlx::query("SELECT id FROM environments WHERE project_id=$1 ORDER BY id FOR UPDATE")
+        .bind(project)
+        .fetch_all(&mut *tx)
+        .await?;
+    let nonempty: bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM applications a JOIN environments e ON e.id=a.environment_id WHERE e.project_id=$1)").bind(project).fetch_one(&mut *tx).await?;
+    if nonempty {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "This project still has services. Delete all services before deleting the project.",
+        ));
+    }
+    sqlx::query("DELETE FROM projects WHERE id=$1 AND organization_id=$2")
+        .bind(project)
+        .bind(id.organization_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
 }

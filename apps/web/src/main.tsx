@@ -122,6 +122,7 @@ function Connection({ name, connected }: { name: string; connected: boolean }) {
 }
 
 function ProjectsPage() {
+  const { account } = rootRoute.useLoaderData()
   const { projects } = projectsRoute.useLoaderData()
   const router = useRouter()
   const [creating, setCreating] = useState(false)
@@ -159,7 +160,7 @@ function ProjectsPage() {
         <div className="flex justify-end gap-2"><Button variant="outline" type="button" onClick={closeForm} disabled={saving}>Cancel</Button><Button type="submit" disabled={saving}>{saving ? 'Creating…' : 'Create project'}</Button></div>
       </form>
     </section> : null}
-    {projects.data === null ? <ErrorNotice message={projects.error} /> : projects.data.length === 0 ? <section className="overflow-hidden rounded-xl border bg-card text-card-foreground [&>[data-slot=empty]]:min-h-72 [&_[data-slot=table-caption]]:p-4"><Empty><EmptyHeader><EmptyMedia variant="icon"><Folder /></EmptyMedia><EmptyTitle>Your first deployment starts here</EmptyTitle><EmptyDescription>Create a project to organise your applications. This workspace is ready for a fresh start.</EmptyDescription></EmptyHeader>{!creating ? <Button variant="outline" onClick={() => setCreating(true)}><Plus data-icon="inline-start" />Create your first project</Button> : null}</Empty></section> : <ProjectList projects={projects.data} />}
+    {projects.data === null ? <ErrorNotice message={projects.error} /> : projects.data.length === 0 ? <section className="overflow-hidden rounded-xl border bg-card text-card-foreground [&>[data-slot=empty]]:min-h-72 [&_[data-slot=table-caption]]:p-4"><Empty><EmptyHeader><EmptyMedia variant="icon"><Folder /></EmptyMedia><EmptyTitle>Your first deployment starts here</EmptyTitle><EmptyDescription>Create a project to organise your applications. This workspace is ready for a fresh start.</EmptyDescription></EmptyHeader>{!creating ? <Button variant="outline" onClick={() => setCreating(true)}><Plus data-icon="inline-start" />Create your first project</Button> : null}</Empty></section> : <ProjectList projects={projects.data} canManage={account.data?.role === 'owner' || account.data?.role === 'admin'} />}
     <div className="flex max-w-xl items-start gap-3 text-sm text-muted-foreground [&>svg]:size-5 [&>svg]:shrink-0 [&_h2]:font-medium [&_h2]:text-foreground [&_p]:mt-1"><Layers3 aria-hidden="true" /><div><h2>Built for your own infrastructure</h2><p>Create an environment, add an application and deploy its Docker image.</p></div></div>
   </>
 }
