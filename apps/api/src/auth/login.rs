@@ -86,7 +86,7 @@ pub async fn verify(
     }
 
     let current: Option<(String, bool)> =
-        sqlx::query_as("SELECT password_hash,banned FROM auth_users WHERE id=$1 FOR UPDATE")
+        sqlx::query_as("SELECT password_hash,auth_user_banned(banned,ban_expires_at) FROM auth_users WHERE id=$1 FOR UPDATE")
             .bind(user)
             .fetch_optional(&mut *tx)
             .await?;

@@ -235,3 +235,27 @@ async fn housekeeping_deletes_only_expired_records_skips_renewals_and_bounds_wor
         tokio::time::timeout(std::time::Duration::from_secs(2),worker).await.unwrap().unwrap();
     }).await;
 }
+
+#[tokio::test]
+#[ignore = "requires FERRIX_TEST_DATABASE_URL"]
+async fn default_organization_backfill_survives_renaming_and_legacy_audit_gaps() {
+    for has_audit in [true, false] {
+        isolated(|pool| async move {
+            let all=sqlx::migrate!();
+            let previous=sqlx::migrate::Migrator{ migrations:Cow::Owned(all.iter().filter(|m|m.version<16).cloned().collect()),..sqlx::migrate::Migrator::DEFAULT };
+            previous.run(&pool).await.unwrap();
+            let first=organization(&pool).await;let second=organization(&pool).await;
+            sqlx::query("UPDATE auth_organizations SET created_at=now()-interval '1 day' WHERE id=$1").bind(first).execute(&pool).await.unwrap();
+            let expected=if has_audit{second}else{first};
+            sqlx::query("UPDATE auth_organizations SET name='Renamed default' WHERE id=$1").bind(expected).execute(&pool).await.unwrap();
+            if has_audit {
+                sqlx::query("INSERT INTO auth_audit(id,organization_id,action) VALUES($1,$2,'installation.configured')").bind(Uuid::new_v4()).bind(second).execute(&pool).await.unwrap();
+            }
+            all.run(&pool).await.unwrap();
+            let defaults:Vec<Uuid>=sqlx::query_scalar("SELECT id FROM auth_organizations WHERE is_default").fetch_all(&pool).await.unwrap();
+            assert_eq!(defaults,vec![expected]);
+            assert_eq!(sqlx::query_scalar::<_,String>("SELECT name FROM auth_organizations WHERE id=$1").bind(expected).fetch_one(&pool).await.unwrap(),"Renamed default");
+            assert!(sqlx::query("UPDATE auth_organizations SET is_default=true WHERE id<>$1").bind(expected).execute(&pool).await.is_err());
+        }).await;
+    }
+}

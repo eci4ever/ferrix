@@ -185,6 +185,39 @@ async fn postgres_auth_security_and_tenant_isolation() {
         get(&app, "/api/v1/auth/profile", "").await.0,
         StatusCode::UNAUTHORIZED
     );
+    assert_eq!(
+        post(
+            &app,
+            "/api/v1/auth/profile",
+            json!({"name":"Owner", "avatar":"initials", "email":"changed@example.com"}),
+            &owner
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        get(&app, "/api/v1/auth/profile", &owner).await.1["email"],
+        "owner@example.com"
+    );
+    assert_eq!(
+        post(
+            &app,
+            &format!(
+                "/api/v1/auth/sessions/{}/revoke",
+                identity["session_id"].as_str().unwrap()
+            ),
+            json!({}),
+            &owner
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        get(&app, "/api/v1/auth/session", &owner).await.0,
+        StatusCode::OK
+    );
     let saved = post(
         &app,
         "/api/v1/auth/profile",
@@ -510,7 +543,7 @@ async fn postgres_auth_security_and_tenant_isolation() {
     post(
         &app,
         &format!("/api/v1/auth/admin/users/{member_id}/ban"),
-        json!({"banned":true}),
+        json!({"banned":true,"reason":"Test ban"}),
         &owner,
     )
     .await;
@@ -1244,4 +1277,543 @@ async fn check_mfa_login(
         .execute(pool)
         .await
         .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires FERRIX_TEST_DATABASE_URL"]
+async fn postgres_user_and_organization_management() {
+    use futures_util::FutureExt;
+    use std::panic::AssertUnwindSafe;
+    let url = std::env::var("FERRIX_TEST_DATABASE_URL").unwrap();
+    let admin = PgPoolOptions::new().connect(&url).await.unwrap();
+    let schema = format!("management_test_{}", uuid::Uuid::new_v4().simple());
+    admin
+        .execute(format!("CREATE SCHEMA {schema}").as_str())
+        .await
+        .unwrap();
+    let namespace = schema.clone();
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .after_connect(move |connection, _| {
+            let query = format!("SET search_path TO {namespace}");
+            Box::pin(async move {
+                connection.execute(query.as_str()).await?;
+                Ok(())
+            })
+        })
+        .connect(&url)
+        .await
+        .unwrap();
+    let result = AssertUnwindSafe(async {
+        sqlx::migrate!().run(&pool).await.unwrap();
+        check_management(&app(pool.clone()), &pool).await;
+    })
+    .catch_unwind()
+    .await;
+    pool.close().await;
+    admin
+        .execute(format!("DROP SCHEMA {schema} CASCADE").as_str())
+        .await
+        .unwrap();
+    if let Err(error) = result {
+        std::panic::resume_unwind(error);
+    }
+}
+async fn check_management(app: &axum::Router, pool: &sqlx::PgPool) {
+    use uuid::Uuid;
+    let (_, _, owner) = post(
+        app,
+        "/api/v1/auth/setup",
+        json!({"name":"Manager","email":"manager@example.com","password":PASSWORD}),
+        "",
+    )
+    .await;
+    let identity = get(app, "/api/v1/auth/session", &owner).await.1;
+    let admin = identity["user_id"].as_str().unwrap();
+    let org = identity["organization_id"].as_str().unwrap();
+    assert_eq!(
+        post(
+            app,
+            &format!("/api/v1/auth/admin/users/{admin}/revoke-sessions"),
+            json!({}),
+            &owner
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        get(app, "/api/v1/auth/session", &owner).await.0,
+        StatusCode::OK
+    );
+    let other_org = post(
+        app,
+        "/api/v1/auth/organizations",
+        json!({"name":"Other organization"}),
+        &owner,
+    )
+    .await
+    .1;
+    let other_org = other_org["id"].as_str().unwrap();
+    assert_eq!(
+        get(app, "/api/v1/auth/organizations/current", &owner)
+            .await
+            .1["is_default"],
+        true
+    );
+    let protected = post(
+        app,
+        "/api/v1/auth/organizations/delete",
+        json!({"confirmation":"My Organization"}),
+        &owner,
+    )
+    .await;
+    assert_eq!(protected.0, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(
+        protected.1["error"],
+        "The default organization cannot be deleted."
+    );
+    let member = Uuid::new_v4();
+    let stranger = Uuid::new_v4();
+    for (user, email, organization) in [
+        (member, "member-management@example.com", org),
+        (stranger, "stranger-management@example.com", other_org),
+    ] {
+        sqlx::query("INSERT INTO auth_users(id,name,email,password_hash) SELECT $1,$2,$2,password_hash FROM auth_users WHERE id=$3").bind(user).bind(email).bind(admin.parse::<Uuid>().unwrap()).execute(pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO auth_members(user_id,organization_id,role) VALUES($1,$2,'member')",
+        )
+        .bind(user)
+        .bind(organization.parse::<Uuid>().unwrap())
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+    let member_login = json!({"email":"member-management@example.com","password":PASSWORD});
+    let (_, _, member_cookie) = post(app, "/api/v1/auth/sign-in", member_login.clone(), "").await;
+    assert_eq!(
+        get(app, "/api/v1/auth/admin/users", &member_cookie).await.0,
+        StatusCode::FORBIDDEN
+    );
+    let page = get(app, "/api/v1/auth/admin/users?limit=1&page=1", &owner)
+        .await
+        .1;
+    assert_eq!(page["total"], 3);
+    assert_eq!(page["items"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        get(
+            app,
+            "/api/v1/auth/admin/users?q=member-management&role=user&status=active",
+            &owner
+        )
+        .await
+        .1["total"],
+        1
+    );
+    assert_eq!(
+        get(app, "/api/v1/auth/admin/users?q=%25", &owner).await.1["total"],
+        0
+    );
+    assert_eq!(
+        get(app, "/api/v1/auth/admin/users?role=owner", &owner)
+            .await
+            .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        get(app, "/api/v1/auth/admin/users?limit=1000", &owner)
+            .await
+            .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let detail_path = format!("/api/v1/auth/admin/users/{member}");
+    let detail = get(app, &detail_path, &owner).await.1;
+    assert_eq!(detail["organizations"].as_array().unwrap().len(), 1);
+    assert_eq!(detail["sessions"].as_array().unwrap().len(), 1);
+    assert!(!detail.to_string().contains("password_hash"));
+    assert!(!detail.to_string().contains("token_hash"));
+    assert_eq!(
+        get(app, &detail_path, &member_cookie).await.0,
+        StatusCode::FORBIDDEN
+    );
+    let admin_role = format!("/api/v1/auth/admin/users/{admin}/role");
+    let member_role = format!("{detail_path}/role");
+    assert_eq!(
+        post(app, &admin_role, json!({"role":"user"}), &owner)
+            .await
+            .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        post(app, &member_role, json!({"role":"admin"}), &member_cookie)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post(app, &member_role, json!({"role":"admin"}), &owner)
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    // Simultaneous self-demotions must leave exactly one active platform admin.
+    let (a, b) = tokio::join!(
+        post(app, &admin_role, json!({"role":"user"}), &owner),
+        post(app, &member_role, json!({"role":"user"}), &member_cookie)
+    );
+    assert_eq!(
+        [a.0, b.0]
+            .iter()
+            .filter(|&&status| status == StatusCode::NO_CONTENT)
+            .count(),
+        1
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM auth_users WHERE system_role='admin'")
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        1
+    );
+    sqlx::query("UPDATE auth_users SET system_role=CASE WHEN id=$1 THEN 'admin' ELSE 'user' END")
+        .bind(admin.parse::<Uuid>().unwrap())
+        .execute(pool)
+        .await
+        .unwrap();
+    // Last-owner, cross-tenant transfer, owner deletion and self deletion are rejected.
+    assert_eq!(
+        post(app, "/api/v1/auth/organizations/leave", json!({}), &owner)
+            .await
+            .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        post(
+            app,
+            "/api/v1/auth/organizations/transfer",
+            json!({"user_id":stranger}),
+            &owner
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        post(
+            app,
+            &format!("/api/v1/auth/admin/users/{admin}/delete"),
+            json!({"confirmation":"manager@example.com"}),
+            &owner
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    // A temporary ban immediately revokes sessions and expires without a worker sweep.
+    let ban_path = format!("{detail_path}/ban");
+    assert_eq!(post(app,&ban_path,json!({"banned":true,"reason":"Testing temporary ban","expires_at":(chrono::Utc::now()+chrono::Duration::hours(1)).to_rfc3339()}),&owner).await.0,StatusCode::NO_CONTENT);
+    assert_eq!(
+        get(app, "/api/v1/auth/session", &member_cookie).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        post(app, "/api/v1/auth/sign-in", member_login.clone(), "")
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    sqlx::query("UPDATE auth_users SET ban_expires_at=now()-interval '1 second' WHERE id=$1")
+        .bind(member)
+        .execute(pool)
+        .await
+        .unwrap();
+    let (status, _, member_cookie) =
+        post(app, "/api/v1/auth/sign-in", member_login.clone(), "").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        get(app, "/api/v1/auth/admin/users?status=banned", &owner)
+            .await
+            .1["total"],
+        0
+    );
+    assert_eq!(
+        post(app, &ban_path, json!({"banned":false}), &owner)
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        post(
+            app,
+            "/api/v1/auth/organizations/current",
+            json!({"name":"Forbidden"}),
+            &member_cookie
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post(
+            app,
+            "/api/v1/auth/organizations/current",
+            json!({"name":"Managed organization","logo_url":"javascript:bad"}),
+            &owner
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        post(
+            app,
+            "/api/v1/auth/organizations/current",
+            json!({"name":"Managed organization","logo_url":"https://example.com/logo.png"}),
+            &owner
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        get(app, "/api/v1/auth/organizations/current", &member_cookie)
+            .await
+            .1["name"],
+        "Managed organization"
+    );
+    assert_eq!(
+        post(
+            app,
+            "/api/v1/auth/organizations/delete",
+            json!({"confirmation":"Managed organization"}),
+            &owner
+        )
+        .await
+        .1["error"],
+        "The default organization cannot be deleted."
+    );
+    let invite = post(
+        app,
+        "/api/v1/auth/invitations",
+        json!({"email":"invite-management@example.com","role":"member"}),
+        &owner,
+    )
+    .await
+    .1;
+    let renewed = post(
+        app,
+        &format!(
+            "/api/v1/auth/invitations/{}/renew",
+            invite["id"].as_str().unwrap()
+        ),
+        json!({}),
+        &owner,
+    )
+    .await;
+    assert_eq!(renewed.0, StatusCode::OK);
+    assert_ne!(invite["token"], renewed.1["token"]);
+    let mut accept = json!({"name":"Invited","email":"invite-management@example.com","password":PASSWORD,"token":invite["token"]});
+    assert_eq!(
+        post(app, "/api/v1/auth/accept-invitation", accept.clone(), "")
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    accept["token"] = renewed.1["token"].clone();
+    assert_eq!(
+        post(app, "/api/v1/auth/accept-invitation", accept, "")
+            .await
+            .0,
+        StatusCode::OK
+    );
+    // Organizations with projects cannot be deleted, even with the exact name.
+    let project = post(
+        app,
+        "/api/v1/projects",
+        json!({"name":"Managed project"}),
+        &owner,
+    )
+    .await
+    .1;
+    assert_eq!(
+        post(
+            app,
+            "/api/v1/auth/organizations/delete",
+            json!({"confirmation":"Managed organization"}),
+            &owner
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        call(
+            app,
+            "DELETE",
+            &format!("/api/v1/projects/{}", project["id"].as_str().unwrap()),
+            json!({"name":"Managed project"}),
+            &owner,
+            Some(ORIGIN)
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        post(
+            app,
+            "/api/v1/auth/organizations/transfer",
+            json!({"user_id":member}),
+            &owner
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        get(app, "/api/v1/auth/session", &owner).await.1["role"],
+        "admin"
+    );
+    assert_eq!(
+        get(app, "/api/v1/auth/session", &member_cookie).await.1["role"],
+        "owner"
+    );
+    // User deletion must not remove an organization owner or overwrite projects.
+    assert_eq!(
+        post(
+            app,
+            &format!("{detail_path}/delete"),
+            json!({"confirmation":"member-management@example.com"}),
+            &owner
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    // Transfer back so deletion can exercise its complete FK cleanup.
+    assert_eq!(
+        post(
+            app,
+            "/api/v1/auth/organizations/transfer",
+            json!({"user_id":admin}),
+            &member_cookie
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    post(
+        app,
+        "/api/v1/auth/invitations",
+        json!({"email":"issued-by-member@example.com","role":"member"}),
+        &member_cookie,
+    )
+    .await;
+    assert_eq!(
+        post(
+            app,
+            &format!("{detail_path}/delete"),
+            json!({"confirmation":"incorrect"}),
+            &owner
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        post(
+            app,
+            &format!("{detail_path}/delete"),
+            json!({"confirmation":"member-management@example.com"}),
+            &owner
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        get(app, "/api/v1/auth/session", &member_cookie).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        get(app, "/api/v1/auth/organizations/current", &owner)
+            .await
+            .1["name"],
+        "Managed organization"
+    );
+    // Last platform-admin membership is protected even on an otherwise empty org.
+    post(
+        app,
+        "/api/v1/auth/organizations/switch",
+        json!({"organization_id":other_org}),
+        &owner,
+    )
+    .await;
+    assert_eq!(
+        post(
+            app,
+            "/api/v1/auth/organizations/delete",
+            json!({"confirmation":"Other organization"}),
+            &owner
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        get(app, "/api/v1/auth/session", &owner).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (_, _, owner) = post(
+        app,
+        "/api/v1/auth/sign-in",
+        json!({"email":"manager@example.com","password":PASSWORD}),
+        "",
+    )
+    .await;
+    assert_eq!(
+        post(
+            app,
+            "/api/v1/auth/organizations/delete",
+            json!({"confirmation":"Managed organization"}),
+            &owner
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    // The member-removal endpoint must not bypass last-platform-membership protection.
+    sqlx::query("INSERT INTO auth_members(user_id,organization_id,role) VALUES($1,$2,'owner')")
+        .bind(stranger)
+        .bind(org.parse::<Uuid>().unwrap())
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        post(
+            app,
+            &format!("/api/v1/auth/members/{admin}/remove"),
+            json!({}),
+            &owner
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    // Expired sensitive-action verification is rejected without modifying the account.
+    sqlx::query("UPDATE auth_sessions SET authenticated_at=now()-interval '1 hour'")
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        post(
+            app,
+            &format!("/api/v1/auth/admin/users/{stranger}/role"),
+            json!({"role":"admin"}),
+            &owner
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
 }

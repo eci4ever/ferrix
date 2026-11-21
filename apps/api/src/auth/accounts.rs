@@ -139,10 +139,12 @@ pub async fn setup(
     let user = Uuid::new_v4();
     let org = Uuid::new_v4();
     sqlx::query("INSERT INTO auth_users(id,name,email,password_hash,system_role) VALUES($1,$2,$3,$4,'admin')").bind(user).bind(name).bind(email).bind(hash).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO auth_organizations(id,name) VALUES($1,'My Organization')")
-        .bind(org)
-        .execute(&mut *tx)
-        .await?;
+    sqlx::query(
+        "INSERT INTO auth_organizations(id,name,is_default) VALUES($1,'My Organization',true)",
+    )
+    .bind(org)
+    .execute(&mut *tx)
+    .await?;
     sqlx::query("INSERT INTO auth_members(organization_id,user_id,role) VALUES($1,$2,'owner')")
         .bind(org)
         .bind(user)
@@ -166,7 +168,7 @@ pub async fn sign_in(
     let email = email(&input.email)?;
     throttle(&state.pool, &format!("login:{email}"), 10).await?;
     let found: Option<(Uuid, String, bool)> =
-        sqlx::query_as("SELECT id,password_hash,banned FROM auth_users WHERE email=$1")
+        sqlx::query_as("SELECT id,password_hash,auth_user_banned(banned,ban_expires_at) FROM auth_users WHERE email=$1")
             .bind(email)
             .fetch_optional(&state.pool)
             .await?;
@@ -178,7 +180,7 @@ pub async fn sign_in(
     let mut tx = state.pool.begin().await?;
     // Serialize against ban/password changes so stale credentials cannot issue a fresh session.
     let current: Option<(String, bool)> =
-        sqlx::query_as("SELECT password_hash,banned FROM auth_users WHERE id=$1 FOR UPDATE")
+        sqlx::query_as("SELECT password_hash,auth_user_banned(banned,ban_expires_at) FROM auth_users WHERE id=$1 FOR UPDATE")
             .bind(user)
             .fetch_optional(&mut *tx)
             .await?;
@@ -213,7 +215,7 @@ pub(super) async fn check(
 ) -> Result<(), ApiError> {
     throttle(&state.pool, &format!("verify:{}", id.user_id), 10).await?;
     let hash: Option<String> =
-        sqlx::query_scalar("SELECT password_hash FROM auth_users WHERE id=$1 AND NOT banned")
+        sqlx::query_scalar("SELECT password_hash FROM auth_users WHERE id=$1 AND NOT auth_user_banned(banned,ban_expires_at)")
             .bind(id.user_id)
             .fetch_optional(&state.pool)
             .await?;
@@ -271,64 +273,6 @@ pub async fn change_password(
         .into_response())
 }
 use axum::response::IntoResponse;
-pub async fn users(
-    State(state): State<AppState>,
-    id: Identity,
-) -> Result<Json<Vec<serde_json::Value>>, ApiError> {
-    id.admin()?;
-    let rows: Vec<(Uuid, String, String, String, bool)> = sqlx::query_as(
-        "SELECT id,name,email,system_role,banned FROM auth_users ORDER BY created_at LIMIT 200",
-    )
-    .fetch_all(&state.pool)
-    .await?;
-    Ok(Json(rows.into_iter().map(|(id,name,email,role,banned)|serde_json::json!({"id":id,"name":name,"email":email,"system_role":role,"banned":banned})).collect()))
-}
-#[derive(Deserialize)]
-pub struct Ban {
-    banned: bool,
-}
-pub async fn ban(
-    State(state): State<AppState>,
-    id: Identity,
-    Path(target): Path<Uuid>,
-    Json(input): Json<Ban>,
-) -> Result<StatusCode, ApiError> {
-    id.admin()?;
-    id.fresh()?;
-    if target == id.user_id {
-        return Err(bad("You cannot ban your own account."));
-    }
-    let mut tx = state.pool.begin().await?;
-    // System administrators are not bannable through this endpoint; preserves installation recovery.
-    let count = sqlx::query("UPDATE auth_users SET banned=$1 WHERE id=$2 AND system_role<>'admin' AND (NOT $1 OR NOT EXISTS(SELECT 1 FROM auth_members WHERE user_id=$2 AND role='owner'))")
-        .bind(input.banned)
-        .bind(target)
-        .execute(&mut *tx)
-        .await?
-        .rows_affected();
-    if count == 0 {
-        return Err(forbidden());
-    }
-    if input.banned {
-        sqlx::query("DELETE FROM auth_sessions WHERE user_id=$1")
-            .bind(target)
-            .execute(&mut *tx)
-            .await?;
-    }
-    log(
-        &mut tx,
-        id.user_id,
-        id.organization_id,
-        if input.banned {
-            "admin.user_banned"
-        } else {
-            "admin.user_unbanned"
-        },
-    )
-    .await?;
-    tx.commit().await?;
-    Ok(StatusCode::NO_CONTENT)
-}
 pub async fn revoke_user_sessions(
     State(state): State<AppState>,
     id: Identity,
@@ -337,8 +281,10 @@ pub async fn revoke_user_sessions(
     id.admin()?;
     id.fresh()?;
     let mut tx = state.pool.begin().await?;
-    sqlx::query("DELETE FROM auth_sessions WHERE user_id=$1")
+    management::authorize(&mut tx, &id, "platform").await?;
+    sqlx::query("DELETE FROM auth_sessions WHERE user_id=$1 AND id<>$2")
         .bind(target)
+        .bind(id.session_id)
         .execute(&mut *tx)
         .await?;
     log(
@@ -360,8 +306,9 @@ pub async fn issue_reset(
     id.admin()?;
     id.fresh()?;
     let mut tx = state.pool.begin().await?;
+    management::authorize(&mut tx, &id, "platform").await?;
     let exists: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM auth_users WHERE id=$1 AND NOT banned)")
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM auth_users WHERE id=$1 AND NOT auth_user_banned(banned,ban_expires_at))")
             .bind(target)
             .fetch_one(&mut *tx)
             .await?;
@@ -398,10 +345,12 @@ pub async fn reset_password(
     let mut tx = state.pool.begin().await?;
     let user:Option<Uuid>=sqlx::query_scalar("DELETE FROM auth_password_resets WHERE token_hash=$1 AND expires_at>now() RETURNING user_id").bind(digest(&input.token)).fetch_optional(&mut *tx).await?;
     let user = user.ok_or_else(invalid)?;
-    let banned: bool = sqlx::query_scalar("SELECT banned FROM auth_users WHERE id=$1 FOR UPDATE")
-        .bind(user)
-        .fetch_one(&mut *tx)
-        .await?;
+    let banned: bool = sqlx::query_scalar(
+        "SELECT auth_user_banned(banned,ban_expires_at) FROM auth_users WHERE id=$1 FOR UPDATE",
+    )
+    .bind(user)
+    .fetch_one(&mut *tx)
+    .await?;
     if banned {
         return Err(invalid());
     }
@@ -422,6 +371,7 @@ pub async fn reset_password(
 }
 
 #[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct ProfileInput {
     name: String,
     avatar: String,

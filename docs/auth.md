@@ -71,10 +71,11 @@ All paths below are under `/api/v1/auth`. Unsafe methods are POST and require th
 | GET `/security`, `/audit` | Account security and organization activity |
 | POST `/mfa/enroll`, `/mfa/confirm`, `/mfa/disable` | TOTP lifecycle |
 | GET/POST `/organizations`, POST `/organizations/switch` | Organization management |
+| GET/POST `/organizations/current`, POST `/organizations/transfer`, `/leave`, `/delete` | Organization profile, ownership and membership lifecycle |
 | GET `/members`, POST `/members/{id}/role`, `/members/{id}/remove` | Membership management |
-| GET/POST `/invitations`, POST `/invitations/{id}/revoke` | Invitation management |
-| GET `/admin/users` | System user list |
-| POST `/admin/users/{id}/ban`, `/revoke-sessions`, `/password-reset` | System administration |
+| GET/POST `/invitations`, POST `/invitations/{id}/revoke`, `/invitations/{id}/renew` | Invitation management |
+| GET `/admin/users`, `/admin/users/{id}` | Paginated user search and account details |
+| POST `/admin/users/{id}/ban`, `/revoke-sessions`, `/password-reset`, `/role`, `/delete` | System administration |
 
 POST bodies and role constraints are defined by the corresponding request types in `apps/api/src/auth`. Password confirmation/reauthentication bodies use `password` and optional `code`.
 
@@ -95,7 +96,7 @@ The ignored integration test creates and removes an isolated schema in the speci
 
 Implemented: first owner, invitation-only additional accounts, system administration, fixed owner/admin/member organization roles, active organization, password login, TOTP/recovery codes, session and credential management.
 
-Not included: OAuth/social login, passkeys/WebAuthn, SSO/SCIM, API keys, custom dynamic roles, automatic email delivery/verification, impersonation, organization deletion and account deletion. These require separate workflows; no stub or bypass endpoint pretends to support them.
+Not included: OAuth/social login, passkeys/WebAuthn, SSO/SCIM, API keys, custom dynamic roles, automatic email delivery/verification, impersonation, self-service account deletion and custom roles. These require separate workflows; no stub or bypass endpoint pretends to support them.
 
 Reference configuration reviewed: [Dokploy auth.ts on canary](https://github.com/Dokploy/dokploy/blob/canary/packages/server/src/lib/auth.ts), [Better Auth organization plugin](https://better-auth.com/docs/plugins/organization), [admin plugin](https://better-auth.com/docs/plugins/admin), and [OWASP session management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html). Dokploy uses bcrypt; Ferrix uses Argon2id. Dokploy self-hosted configuration disables Secure cookies; Ferrix instead requires them for HTTPS origins. The 30-day absolute session cap is an additional Ferrix control.
 
@@ -115,6 +116,15 @@ blocked by housekeeping; concurrent cleaners can safely process separate rows.
 Idle cleanup does not reserve a pool connection, and API shutdown stops the worker.
 Large backlogs drain over subsequent sweeps. Errors are logged and retried on the
 next interval; no cleanup tables or external scheduler are required.
+
+## Profile and current-session protection
+
+Profile updates accept only name, avatar and profile image URL. The sign-in
+email is read-only in the UI; including an email change in a profile request is
+rejected. The Sessions table marks the current session as Protected and offers
+Revoke only for other sessions. The API also rejects revoking the current
+session through the session-management endpoint. Use Sign out to end it;
+password changes and security revocations retain their existing behavior.
 
 ## Authenticator QR and two-step sign-in
 
@@ -147,3 +157,53 @@ Reference: [OWASP multifactor authentication guidance](https://cheatsheetseries.
 The disposable browser suite decodes the actual rendered QR and tests TOTP and
 recovery-code sign-in. Run `python3 scripts/tests/services-ui.py` with the local
 Node runtime and Docker environment described in development.md.
+
+## Users and organization management
+
+**Users** uses server-side literal substring search (`q`), platform-role and
+active/banned filters, and zero-based pagination (`page`, `limit`, default 10,
+maximum 50). `GET /auth/admin/users` now returns `{items,total,page,limit}` rather
+than a capped array. User details include organizations and up to 100 active
+sessions, without passwords, tokens or MFA secrets. The UI uses TanStack Table
+with manual server pagination for Users and local pagination for smaller lists.
+
+Fresh platform admins can change `admin/user` platform roles, issue reset tokens,
+revoke sessions, ban/unban and delete accounts. Platform roles are separate from
+organization `owner/admin/member` roles. Bans require a reason up to 500 characters
+and may have a future expiry within one year. Sessions are revoked immediately;
+expired temporary bans allow login immediately without waiting for housekeeping.
+Admin accounts and organization owners cannot be banned. The current session is
+excluded from admin session revocation too.
+
+A role change cannot demote the last active administrator with organization
+access, and banned or organization-less accounts cannot become platform admins.
+Deletion requires the exact email, cannot target the acting admin, and blocks
+organization owners until ownership is transferred. Deletion removes memberships,
+sessions and invitations issued by that user; existing audit rows remain with
+nullable references. Profile email remains immutable.
+
+**Organization** provides name/HTTPS logo editing for owners/admins; searchable
+members and invitations; invitation cancellation and regeneration (old token
+invalidated); explicit ownership transfer; leaving; and deleting empty
+organizations with exact-name confirmation. Transfer promotes an active existing
+member to owner and demotes the acting owner to organization admin. Last owners
+cannot leave; platform administrators must retain membership in another
+organization before leaving/deleting their last one. Deletion never cascades
+projects: all projects must be removed first. Sessions active in a departed or
+deleted organization become invalid; sign in again to access other memberships.
+Logo URLs are loaded by the browser, not fetched by the API.
+
+Mutations require fresh verification (15 minutes). They share a transaction-scoped
+management lock and recheck current authority under that lock, protecting
+concurrent owner/admin changes. The coarse lock covers only low-volume account,
+membership and invitation transitions, not application deployment traffic.
+Administrative and membership changes produce audit events. API tests cover
+concurrent admin demotions, last-owner protection, tenant boundaries, temporary
+ban expiry, token rotation and deletion constraints. The disposable browser suite
+exercises the user and organization management flows against a real isolated API.
+
+The installation's default organization is permanently marked by `is_default`.
+Its Delete action is disabled and the API rejects deletion even after renaming
+or joining another organization. Migration 0016 identifies existing default
+organizations through the installation audit event, falling back to the earliest
+surviving organization. New organizations remain deletable under the usual checks.

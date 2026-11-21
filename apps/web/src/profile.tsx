@@ -34,7 +34,7 @@ export function ProfilePage({ profile, refresh }: { profile: Profile; refresh: (
         finally { setBusy(false) }
       }}>
         <Field><FieldLabel htmlFor="profile-name">Name</FieldLabel><Input id="profile-name" value={name} onChange={event => setName(event.target.value)} required maxLength={80} disabled={busy} /></Field>
-        <Field><FieldLabel htmlFor="profile-email">Email</FieldLabel><Input id="profile-email" value={profile.email} readOnly /><FieldDescription>Your sign-in email.</FieldDescription></Field>
+        <Field><FieldLabel htmlFor="profile-email">Email</FieldLabel><Input id="profile-email" value={profile.email} readOnly /><FieldDescription>Your sign-in email cannot be changed.</FieldDescription></Field>
         <Field><FieldLabel htmlFor="profile-avatar-url">Profile image URL</FieldLabel><Input id="profile-avatar-url" type="url" placeholder="https://example.com/photo.jpg" value={avatarUrl} onChange={event => setAvatarUrl(event.target.value)} maxLength={2048} disabled={busy} /><FieldDescription>Use an HTTPS image link. Clear it to use your selected avatar. The image provider receives requests from your browser.</FieldDescription></Field>
         <fieldset disabled={busy} className="grid gap-2"><legend className="mb-2 text-sm font-medium">Avatar</legend>
           <RadioGroup aria-label="Avatar" value={avatar} onValueChange={setAvatar} className="flex flex-wrap gap-3">
