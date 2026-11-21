@@ -12,6 +12,12 @@ test('Tables sort, search and paginate while service cards remain direct links',
   await page.route('**/api/v1/**', route => {
     const path = new URL(route.request().url()).pathname.replace('/api/v1', '')
     if (route.request().method() === 'POST') { actions.push(path); return route.fulfill({ status: 204 }) }
+    if (path === '/auth/admin/users') {
+      const params = new URL(route.request().url()).searchParams
+      const query = params.get('q') ?? ''; const pageIndex = Number(params.get('page') ?? 0)
+      const filtered = users.filter(user => `${user.name} ${user.email}`.toLowerCase().includes(query.toLowerCase()))
+      return route.fulfill({ json: { items: filtered.slice(pageIndex * 10, (pageIndex + 1) * 10), total: filtered.length } })
+    }
     const bodies: Record<string, unknown> = {
       '/auth/session': { user_id: 'admin', name: 'Admin', email: 'admin@example.test', system_role: 'admin', organization_id: 'organization', organization_name: 'Test', role: 'owner' },
       '/auth/organizations': [{ id: 'organization', name: 'Test', role: 'owner' }], '/auth/setup': { setup_required: false },
@@ -44,9 +50,16 @@ test('Tables sort, search and paginate while service cards remain direct links',
   await page.setViewportSize({ width: 1440, height: 1000 })
   await page.goto('/admin')
   await page.getByRole('textbox', { name: 'Search Users', exact: true }).fill('user24@example.test')
-  await page.getByRole('button', { name: 'Ban', exact: true }).click()
+  await page.getByRole('button', { name: /^Actions for / }).click()
+  await page.getByRole('menuitem', { name: 'Ban', exact: true }).click()
+  await page.getByRole('dialog').getByLabel('Ban reason', { exact: true }).fill('Browser test ban')
+  await page.getByRole('dialog').getByRole('button', { name: 'Confirm', exact: true }).click()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
   expect(actions).toContain('/auth/admin/users/user-24/ban')
   await page.goto('/security')
+  const current = page.getByRole('row').filter({ hasText: 'Current' })
+  await expect(current.getByText('Protected', { exact: true })).toBeVisible()
+  await expect(current.getByRole('button', { name: 'Revoke', exact: true })).toHaveCount(0)
   await page.getByRole('textbox', { name: 'Search Sessions', exact: true }).fill('User 24')
   await page.getByRole('button', { name: 'Revoke', exact: true }).click()
   expect(actions).toContain('/auth/sessions/session-24/revoke')

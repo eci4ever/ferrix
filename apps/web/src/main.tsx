@@ -16,8 +16,9 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { ActionNotice } from '@/components/action-notice'
 import { load, request } from '@/lib/api'
 import type { Project, SystemStatus, HomeSummary } from '@/lib/api'
-import { LoginPage, SecurityPage, TeamPage, AdminPage } from './auth'
-import type { Identity, Security, Session, Audit, Organization, Member, Invitation, User } from './auth'
+import { LoginPage, SecurityPage } from './auth'
+import { TeamPage, AdminPage } from './user-management'
+import type { Identity, Security, Session, Audit, Organization, Member, Invitation } from './auth'
 import { ServerClock } from '@/components/server-clock'
 import { AppSidebar } from '@/components/app-sidebar'
 import { SidebarProvider, SidebarInset, SidebarTrigger } from '@/components/ui/sidebar'
@@ -200,8 +201,8 @@ const securityRoute = createRoute({ getParentRoute: () => rootRoute, path: '/sec
 }, component: function AccountSecurity() { const { sessions, security, audit } = securityRoute.useLoaderData(); const router = useRouter(); return sessions.data && security.data ? <SecurityPage sessions={sessions.data} security={security.data} audit={audit.data ?? []} refresh={() => router.invalidate()} /> : <ErrorNotice message={sessions.error ?? security.error ?? 'Could not load security settings.'} /> } })
 const teamRoute = createRoute({ getParentRoute: () => rootRoute, path: '/organization', loader: async () => {
   const [organizations, members, invitations] = await Promise.all([load<Organization[]>('/auth/organizations'), load<Member[]>('/auth/members'), load<Invitation[]>('/auth/invitations')]); return { organizations, members, invitations }
-}, component: function OrganizationSettings() { const { organizations, members, invitations } = teamRoute.useLoaderData(); const { account } = rootRoute.useLoaderData(); const router = useRouter(); return account.data && organizations.data && members.data ? <TeamPage identity={account.data} organizations={organizations.data} members={members.data} invitations={invitations.data ?? []} refresh={() => router.invalidate()} /> : <ErrorNotice message="Could not load organization settings." /> } })
-const adminRoute = createRoute({ getParentRoute: () => rootRoute, path: '/admin', loader: () => load<User[]>('/auth/admin/users'), component: function UserAdministration() { const users = adminRoute.useLoaderData(); const router = useRouter(); return users.data ? <AdminPage users={users.data} refresh={() => router.invalidate()} /> : <ErrorNotice message={users.error} /> } })
+}, component: function OrganizationSettings() { const { organizations, members, invitations } = teamRoute.useLoaderData(); const { account } = rootRoute.useLoaderData(); const router = useRouter(); return account.data && organizations.data && members.data ? <TeamPage key={account.data.organization_id} identity={account.data} organizations={organizations.data} members={members.data} invitations={invitations.data ?? []} refresh={() => router.invalidate()} /> : <ErrorNotice message="Could not load organization settings." /> } })
+const adminRoute = createRoute({ getParentRoute: () => rootRoute, path: '/admin', component: function UserAdministration() { const { account } = rootRoute.useLoaderData(); const router = useRouter(); return account.data ? <AdminPage identity={account.data} refresh={() => router.invalidate()} /> : null } })
 const router = createRouter({ routeTree: rootRoute.addChildren([landingRoute, loginRoute, signupRoute, homeRoute, projectsRoute, projectRoute, applicationRoute, serviceRoute, monitoringRoute, containersRoute, profileRoute, securityRoute, teamRoute, adminRoute]), defaultPendingMs: 150, defaultPendingMinMs: 200 })
 declare module '@tanstack/react-router' { interface Register { router: typeof router } }
 

@@ -13,10 +13,10 @@ pub async fn list(
     State(state): State<AppState>,
     id: Identity,
 ) -> Result<Json<Vec<Value>>, ApiError> {
-    let rows:Vec<(Uuid,String,String)>=sqlx::query_as("SELECT o.id,o.name,m.role FROM auth_organizations o JOIN auth_members m ON m.organization_id=o.id WHERE m.user_id=$1 ORDER BY o.created_at").bind(id.user_id).fetch_all(&state.pool).await?;
+    let rows:Vec<(Uuid,String,String,Option<String>)>=sqlx::query_as("SELECT o.id,o.name,m.role,o.logo_url FROM auth_organizations o JOIN auth_members m ON m.organization_id=o.id WHERE m.user_id=$1 ORDER BY o.created_at").bind(id.user_id).fetch_all(&state.pool).await?;
     Ok(Json(
         rows.into_iter()
-            .map(|(id, name, role)| json!({"id":id,"name":name,"role":role}))
+            .map(|(id, name, role, logo_url)| json!({"id":id,"name":name,"role":role,"logo_url":logo_url}))
             .collect(),
     ))
 }
@@ -34,6 +34,7 @@ pub async fn create(
     let name = accounts::name(&input.name)?;
     let org = Uuid::new_v4();
     let mut tx = state.pool.begin().await?;
+    management::authorize(&mut tx, &id, "platform").await?;
     sqlx::query("INSERT INTO auth_organizations(id,name) VALUES($1,$2)")
         .bind(org)
         .bind(&name)
@@ -95,6 +96,10 @@ pub async fn invite(
     let token = token();
     let invite = Uuid::new_v4();
     let mut tx = state.pool.begin().await?;
+    let live_role = management::authorize(&mut tx, &id, "manager").await?;
+    if input.role == "admin" && live_role != "owner" {
+        return Err(forbidden());
+    }
     sqlx::query("UPDATE auth_invitations SET expires_at=now() WHERE organization_id=$1 AND email=$2 AND accepted_at IS NULL").bind(id.organization_id).bind(&email).execute(&mut *tx).await?;
     sqlx::query("INSERT INTO auth_invitations(id,organization_id,email,role,token_hash,invited_by) VALUES($1,$2,$3,$4,$5,$6)").bind(invite).bind(id.organization_id).bind(email).bind(input.role).bind(digest(&token)).bind(id.user_id).execute(&mut *tx).await?;
     log(
@@ -114,7 +119,7 @@ pub async fn invitations(
     id: Identity,
 ) -> Result<Json<Vec<Value>>, ApiError> {
     id.manager()?;
-    let rows:Vec<(Uuid,String,String,chrono::DateTime<chrono::Utc>)>=sqlx::query_as("SELECT id,email,role,expires_at FROM auth_invitations WHERE organization_id=$1 AND accepted_at IS NULL AND expires_at>now() ORDER BY created_at DESC LIMIT 100").bind(id.organization_id).fetch_all(&state.pool).await?;
+    let rows:Vec<(Uuid,String,String,chrono::DateTime<chrono::Utc>)>=sqlx::query_as("SELECT id,email,role,expires_at FROM auth_invitations WHERE organization_id=$1 AND accepted_at IS NULL AND expires_at>now() ORDER BY created_at DESC,id").bind(id.organization_id).fetch_all(&state.pool).await?;
     Ok(Json(rows.into_iter().map(|(id,email,role,expires_at)|json!({"id":id,"email":email,"role":role,"expires_at":expires_at})).collect()))
 }
 pub async fn revoke_invite(
@@ -122,12 +127,30 @@ pub async fn revoke_invite(
     id: Identity,
     Path(invite): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    id.manager()?;
+    let mut tx = state.pool.begin().await?;
+    let live_role = management::authorize(&mut tx, &id, "manager").await?;
+    let invited_role: Option<String> =
+        sqlx::query_scalar("SELECT role FROM auth_invitations WHERE id=$1 AND organization_id=$2")
+            .bind(invite)
+            .bind(id.organization_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if live_role != "owner" && invited_role.as_deref() != Some("member") {
+        return Err(forbidden());
+    }
     sqlx::query("UPDATE auth_invitations SET expires_at=now() WHERE id=$1 AND organization_id=$2")
         .bind(invite)
         .bind(id.organization_id)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await?;
+    log(
+        &mut tx,
+        id.user_id,
+        id.organization_id,
+        "invitation.revoked",
+    )
+    .await?;
+    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 #[derive(Deserialize)]
@@ -145,7 +168,7 @@ pub async fn accept(
     accounts::throttle(&state.pool, &format!("invite:{email}"), 10).await?;
     let name = accounts::name(&input.account.name)?;
     let existing: Option<(Uuid, String, bool)> =
-        sqlx::query_as("SELECT id,password_hash,banned FROM auth_users WHERE email=$1")
+        sqlx::query_as("SELECT id,password_hash,auth_user_banned(banned,ban_expires_at) FROM auth_users WHERE email=$1")
             .bind(&email)
             .fetch_optional(&state.pool)
             .await?;
@@ -159,11 +182,12 @@ pub async fn accept(
         accounts::hash(input.account.password).await?
     };
     let mut tx = state.pool.begin().await?;
+    management::lock(&mut tx).await?;
     let invitation:Option<(Uuid,Uuid,String)>=sqlx::query_as("SELECT id,organization_id,role FROM auth_invitations WHERE token_hash=$1 AND email=$2 AND accepted_at IS NULL AND expires_at>now() FOR UPDATE").bind(digest(&input.token)).bind(&email).fetch_optional(&mut *tx).await?;
     let (invite, org, role) = invitation.ok_or_else(invalid)?;
     let user = if let Some((user, _, _)) = existing {
         let current: Option<(String, bool)> =
-            sqlx::query_as("SELECT password_hash,banned FROM auth_users WHERE id=$1 FOR UPDATE")
+            sqlx::query_as("SELECT password_hash,auth_user_banned(banned,ban_expires_at) FROM auth_users WHERE id=$1 FOR UPDATE")
                 .bind(user)
                 .fetch_optional(&mut *tx)
                 .await?;
@@ -209,7 +233,12 @@ pub async fn role(
         return Err(forbidden());
     }
     let mut tx = state.pool.begin().await?;
+    management::authorize(&mut tx, &id, "owner").await?;
     lock_org(&mut tx, id.organization_id).await?;
+    let active: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM auth_members m JOIN auth_users u ON u.id=m.user_id WHERE m.organization_id=$1 AND m.user_id=$2 AND NOT auth_user_banned(u.banned,u.ban_expires_at))").bind(id.organization_id).bind(target).fetch_one(&mut *tx).await?;
+    if !active {
+        return Err(bad("Choose an active organization member."));
+    }
     preserve_owner(&mut tx, id.organization_id, target, input.role == "owner").await?;
     sqlx::query("UPDATE auth_members SET role=$1 WHERE user_id=$2 AND organization_id=$3")
         .bind(input.role)
@@ -235,6 +264,7 @@ pub async fn remove(
     id.manager()?;
     id.fresh()?;
     let mut tx = state.pool.begin().await?;
+    let live_role = management::authorize(&mut tx, &id, "manager").await?;
     lock_org(&mut tx, id.organization_id).await?;
     let role: Option<String> =
         sqlx::query_scalar("SELECT role FROM auth_members WHERE organization_id=$1 AND user_id=$2")
@@ -242,10 +272,11 @@ pub async fn remove(
             .bind(target)
             .fetch_optional(&mut *tx)
             .await?;
-    if id.role != "owner" && role.as_deref() != Some("member") {
+    if live_role != "owner" && role.as_deref() != Some("member") {
         return Err(forbidden());
     }
     preserve_owner(&mut tx, id.organization_id, target, false).await?;
+    management::preserve_platform_access(&mut tx, target, id.organization_id).await?;
     sqlx::query("DELETE FROM auth_members WHERE organization_id=$1 AND user_id=$2")
         .bind(id.organization_id)
         .bind(target)

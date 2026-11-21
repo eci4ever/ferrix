@@ -1,5 +1,6 @@
 pub(crate) mod accounts;
 mod login;
+mod management;
 mod organizations;
 mod security;
 pub(crate) mod sessions;
@@ -42,12 +43,29 @@ pub fn routes(state: AppState) -> Router<AppState> {
             "/invitations/{id}/revoke",
             post(organizations::revoke_invite),
         )
-        .route("/admin/users", get(accounts::users))
+        .route("/admin/users", get(management::users))
+        .route("/admin/users/{id}", get(management::user_detail))
+        .route("/admin/users/{id}/role", post(management::user_role))
+        .route("/admin/users/{id}/delete", post(management::delete_user))
+        .route(
+            "/organizations/current",
+            get(management::organization).post(management::update_organization),
+        )
+        .route("/organizations/transfer", post(management::transfer))
+        .route("/organizations/leave", post(management::leave))
+        .route(
+            "/organizations/delete",
+            post(management::delete_organization),
+        )
+        .route(
+            "/invitations/{id}/renew",
+            post(management::renew_invitation),
+        )
         .route(
             "/admin/users/{id}/password-reset",
             post(accounts::issue_reset),
         )
-        .route("/admin/users/{id}/ban", post(accounts::ban))
+        .route("/admin/users/{id}/ban", post(management::ban))
         .route(
             "/admin/users/{id}/revoke-sessions",
             post(accounts::revoke_user_sessions),
