@@ -1,6 +1,6 @@
 import { useId, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
-import type { FormEvent } from 'react'
+import type { FormEvent, ReactNode } from 'react'
 import { Eye, EyeOff, Layers3 } from 'lucide-react'
 import { InputGroup, InputGroupInput, InputGroupAddon, InputGroupButton } from '@/components/ui/input-group'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
@@ -9,6 +9,8 @@ import { Input } from '@/components/ui/input'
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
+import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
+import { Separator } from '@/components/ui/separator'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger } from '@/components/ui/dialog'
 import { Table, TableHeader, TableHead, TableBody, TableRow, TableCell } from '@/components/ui/table'
 import { DataTable } from '@/components/data-table'
@@ -31,11 +33,11 @@ function data(event: FormEvent<HTMLFormElement>): Record<string, string> { event
 function errorText(error: unknown) { return error instanceof Error ? error.message : 'Account operation failed.' }
 const panel = 'flex flex-col gap-4 rounded-xl border bg-card p-6 text-card-foreground'
 
-function LoginPassword({ name, label, newPassword }: { name: string; label: string; newPassword: boolean }) {
+function LoginPassword({ name, label, newPassword, action }: { name: string; label: string; newPassword: boolean; action?: ReactNode }) {
   const id = useId()
   const [visible, setVisible] = useState(false)
   return <Field>
-    <FieldLabel htmlFor={id}>{label}</FieldLabel>
+    <div className="flex items-center justify-between gap-2"><FieldLabel htmlFor={id}>{label}</FieldLabel>{action}</div>
     <InputGroup>
       <InputGroupInput id={id} name={name} type={visible ? 'text' : 'password'} autoComplete={newPassword ? 'new-password' : 'current-password'} required maxLength={1024} minLength={newPassword ? 12 : undefined} />
       <InputGroupAddon align="inline-end"><InputGroupButton type="button" size="icon-sm" aria-label={visible ? 'Hide password' : 'Show password'} aria-pressed={visible} onClick={() => setVisible(!visible)}>{visible ? <EyeOff /> : <Eye />}</InputGroupButton></InputGroupAddon>
@@ -70,14 +72,14 @@ function LoginVerification({ busy, submit, cancel }: { busy: boolean; submit: (e
 
 export function LoginPage({ setupRequired, refresh, initialMode = 'login' }: { setupRequired: boolean; refresh: Refresh; initialMode?: 'login' | 'signup' }) {
   const [challenge, setChallenge] = useState(false)
-  const [invitation, setInvitation] = useState(initialMode === 'signup' && !setupRequired)
+  const invitation = initialMode === 'signup' && !setupRequired
   const [reset, setReset] = useState(false)
   const [showCode, setShowCode] = useState(false)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
   const mode = setupRequired ? 'setup' : reset ? 'reset' : invitation ? 'invitation' : 'login'
-  const title = challenge ? 'Two-factor authentication' : setupRequired ? 'Create your account' : reset ? 'Reset password' : invitation ? 'Accept invitation' : 'Sign in'
-  const description = challenge ? 'Verify your identity to finish signing in.' : setupRequired ? 'The first account becomes the platform administrator.' : reset ? 'Use the reset token provided by your administrator.' : invitation ? 'Enter your invitation details to join your organization.' : 'Enter your email and password to sign in'
+  const title = challenge ? 'Two-factor authentication' : setupRequired ? 'Create your account' : reset ? 'Reset password' : invitation ? 'Create your account' : 'Welcome back'
+  const description = challenge ? 'Verify your identity to finish signing in.' : setupRequired ? 'The first account becomes the platform administrator.' : reset ? 'Use the reset token provided by your administrator.' : invitation ? 'Use your team invitation to join your organization.' : 'Sign in to your Ferrix account'
   async function submit(event: FormEvent<HTMLFormElement>) {
     const values = data(event); setBusy(true); setMessage('')
     try {
@@ -104,26 +106,44 @@ export function LoginPage({ setupRequired, refresh, initialMode = 'login' }: { s
       setChallenge(false)
     } catch (error) { setMessage(errorText(error)) } finally { setBusy(false) }
   }
-  return <main className="flex min-h-svh items-center justify-center bg-background px-6 py-12">
+  return <main className="flex min-h-svh items-center justify-center bg-muted/40 px-4 py-8 sm:px-6 sm:py-12">
     <section className="flex w-full max-w-sm flex-col gap-6" aria-labelledby="login-heading">
-      <header className="flex flex-col items-center gap-3 text-center">
-        <Link to="/" aria-label="Ferrix home" title="Ferrix home" className="mb-3 flex size-12 items-center justify-center rounded-xl border bg-card outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-4 focus-visible:ring-offset-background"><Layers3 className="size-6" aria-hidden="true" /></Link>
-        <h1 id="login-heading" className="text-2xl font-semibold tracking-tight">{title}</h1>
-        <p className="text-sm text-muted-foreground">{description}</p>
-      </header>
+      <Link to="/" aria-label="Ferrix home" className="flex items-center justify-center gap-2 self-center rounded-md outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-4 focus-visible:ring-offset-background">
+        <span className="flex size-8 items-center justify-center rounded-lg bg-primary text-primary-foreground"><Layers3 className="size-5" aria-hidden="true" /></span><span className="text-lg font-semibold">Ferrix</span>
+      </Link>
+      <Card className="gap-6 py-6">
+        <CardHeader className="gap-2 px-6 text-center"><CardTitle><h1 id="login-heading" className="text-2xl font-semibold tracking-tight">{title}</h1></CardTitle><CardDescription>{description}</CardDescription></CardHeader>
+        <CardContent className="flex flex-col gap-6 px-6">
       <Message message={message} />
+      {!challenge && !reset ? <>
+        <div className="flex flex-col gap-3">
+          <Button type="button" variant="outline" disabled={busy} onClick={() => setMessage('Google sign-in is not available yet. Use the form below.')}>
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" data-icon="inline-start"><path d="M21.6 12.23c0-.71-.06-1.39-.18-2.05H12v3.88h5.38a4.6 4.6 0 0 1-2 3.02v2.51h3.24c1.9-1.75 2.98-4.33 2.98-7.36ZM12 22c2.7 0 4.96-.9 6.62-2.41l-3.24-2.51c-.9.6-2.06.96-3.38.96-2.6 0-4.8-1.76-5.59-4.12H3.07v2.59A10 10 0 0 0 12 22ZM6.41 13.92a6 6 0 0 1 0-3.84V7.49H3.07a10 10 0 0 0 0 9.02l3.34-2.59ZM12 5.96c1.47 0 2.79.51 3.82 1.51l2.87-2.87A9.6 9.6 0 0 0 12 2a10 10 0 0 0-8.93 5.49l3.34 2.59C7.2 7.72 9.4 5.96 12 5.96Z" /></svg>
+            Continue with Google
+          </Button>
+          <Button type="button" variant="outline" disabled={busy} onClick={() => setMessage('GitHub sign-in is not available yet. Use the form below.')}>
+            <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" data-icon="inline-start"><path d="M12 .75a11.25 11.25 0 0 0-3.56 21.92c.56.1.77-.24.77-.54v-2.1c-3.13.68-3.79-1.33-3.79-1.33-.51-1.3-1.25-1.65-1.25-1.65-1.02-.7.08-.69.08-.69 1.13.08 1.73 1.16 1.73 1.16 1 1.72 2.63 1.22 3.27.93.1-.73.39-1.22.71-1.5-2.5-.29-5.13-1.25-5.13-5.56 0-1.23.44-2.23 1.16-3.02-.12-.29-.5-1.43.11-2.98 0 0 .95-.3 3.1 1.16a10.8 10.8 0 0 1 5.64 0c2.15-1.46 3.1-1.16 3.1-1.16.61 1.55.23 2.69.11 2.98.72.79 1.16 1.79 1.16 3.02 0 4.32-2.64 5.27-5.15 5.55.4.35.76 1.03.76 2.08v3.11c0 .3.2.65.78.54A11.25 11.25 0 0 0 12 .75Z" /></svg>
+            Continue with GitHub
+          </Button>
+        </div>
+        <div className="flex items-center gap-3"><Separator className="flex-1" /><span className="shrink-0 text-xs text-muted-foreground">Or continue with</span><Separator className="flex-1" /></div>
+      </> : null}
       {challenge ? <LoginVerification busy={busy} submit={verifyLogin} cancel={cancelLogin} /> : <form key={mode} onSubmit={submit} className="flex flex-col gap-6">
         <fieldset disabled={busy}><FieldGroup>
           {setupRequired || invitation ? <Field><FieldLabel htmlFor="login-name">Name</FieldLabel><Input id="login-name" name="name" required maxLength={80} autoComplete="name"  /></Field> : null}
-          {!reset ? <Field><FieldLabel htmlFor="login-email">Email</FieldLabel><Input id="login-email" name="email" required type="email" maxLength={254} autoComplete="username"  /></Field> : null}
-          <LoginPassword name={reset ? 'new_password' : 'password'} label={reset ? 'New password' : invitation ? 'Password (existing account password, or a new password)' : 'Password'} newPassword={setupRequired || reset} />
+          {!reset ? <Field><FieldLabel htmlFor="login-email">Email</FieldLabel><Input id="login-email" name="email" required type="email" maxLength={254} autoComplete="username" placeholder="you@example.com" /></Field> : null}
+          <LoginPassword name={reset ? 'new_password' : 'password'} label={reset ? 'New password' : 'Password'} newPassword={setupRequired || reset}
+            action={!setupRequired && !invitation && !reset ? <Button type="button" variant="link" className="h-auto p-0" disabled={busy} onClick={() => {setReset(true);setShowCode(false);setMessage('')}}>Forgot your password?</Button> : undefined} />
+          {invitation ? <p className="text-xs text-muted-foreground">Already have an account? Use your current password. New accounts need at least 12 characters.</p> : null}
           {invitation || reset ? <TextField name="token" label={reset ? 'Password reset token' : 'Invitation token'} type="password" autoComplete="off" /> : null}
           {!setupRequired && (invitation || reset) ? <Collapsible open={showCode} onOpenChange={setShowCode}><CollapsibleTrigger asChild><Button type="button" variant="link">{showCode ? 'Hide verification code' : 'Use two-factor authentication'}</Button></CollapsibleTrigger><CollapsibleContent className="pt-4"><TextField name="code" label="Authenticator or recovery code" required={false} autoComplete="one-time-code" /></CollapsibleContent></Collapsible> : null}
         </FieldGroup></fieldset>
         <Button type="submit" className="w-full" disabled={busy}>{busy ? 'Please wait…' : setupRequired ? 'Create account' : reset ? 'Reset password' : invitation ? 'Accept invitation' : 'Login'}</Button>
       </form>}
-      {!challenge && !setupRequired && (invitation || reset) ? <Button variant="link" disabled={busy} onClick={() => {setInvitation(false);setReset(false);setShowCode(false);setMessage('')}}>Back to sign in</Button> : null}
-      {!challenge && !setupRequired && !invitation && !reset ? <Button type="button" variant="link" disabled={busy} onClick={() => {setReset(true);setShowCode(false);setMessage('')}}>Reset password</Button> : null}
+      {!challenge && reset ? <Button variant="link" disabled={busy} onClick={() => {setReset(false);setShowCode(false);setMessage('')}}>Back to sign in</Button> : null}
+      {!challenge && !reset ? <p className="text-center text-sm text-muted-foreground">{setupRequired || invitation ? <>Already have an account? <Link to="/login" className="text-foreground underline underline-offset-4">Sign in</Link></> : <>Don't have an account? <Link to="/signup" className="text-foreground underline underline-offset-4">Sign up</Link></>}</p> : null}
+        </CardContent>
+      </Card>
 
     </section>
   </main>
