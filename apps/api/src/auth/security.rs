@@ -127,6 +127,11 @@ pub async fn enroll(
     if n == 0 {
         return Err(bad("Two-factor authentication is already enabled."));
     }
+    // The enrollment password check is a fresh verification for this browser too.
+    sqlx::query("UPDATE auth_sessions SET authenticated_at=now() WHERE id=$1")
+        .bind(id.session_id)
+        .execute(&state.pool)
+        .await?;
     Ok(Json(
         json!({"secret":authenticator.get_secret_base32(),"otpauth_url":authenticator.get_url()}),
     ))
@@ -143,6 +148,10 @@ pub async fn confirm(
     id.fresh()?;
     accounts::throttle(&state.pool, &format!("mfa-confirm:{}", id.user_id), 10).await?;
     let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT id FROM auth_users WHERE id=$1 FOR UPDATE")
+        .bind(id.user_id)
+        .execute(&mut *tx)
+        .await?;
     let data:Option<Vec<u8>>=sqlx::query_scalar("SELECT secret FROM auth_mfa WHERE user_id=$1 AND NOT enabled AND pending_expires_at>now() FOR UPDATE").bind(id.user_id).fetch_optional(&mut *tx).await?;
     let data = data.ok_or_else(invalid)?;
     let auth = totp(decrypt(&state, id.user_id, &data)?, id.email.clone())?;
@@ -181,6 +190,10 @@ pub async fn disable(
 ) -> Result<StatusCode, ApiError> {
     accounts::check(&state, &id, input).await?;
     let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT id FROM auth_users WHERE id=$1 FOR UPDATE")
+        .bind(id.user_id)
+        .execute(&mut *tx)
+        .await?;
     sqlx::query("DELETE FROM auth_mfa WHERE user_id=$1")
         .bind(id.user_id)
         .execute(&mut *tx)

@@ -157,8 +157,6 @@ pub async fn setup(
 pub struct Credentials {
     email: String,
     password: String,
-    #[serde(default)]
-    code: String,
 }
 pub async fn sign_in(
     State(state): State<AppState>,
@@ -184,10 +182,19 @@ pub async fn sign_in(
             .bind(user)
             .fetch_optional(&mut *tx)
             .await?;
-    if current != Some((old_hash, false)) {
+    if current != Some((old_hash.clone(), false)) {
         return Err(invalid());
     }
-    security::verify_mfa(&mut tx, &state, user, &input.code).await?;
+    let factor: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT secret FROM auth_mfa WHERE user_id=$1 AND enabled")
+            .bind(user)
+            .fetch_optional(&mut *tx)
+            .await?;
+    if let Some(factor) = factor {
+        let response = login::begin(&mut tx, &state, user, &old_hash, &factor).await?;
+        tx.commit().await?;
+        return Ok(response);
+    }
     let org:Uuid=sqlx::query_scalar("SELECT organization_id FROM auth_members WHERE user_id=$1 ORDER BY organization_id LIMIT 1").bind(user).fetch_optional(&mut *tx).await?.ok_or_else(forbidden)?;
     let token = sessions::issue(&mut tx, user, org, &headers).await?;
     tx.commit().await?;

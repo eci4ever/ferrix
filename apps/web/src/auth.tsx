@@ -1,7 +1,7 @@
-import { useId, useState } from 'react'
+import { useId, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import type { FormEvent } from 'react'
-import { ChevronDown, Eye, EyeOff, Layers3 } from 'lucide-react'
+import { Eye, EyeOff, Layers3 } from 'lucide-react'
 import { InputGroup, InputGroupInput, InputGroupAddon, InputGroupButton } from '@/components/ui/input-group'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Button } from '@/components/ui/button'
@@ -9,9 +9,11 @@ import { Input } from '@/components/ui/input'
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger } from '@/components/ui/dialog'
 import { Table, TableHeader, TableHead, TableBody, TableRow, TableCell } from '@/components/ui/table'
 import { DataTable } from '@/components/data-table'
-import { request } from '@/lib/api'
+import { ApiRequestError, request } from '@/lib/api'
+import { QRCodeSVG } from 'qrcode.react'
 
 export type Identity = { session_id: string; user_id: string; name: string; email: string; system_role: string; organization_id: string; organization_name: string; role: string }
 export type Session = { id: string; created_at: string; expires_at: string; user_agent: string; ip_address: string; current: boolean }
@@ -41,22 +43,65 @@ function LoginPassword({ name, label, newPassword }: { name: string; label: stri
   </Field>
 }
 
+function VerificationCode({ recovery = false }: { recovery?: boolean }) {
+  const id = useId()
+  return <Field>
+    <FieldLabel htmlFor={id}>{recovery ? 'Recovery code' : 'Authenticator code'}</FieldLabel>
+    <Input id={id} name="code" type="text" autoComplete="one-time-code" autoFocus required
+      inputMode={recovery ? 'text' : 'numeric'} pattern={recovery ? undefined : '[0-9]{6}'}
+      maxLength={recovery ? 64 : 6} minLength={recovery ? undefined : 6} spellCheck={false} autoCapitalize="none" />
+  </Field>
+}
+
+function LoginVerification({ busy, submit, cancel }: { busy: boolean; submit: (event: FormEvent<HTMLFormElement>) => Promise<void>; cancel: () => Promise<void> }) {
+  const [recovery, setRecovery] = useState(false)
+  return <>
+    <form onSubmit={submit} className="flex flex-col gap-6">
+      <fieldset disabled={busy}><FieldGroup><VerificationCode key={String(recovery)} recovery={recovery} /></FieldGroup></fieldset>
+      <p className="text-sm text-muted-foreground">{recovery ? 'Enter one of the recovery codes you saved. Each code can be used once.' : 'Enter the 6-digit code from your authenticator app. Use a new code if the previous one was already accepted.'} This sign-in request expires in five minutes.</p>
+      <Button type="submit" disabled={busy}>{busy ? 'Verifying…' : 'Verify and sign in'}</Button>
+    </form>
+    <div className="flex flex-col items-center gap-1">
+      <Button type="button" variant="link" disabled={busy} onClick={() => setRecovery(!recovery)}>{recovery ? 'Use authenticator app' : 'Use a recovery code'}</Button>
+      <Button type="button" variant="ghost" disabled={busy} onClick={cancel}>Back to sign in</Button>
+    </div>
+  </>
+}
+
 export function LoginPage({ setupRequired, refresh, initialMode = 'login' }: { setupRequired: boolean; refresh: Refresh; initialMode?: 'login' | 'signup' }) {
+  const [challenge, setChallenge] = useState(false)
   const [invitation, setInvitation] = useState(initialMode === 'signup' && !setupRequired)
   const [reset, setReset] = useState(false)
   const [showCode, setShowCode] = useState(false)
-  const [moreOptions, setMoreOptions] = useState(false)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
   const mode = setupRequired ? 'setup' : reset ? 'reset' : invitation ? 'invitation' : 'login'
-  const title = setupRequired ? 'Create your account' : reset ? 'Reset password' : invitation ? 'Accept invitation' : 'Sign in'
-  const description = setupRequired ? 'The first account becomes the platform administrator.' : reset ? 'Use the reset token provided by your administrator.' : invitation ? 'Enter your invitation details to join your organization.' : 'Enter your email and password to sign in'
+  const title = challenge ? 'Two-factor authentication' : setupRequired ? 'Create your account' : reset ? 'Reset password' : invitation ? 'Accept invitation' : 'Sign in'
+  const description = challenge ? 'Verify your identity to finish signing in.' : setupRequired ? 'The first account becomes the platform administrator.' : reset ? 'Use the reset token provided by your administrator.' : invitation ? 'Enter your invitation details to join your organization.' : 'Enter your email and password to sign in'
   async function submit(event: FormEvent<HTMLFormElement>) {
     const values = data(event); setBusy(true); setMessage('')
     try {
-      await request(`/auth/${setupRequired ? 'setup' : reset ? 'reset-password' : invitation ? 'accept-invitation' : 'sign-in'}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) })
+      const result = await request<{ two_factor_required?: boolean }>(`/auth/${setupRequired ? 'setup' : reset ? 'reset-password' : invitation ? 'accept-invitation' : 'sign-in'}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(values) })
+      if (result?.two_factor_required) { setChallenge(true); return }
       if (reset) { setReset(false); setMessage('Password reset. Sign in with your new password.') }
       await refresh()
+    } catch (error) { setMessage(errorText(error)) } finally { setBusy(false) }
+  }
+  async function verifyLogin(event: FormEvent<HTMLFormElement>) {
+    const values = data(event); setBusy(true); setMessage('')
+    try {
+      await request('/auth/sign-in/verify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ code: values.code.trim() }) })
+      await refresh()
+    } catch (error) {
+      if (error instanceof ApiRequestError && error.status === 410) setChallenge(false)
+      setMessage(errorText(error))
+    } finally { setBusy(false) }
+  }
+  async function cancelLogin() {
+    setBusy(true); setMessage('')
+    try {
+      await request('/auth/sign-in/cancel', { method: 'POST' })
+      setChallenge(false)
     } catch (error) { setMessage(errorText(error)) } finally { setBusy(false) }
   }
   return <main className="flex min-h-svh items-center justify-center bg-background px-6 py-12">
@@ -67,18 +112,18 @@ export function LoginPage({ setupRequired, refresh, initialMode = 'login' }: { s
         <p className="text-sm text-muted-foreground">{description}</p>
       </header>
       <Message message={message} />
-      <form key={mode} onSubmit={submit} className="flex flex-col gap-6">
+      {challenge ? <LoginVerification busy={busy} submit={verifyLogin} cancel={cancelLogin} /> : <form key={mode} onSubmit={submit} className="flex flex-col gap-6">
         <fieldset disabled={busy}><FieldGroup>
           {setupRequired || invitation ? <Field><FieldLabel htmlFor="login-name">Name</FieldLabel><Input id="login-name" name="name" required maxLength={80} autoComplete="name"  /></Field> : null}
           {!reset ? <Field><FieldLabel htmlFor="login-email">Email</FieldLabel><Input id="login-email" name="email" required type="email" maxLength={254} autoComplete="username"  /></Field> : null}
           <LoginPassword name={reset ? 'new_password' : 'password'} label={reset ? 'New password' : invitation ? 'Password (existing account password, or a new password)' : 'Password'} newPassword={setupRequired || reset} />
           {invitation || reset ? <TextField name="token" label={reset ? 'Password reset token' : 'Invitation token'} type="password" autoComplete="off" /> : null}
-          {!setupRequired ? <Collapsible open={showCode} onOpenChange={setShowCode}><CollapsibleTrigger asChild><Button type="button" variant="link">{showCode ? 'Hide verification code' : 'Use two-factor authentication'}</Button></CollapsibleTrigger><CollapsibleContent className="pt-4"><TextField name="code" label="Authenticator or recovery code" required={false} autoComplete="one-time-code" /></CollapsibleContent></Collapsible> : null}
+          {!setupRequired && (invitation || reset) ? <Collapsible open={showCode} onOpenChange={setShowCode}><CollapsibleTrigger asChild><Button type="button" variant="link">{showCode ? 'Hide verification code' : 'Use two-factor authentication'}</Button></CollapsibleTrigger><CollapsibleContent className="pt-4"><TextField name="code" label="Authenticator or recovery code" required={false} autoComplete="one-time-code" /></CollapsibleContent></Collapsible> : null}
         </FieldGroup></fieldset>
         <Button type="submit" className="w-full" disabled={busy}>{busy ? 'Please wait…' : setupRequired ? 'Create account' : reset ? 'Reset password' : invitation ? 'Accept invitation' : 'Login'}</Button>
-      </form>
-      {!setupRequired && (invitation || reset) ? <Button variant="link" disabled={busy} onClick={() => {setInvitation(false);setReset(false);setShowCode(false);setMessage('')}}>Back to sign in</Button> : null}
-      {!setupRequired && !invitation && !reset ? <Collapsible open={moreOptions} onOpenChange={setMoreOptions} className="flex flex-col items-center gap-3"><CollapsibleTrigger asChild><Button variant="ghost" disabled={busy}>More sign-in options<ChevronDown data-icon="inline-end" /></Button></CollapsibleTrigger><CollapsibleContent className="flex flex-col items-center gap-1"><Button variant="link" disabled={busy} onClick={() => {setInvitation(true);setShowCode(false);setMessage('')}}>Accept a team invitation</Button><Button variant="link" disabled={busy} onClick={() => {setReset(true);setShowCode(false);setMessage('')}}>Reset password</Button><p className="max-w-xs text-center text-xs leading-relaxed text-muted-foreground">Your administrator provides invitation and password reset tokens.</p></CollapsibleContent></Collapsible> : null}
+      </form>}
+      {!challenge && !setupRequired && (invitation || reset) ? <Button variant="link" disabled={busy} onClick={() => {setInvitation(false);setReset(false);setShowCode(false);setMessage('')}}>Back to sign in</Button> : null}
+      {!challenge && !setupRequired && !invitation && !reset ? <Button type="button" variant="link" disabled={busy} onClick={() => {setReset(true);setShowCode(false);setMessage('')}}>Reset password</Button> : null}
 
     </section>
   </main>
@@ -88,6 +133,8 @@ export function SecurityPage({ sessions, security, audit, refresh }: { sessions:
   const [message, setMessage] = useState(''); const [busy, setBusy] = useState(false)
   const [enrollment, setEnrollment] = useState<{ secret: string; otpauth_url: string } | null>(null)
   const [codes, setCodes] = useState<string[]>([])
+  const [setupOpen, setSetupOpen] = useState(false)
+  const mfaHeading = useRef<HTMLHeadingElement>(null)
   async function action(path: string, body = {}) { setBusy(true); setMessage(''); try { const result = await request<unknown>(`/auth/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); await refresh(); return result } catch (error) { setMessage(errorText(error)); return null } finally { setBusy(false) } }
   async function enroll(event: FormEvent<HTMLFormElement>) { const values = data(event); const result = await action('mfa/enroll', values); if (result) setEnrollment(result as { secret: string; otpauth_url: string }) }
   async function confirm(event: FormEvent<HTMLFormElement>) { const result = await action('mfa/confirm', data(event)); if (result) { setCodes((result as { recovery_codes: string[] }).recovery_codes); setEnrollment(null) } }
@@ -98,10 +145,33 @@ export function SecurityPage({ sessions, security, audit, refresh }: { sessions:
       { id: 'expires', label: 'Expires', value: session => session.expires_at, cell: session => <time dateTime={session.expires_at}>{new Date(session.expires_at).toLocaleString()}</time> },
       { id: 'actions', label: 'Action', cell: session => <Button variant="outline" disabled={busy} onClick={() => action(`sessions/${session.id}/revoke`)}>Revoke</Button> },
     ]} /><Button variant="outline" disabled={busy} onClick={() => action('sessions/revoke-others')}>Revoke other sessions</Button></section>
-    <section className={panel}><h2 className="font-semibold">Two-factor authentication</h2><p className="text-sm text-muted-foreground">{security.two_factor_enabled ? `Enabled. ${security.recovery_codes_remaining} recovery codes remain.` : 'Add an authenticator app to protect your account.'}</p>
-      <form className="flex flex-col gap-4" onSubmit={security.two_factor_enabled ? async e => { await action('mfa/disable', data(e)) } : enroll}><FieldGroup><TextField name="password" label="Confirm password" type="password" autoComplete="current-password" />{security.two_factor_enabled ? <TextField name="code" label="Authenticator or recovery code" autoComplete="one-time-code" /> : null}</FieldGroup><Button type="submit" variant="outline" disabled={busy}>{security.two_factor_enabled ? 'Disable two-factor authentication' : 'Set up authenticator'}</Button></form>
-      {enrollment ? <div className="flex flex-col gap-4"><p className="text-sm">Enter this setup key in your authenticator app. Enrollment expires in 10 minutes.</p><code className="break-all rounded-md bg-muted p-3">{enrollment.secret}</code><form onSubmit={confirm} className="flex flex-col gap-4"><FieldGroup><TextField name="code" label="Code from authenticator" autoComplete="one-time-code" /></FieldGroup><Button type="submit" disabled={busy}>Enable two-factor authentication</Button></form></div> : null}
-      {codes.length ? <Alert><AlertTitle>Save your recovery codes now</AlertTitle><AlertDescription><p>Each code works once. These codes will not be shown again.</p><pre className="max-w-full overflow-auto py-3">{codes.join('\n')}</pre><Button variant="outline" onClick={() => setCodes([])}>I saved my codes</Button></AlertDescription></Alert> : null}
+    <section className={panel}><h2 ref={mfaHeading} tabIndex={-1} className="font-semibold">Two-factor authentication</h2><p className="text-sm text-muted-foreground">{security.two_factor_enabled ? `Enabled. ${security.recovery_codes_remaining} recovery codes remain.` : 'Add an authenticator app to protect your account.'}</p>
+      {security.two_factor_enabled ? <form className="flex flex-col gap-4" onSubmit={async e => { await action('mfa/disable', data(e)) }}><FieldGroup><TextField name="password" label="Confirm password" type="password" autoComplete="current-password" /><TextField name="code" label="Authenticator or recovery code" autoComplete="one-time-code" /></FieldGroup><Button type="submit" variant="outline" disabled={busy}>Disable two-factor authentication</Button></form> : null}
+      <Dialog open={setupOpen} onOpenChange={open => {
+        if (busy || codes.length) return
+        setSetupOpen(open); setMessage('')
+        if (!open) setEnrollment(null)
+      }}>
+        {!security.two_factor_enabled ? <DialogTrigger asChild><Button variant="outline" disabled={busy}>Set up authenticator</Button></DialogTrigger> : null}
+        <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto" showCloseButton={!busy && !codes.length}
+          onEscapeKeyDown={event => { if (busy || codes.length) event.preventDefault() }}
+          onInteractOutside={event => { if (busy || codes.length) event.preventDefault() }}
+          onCloseAutoFocus={event => { if (security.two_factor_enabled) { event.preventDefault(); mfaHeading.current?.focus() } }}>
+          <DialogHeader>
+            <DialogTitle>{codes.length ? 'Save your recovery codes' : enrollment ? 'Scan authenticator QR code' : 'Set up two-factor authentication'}</DialogTitle>
+            <DialogDescription>{codes.length ? 'Keep these codes somewhere safe. Each code works once and will not be shown again.' : enrollment ? 'Scan with your authenticator app, then enter its 6-digit code. Setup expires in 10 minutes.' : 'Confirm your password to connect an authenticator app to your Ferrix account.'}</DialogDescription>
+          </DialogHeader>
+          <Message message={message} />
+          {!enrollment && !codes.length ? <form onSubmit={enroll} className="flex flex-col gap-4"><FieldGroup><TextField name="password" label="Confirm password" type="password" autoComplete="current-password" /></FieldGroup><Button type="submit" disabled={busy}>{busy ? 'Please wait…' : 'Continue'}</Button></form> : null}
+          {enrollment ? <div className="flex min-w-0 flex-col gap-4">
+            <QRCodeSVG value={enrollment.otpauth_url} size={200} level="M" marginSize={4} title="Scan to set up Ferrix two-factor authentication" className="max-w-full self-center rounded-md" />
+            <p className="text-sm text-muted-foreground">Cannot scan? Enter this setup key manually in your authenticator app.</p>
+            <code className="break-all select-all rounded-md bg-muted p-3">{enrollment.secret}</code>
+            <form onSubmit={confirm} className="flex flex-col gap-4"><FieldGroup><VerificationCode /></FieldGroup><Button type="submit" disabled={busy}>Enable two-factor authentication</Button></form>
+          </div> : null}
+          {codes.length ? <><pre className="min-w-0 select-all whitespace-pre-wrap break-all rounded-md bg-muted p-3 text-sm">{codes.join('\n')}</pre><Button onClick={() => { setCodes([]); setSetupOpen(false); setMessage('') }}>I saved my codes</Button></> : null}
+        </DialogContent>
+      </Dialog>
     </section>
     <section className={panel}><h2 className="font-semibold">Change password</h2><p className="text-sm text-muted-foreground">Use at least 12 characters. Changing your password signs out every session, including this one.</p><form onSubmit={async e => { await action('change-password', data(e)) }} className="flex flex-col gap-4"><FieldGroup><TextField name="password" label="Existing password" type="password" autoComplete="current-password" /><TextField name="new_password" label="New password" type="password" autoComplete="new-password" /><TextField name="code" label="Authenticator or recovery code (if enabled)" required={false} autoComplete="one-time-code" /></FieldGroup><Button disabled={busy} type="submit">Change password and sign out</Button></form></section>
     {audit.length ? <section className={panel}><h2 className="font-semibold">Organization security activity</h2>{audit.map(item => <p key={item.id} className="text-sm">{new Date(item.created_at).toLocaleString()} — {item.action}</p>)}</section> : null}

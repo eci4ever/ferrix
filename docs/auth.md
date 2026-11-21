@@ -58,7 +58,8 @@ All paths below are under `/api/v1/auth`. Unsafe methods are POST and require th
 | --- | --- |
 | GET `/setup` | Whether initial setup is required |
 | POST `/setup` | First registration automatically creates the platform administrator and organization |
-| POST `/sign-in` | Email/password and optional MFA code |
+| POST `/sign-in` | Email/password; returns a separate MFA challenge when enabled |
+| POST `/sign-in/verify`, `/sign-in/cancel` | Complete or cancel the browser-bound MFA challenge |
 | POST `/accept-invitation` | Invitation token, name/email/password and optional MFA code |
 | POST `/reset-password` | Reset token, new_password and optional MFA code |
 
@@ -101,7 +102,7 @@ Reference configuration reviewed: [Dokploy auth.ts on canary](https://github.com
 ## Expired-record housekeeping
 
 The API cleans expired sessions (either inactivity or absolute deadline),
-throttle buckets, invitations, password-reset tokens and unconfirmed expired MFA
+throttle buckets, invitations, password-reset tokens, expired login challenges and unconfirmed expired MFA
 enrollments once at startup and every 15 minutes. Authorization still rejects
 expired records immediately; cleanup timing never extends token validity.
 Enabled MFA, recovery codes, users, memberships, audit and deployment history
@@ -114,3 +115,35 @@ blocked by housekeeping; concurrent cleaners can safely process separate rows.
 Idle cleanup does not reserve a pool connection, and API shutdown stops the worker.
 Large backlogs drain over subsequent sweeps. Errors are logged and retried on the
 next interval; no cleanup tables or external scheduler are required.
+
+## Authenticator QR and two-step sign-in
+
+In **Security → Two-factor authentication → Set up authenticator**, a dialog
+walks through password confirmation, scanning the TOTP QR, entering its six-digit
+code and saving recovery codes. The recovery step stays open until acknowledged. The QR is generated
+locally in the browser from the enrollment URI, without an external QR service.
+A manual setup key remains available. Enrollment expires in ten minutes and MFA
+is enabled only after a valid code. Save the eight recovery codes shown once;
+each is single-use and only its hash is stored. Enrollment secrets stay encrypted.
+
+`POST /api/v1/auth/sign-in` accepts email/password. With MFA disabled it issues a
+session. With MFA enabled it returns `two_factor_required: true` and
+`expires_in_seconds: 300`, setting a separate HttpOnly, host-only, SameSite cookie
+(Secure on HTTPS). It does not issue an authenticated session. Submit `{code}`
+to `POST /api/v1/auth/sign-in/verify`, using that browser cookie, with a fresh
+TOTP or recovery code. Success consumes the challenge, issues a new session and
+clears the temporary cookie. `POST /api/v1/auth/sign-in/cancel` consumes the
+browser's pending challenge and clears the cookie.
+
+Proof tokens are random, stored hashed, expire after five minutes and allow
+five attempts each. An additional account-wide MFA limit permits ten requests
+per fifteen-minute bucket; password and IP limits also apply. Password or MFA
+secret changes and bans invalidate pending proofs. Duplicate/forged cookies,
+expired proofs, code replay and concurrent reuse are rejected. A 410 response
+returns the UI to password entry. Passwords and proof tokens are never persisted
+in browser storage. Reset/invitation acceptance still requires MFA when enabled.
+
+Reference: [OWASP multifactor authentication guidance](https://cheatsheetseries.owasp.org/cheatsheets/Multifactor_Authentication_Cheat_Sheet.html).
+The disposable browser suite decodes the actual rendered QR and tests TOTP and
+recovery-code sign-in. Run `python3 scripts/tests/services-ui.py` with the local
+Node runtime and Docker environment described in development.md.

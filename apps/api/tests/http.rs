@@ -663,6 +663,14 @@ async fn postgres_auth_security_and_tenant_isolation() {
         .0,
         StatusCode::NO_CONTENT
     );
+    // Starting enrollment re-verifies an older browser session before confirmation.
+    sqlx::query(
+        "UPDATE auth_sessions SET authenticated_at=now()-interval '1 hour' WHERE user_id=$1",
+    )
+    .bind(owner_id.parse::<uuid::Uuid>().unwrap())
+    .execute(&pool)
+    .await
+    .unwrap();
     let (status, enrollment, _) = post(
         &app,
         "/api/v1/auth/mfa/enroll",
@@ -686,47 +694,7 @@ async fn postgres_auth_security_and_tenant_isolation() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(recovery["recovery_codes"].as_array().unwrap().len(), 8);
-    let owner_login = json!({"email":"owner@example.com","password":PASSWORD});
-    assert_eq!(
-        post(&app, "/api/v1/auth/sign-in", owner_login.clone(), "")
-            .await
-            .0,
-        StatusCode::UNAUTHORIZED
-    );
-    assert_eq!(
-        post(
-            &app,
-            "/api/v1/auth/sign-in",
-            json!({"email":"owner@example.com","password":PASSWORD,"code":code}),
-            ""
-        )
-        .await
-        .0,
-        StatusCode::UNAUTHORIZED
-    );
-    let backup = recovery["recovery_codes"][0].as_str().unwrap();
-    assert_eq!(
-        post(
-            &app,
-            "/api/v1/auth/sign-in",
-            json!({"email":"owner@example.com","password":PASSWORD,"code":backup}),
-            ""
-        )
-        .await
-        .0,
-        StatusCode::OK
-    );
-    assert_eq!(
-        post(
-            &app,
-            "/api/v1/auth/sign-in",
-            json!({"email":"owner@example.com","password":PASSWORD,"code":backup}),
-            ""
-        )
-        .await
-        .0,
-        StatusCode::UNAUTHORIZED
-    );
+    check_mfa_login(&app, &pool, owner_id, &totp, &code, &recovery).await;
     let (_, reset, _) = post(
         &app,
         &format!("/api/v1/auth/admin/users/{owner_id}/password-reset"),
@@ -1016,6 +984,263 @@ async fn check_home_summary(
     )
     .await;
     sqlx::query("DELETE FROM projects WHERE name='summary_fixture'")
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+// All mutations below are fixtures inside this test's disposable schema.
+async fn mfa_challenge(app: &axum::Router, pool: &sqlx::PgPool) -> String {
+    sqlx::query("DELETE FROM auth_throttles")
+        .execute(pool)
+        .await
+        .unwrap();
+    let (status, body, cookie) = post(
+        app,
+        "/api/v1/auth/sign-in",
+        json!({"email":"owner@example.com","password":PASSWORD}),
+        "",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["two_factor_required"], true);
+    assert_eq!(body["expires_in_seconds"], 300);
+    assert!(cookie.starts_with("ferrix_test_session_mfa="));
+    assert!(
+        cookie.contains("HttpOnly")
+            && cookie.contains("SameSite=Lax")
+            && cookie.contains("Max-Age=300")
+    );
+    assert_eq!(
+        get(app, "/api/v1/auth/session", &cookie).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    cookie
+}
+async fn check_mfa_login(
+    app: &axum::Router,
+    pool: &sqlx::PgPool,
+    owner: &str,
+    totp: &totp_rs::TOTP,
+    used_code: &str,
+    recovery: &Value,
+) {
+    let verify = "/api/v1/auth/sign-in/verify";
+    let backup = recovery["recovery_codes"][0].as_str().unwrap();
+    let (status, body, cookie) = post(
+        app,
+        "/api/v1/auth/sign-in",
+        json!({"email":"owner@example.com","password":"incorrect password"}),
+        "",
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert!(body.get("two_factor_required").is_none());
+    assert!(cookie.is_empty());
+    // Codes alone, a forged browser proof, and foreign origins cannot complete login.
+    assert_eq!(
+        post(app, verify, json!({"code":backup}), "").await.0,
+        StatusCode::GONE
+    );
+    assert_eq!(
+        post(
+            app,
+            verify,
+            json!({"code":backup}),
+            &format!("ferrix_test_session_mfa={}", "a".repeat(64))
+        )
+        .await
+        .0,
+        StatusCode::GONE
+    );
+    let challenge = mfa_challenge(app, pool).await;
+    assert_eq!(
+        call(
+            app,
+            "POST",
+            verify,
+            json!({"code":backup}),
+            &challenge,
+            Some("https://evil.example")
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post(
+            app,
+            verify,
+            json!({"code":backup}),
+            &format!("{challenge}; {challenge}")
+        )
+        .await
+        .0,
+        StatusCode::GONE
+    );
+    // Confirmation already consumed this time step; recovery remains available.
+    assert_eq!(
+        post(app, verify, json!({"code":used_code}), &challenge)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (first, second) = tokio::join!(
+        post(app, verify, json!({"code":backup}), &challenge),
+        post(app, verify, json!({"code":backup}), &challenge)
+    );
+    let (success, loser) = if first.0 == StatusCode::OK {
+        (first, second)
+    } else {
+        (second, first)
+    };
+    assert_eq!(success.0, StatusCode::OK);
+    assert_eq!(loser.0, StatusCode::GONE);
+    assert!(success.2.starts_with("ferrix_test_session="));
+    assert_eq!(
+        get(app, "/api/v1/auth/session", &success.2).await.0,
+        StatusCode::OK
+    );
+    let challenge = mfa_challenge(app, pool).await;
+    assert_eq!(
+        post(app, verify, json!({"code":backup}), &challenge)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    // Actual authenticator code works and cannot be replayed on another proof.
+    sqlx::query("UPDATE auth_mfa SET last_step=-1 WHERE user_id=$1")
+        .bind(owner.parse::<uuid::Uuid>().unwrap())
+        .execute(pool)
+        .await
+        .unwrap();
+    let code = totp.generate_current().unwrap();
+    assert_eq!(
+        post(app, verify, json!({"code":code}), &challenge).await.0,
+        StatusCode::OK
+    );
+    let challenge = mfa_challenge(app, pool).await;
+    assert_eq!(
+        post(app, verify, json!({"code":code}), &challenge).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    // Failed attempts persist across requests; even a valid recovery code cannot bypass the cap.
+    for _ in 1..5 {
+        assert_eq!(
+            post(app, verify, json!({"code":"wrong"}), &challenge)
+                .await
+                .0,
+            StatusCode::UNAUTHORIZED
+        );
+    }
+    assert_eq!(
+        post(
+            app,
+            verify,
+            json!({"code":recovery["recovery_codes"][1]}),
+            &challenge
+        )
+        .await
+        .0,
+        StatusCode::GONE
+    );
+    for _ in 0..4 {
+        assert_eq!(
+            post(app, verify, json!({"code":"wrong"}), &challenge)
+                .await
+                .0,
+            StatusCode::GONE
+        );
+    }
+    assert_eq!(
+        post(app, verify, json!({"code":"wrong"}), &challenge)
+            .await
+            .0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    let challenge = mfa_challenge(app, pool).await;
+    sqlx::query("UPDATE auth_login_challenges SET expires_at=now()-interval '1 second'")
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        post(
+            app,
+            verify,
+            json!({"code":recovery["recovery_codes"][1]}),
+            &challenge
+        )
+        .await
+        .0,
+        StatusCode::GONE
+    );
+    let challenge = mfa_challenge(app, pool).await;
+    assert_eq!(
+        post(app, "/api/v1/auth/sign-in/cancel", json!({}), &challenge)
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        post(
+            app,
+            verify,
+            json!({"code":recovery["recovery_codes"][1]}),
+            &challenge
+        )
+        .await
+        .0,
+        StatusCode::GONE
+    );
+    // A password revision invalidates an already issued proof without consuming a recovery code.
+    let challenge = mfa_challenge(app, pool).await;
+    let id = owner.parse::<uuid::Uuid>().unwrap();
+    let original: String = sqlx::query_scalar("SELECT password_hash FROM auth_users WHERE id=$1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE auth_users SET password_hash='changed' WHERE id=$1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        post(
+            app,
+            verify,
+            json!({"code":recovery["recovery_codes"][1]}),
+            &challenge
+        )
+        .await
+        .0,
+        StatusCode::GONE
+    );
+    sqlx::query("UPDATE auth_users SET password_hash=$1 WHERE id=$2")
+        .bind(original)
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+    let challenge = mfa_challenge(app, pool).await;
+    sqlx::query("UPDATE auth_mfa SET enabled=false WHERE user_id=$1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        post(
+            app,
+            verify,
+            json!({"code":recovery["recovery_codes"][1]}),
+            &challenge
+        )
+        .await
+        .0,
+        StatusCode::GONE
+    );
+    sqlx::query("UPDATE auth_mfa SET enabled=true WHERE user_id=$1")
+        .bind(id)
         .execute(pool)
         .await
         .unwrap();

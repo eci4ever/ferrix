@@ -16,6 +16,7 @@ const TARGETS: &[(&str, &str, &str, &str)] = &[
         "true",
     ),
     ("auth_throttles", "key", "reset_at", "true"),
+    ("auth_login_challenges", "token_hash", "expires_at", "true"),
     ("auth_invitations", "id", "expires_at", "true"),
     ("auth_password_resets", "user_id", "expires_at", "true"),
     ("auth_mfa", "user_id", "pending_expires_at", "NOT enabled"),

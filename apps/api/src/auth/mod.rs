@@ -1,4 +1,5 @@
 pub(crate) mod accounts;
+mod login;
 mod organizations;
 mod security;
 pub(crate) mod sessions;
@@ -62,6 +63,8 @@ pub fn routes(state: AppState) -> Router<AppState> {
         ))
         .route("/setup", get(accounts::setup_status).post(accounts::setup))
         .route("/sign-in", post(accounts::sign_in))
+        .route("/sign-in/verify", post(login::verify))
+        .route("/sign-in/cancel", post(login::cancel))
         .route("/reset-password", post(accounts::reset_password))
         .route("/accept-invitation", post(organizations::accept))
         .layer(DefaultBodyLimit::max(16 * 1024))
