@@ -120,6 +120,22 @@ responses are capped at 8 MiB and three seconds. Unsupported transports report
 unavailable. An HTTP fixture test protects legacy storage-field compatibility.
 No database migration is required.
 
+### Project runtime summaries
+
+Project cards poll authenticated `GET /api/v1/projects/service-status` every ten
+seconds while the tab is visible. The endpoint covers the same 100 latest projects
+as the project list and all their environments. It uses one organization-filtered
+Docker inventory with a five-second timeout and verifies active container IDs and
+ownership labels. Polling does not renew session inactivity expiry.
+
+Running means an active running container without an unhealthy/starting check.
+Stopped includes exited/created containers. Failed includes dead/unhealthy or
+missing activated containers and failed first deployments. A failed redeployment
+does not count as failed while the previous active container is running. Other
+includes undeployed, starting, restarting, paused and unknown states. If Docker is
+unavailable, affected projects show unavailable instead of zero counts. These are
+service counts, not deployment counts; no schema migration is needed.
+
 ### Home summary
 
 Authenticated `GET /api/v1/home-summary` returns counts for the session's active

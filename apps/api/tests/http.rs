@@ -85,6 +85,10 @@ async fn liveness_and_unauthenticated_access() {
         .unwrap());
     assert_eq!(get(&app, "/health", "").await.0, StatusCode::OK);
     assert_eq!(
+        get(&app, "/api/v1/projects/service-status", "").await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
         get(&app, "/api/v1/monitoring", "").await.0,
         StatusCode::UNAUTHORIZED
     );
@@ -295,6 +299,11 @@ async fn postgres_auth_security_and_tenant_isolation() {
     .await;
     assert_eq!(status, StatusCode::OK);
     let org2 = org2["id"].as_str().unwrap();
+    let runtime_summary = get(&app, "/api/v1/projects/service-status", &owner).await;
+    assert_eq!(runtime_summary.0, StatusCode::OK);
+    assert_eq!(runtime_summary.1["projects"].as_array().unwrap().len(), 1);
+    assert_eq!(runtime_summary.1["projects"][0]["available"], true);
+    assert_eq!(runtime_summary.1["projects"][0]["running"], 0);
     check_home_summary(&app, &pool, &owner, org1, org2).await;
     assert_eq!(
         post(

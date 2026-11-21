@@ -232,6 +232,10 @@ async fn docker_deployment_flow_and_isolation() {
         assert!(failed["logs"].as_str().unwrap().contains("image"));
         let still_running=call(&app,&format!("/api/v1/applications/{application_id}/runtime"),&owner,None).await.1;
         assert_eq!(still_running["container_id"],old_container); nginx_responds(&state,still_running["host_port"].as_i64().unwrap()).await;
+        let summary=call(&app,"/api/v1/projects/service-status",&owner,None).await;
+        assert_eq!(summary.0,StatusCode::OK);
+        assert_eq!(summary.1["projects"][0]["running"],1);
+        assert_eq!(summary.1["projects"][0]["failed"],0);
         // Persisted interrupted work is reconciled without removing the active container.
         let interrupted=Uuid::new_v4();
         sqlx::query("INSERT INTO deployments(id,application_id,image,container_port,status) VALUES($1,$2,'nginx:alpine',80,'running')").bind(interrupted).bind(application_id).execute(&pool).await.unwrap();

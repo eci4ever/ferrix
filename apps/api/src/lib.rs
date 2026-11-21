@@ -47,6 +47,7 @@ pub fn router(state: AppState) -> Router {
             auth::sessions::protect,
         ));
     let clock = Router::new()
+        .route("/api/v1/projects/service-status", get(projects::statuses))
         .route("/api/v1/server-time", get(server_time::get))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
