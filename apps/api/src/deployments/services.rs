@@ -80,7 +80,7 @@ impl DatabaseEngine {
         }
     }
 }
-fn random_password() -> String {
+pub(super) fn random_password() -> String {
     let mut random = [0u8; 32];
     rand::rngs::OsRng.fill_bytes(&mut random);
     hex::encode(random)

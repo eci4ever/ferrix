@@ -34,6 +34,7 @@ pub(super) async fn change(
     // Serialize lifecycle operations with deployment snapshots and deletion.
     let app = sqlx::query_as::<_,Application>(&format!("SELECT {APP_COLUMNS} FROM applications a JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id WHERE a.id=$1 AND p.organization_id=$2 AND a.service_kind IN ('application','database') FOR UPDATE OF a"))
         .bind(service).bind(id.organization_id).fetch_optional(&mut *tx).await?.ok_or_else(missing)?;
+    super::super::backups::ensure_idle(&mut tx, service).await?;
     let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM deployments WHERE application_id=$1 AND status IN ('queued','running'))").bind(service).fetch_one(&mut *tx).await?;
     if pending {
         return Err(ApiError(

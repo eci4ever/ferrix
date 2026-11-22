@@ -23,15 +23,17 @@ to the explicitly permitted deployment API routes.
 
 | Scope | Allowed operations |
 | --- | --- |
-| `read` (required) | Projects/environments/services, deployment history, runtime, logs, organization summary, agent discovery |
+| `read` (required) | Projects/environments/services, deployment history, runtime, logs, backup/restore status, organization summary, agent discovery |
 | `manage` | Create projects/environments/applications/databases; update service configuration and environment variables |
-| `deploy` | Queue deployments and start/stop/reload services |
+| `deploy` | Queue deployments, start/stop/reload services and create database backups |
 | `delete` | Delete services and empty projects using their existing confirmation payloads |
 | `secrets:read` | Read service configuration/environment, including database passwords and environment secrets |
 
 **Manage/deploy can execute container code with saved service secrets.** The
 `secrets:read` scope controls direct configuration reads, not isolation from code
 a trusted deployment agent is allowed to run.
+
+Database restore requires both `manage` and `deploy` because it creates a new Database service in the same environment. Use `POST /api/v1/services/{id}/backups/{backup_id}/restore` with `{ "name": "Restored database" }`, then poll `GET /api/v1/services/{id}/backups` until that operation succeeds. Backups can be queued with `POST /api/v1/services/{id}/backups`. Only PostgreSQL and MariaDB are supported. Keep the returned new service ID and wait for restore completion before connecting an application.
 
 The default owner/admin key has `read`, `manage`, `deploy`; delete and secret
 reads are opt-in. Organization members can create read-only keys. A platform

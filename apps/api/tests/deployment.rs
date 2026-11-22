@@ -94,6 +94,255 @@ async fn wait_status(app: &Router, cookie: &str, application: Uuid, status: &str
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
 }
+async fn wait_database_job(app: &Router, cookie: &str, service: Uuid, job: &Value) -> Value {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    loop {
+        let (code, rows, _) = call(
+            app,
+            &format!("/api/v1/services/{service}/backups"),
+            cookie,
+            None,
+        )
+        .await;
+        assert_eq!(code, StatusCode::OK);
+        let row = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["id"] == job["id"])
+            .unwrap();
+        if row["status"] == "succeeded" || row["status"] == "failed" {
+            return row.clone();
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "Database job timed out: {rows}"
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+}
+async fn backup_roundtrip(
+    app: &Router,
+    state: &AppState,
+    cookie: &str,
+    service: Uuid,
+    engine: &str,
+    added: &mut Vec<Uuid>,
+) {
+    let base = format!("/api/v1/services/{service}/backups");
+    let settings = call(
+        app,
+        &format!("/api/v1/services/{service}/configuration"),
+        cookie,
+        None,
+    )
+    .await
+    .1;
+    let source_runtime = call(
+        app,
+        &format!("/api/v1/services/{service}/runtime"),
+        cookie,
+        None,
+    )
+    .await
+    .1;
+    let source_container = source_runtime["container_id"].as_str().unwrap();
+    let (code, backup, _) = call(app, &base, cookie, Some(json!({}))).await;
+    assert_eq!(code, StatusCode::ACCEPTED, "{backup}");
+    assert_eq!(
+        call(
+            app,
+            &format!("/api/v1/services/{service}/deploy"),
+            cookie,
+            Some(json!({}))
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        call(
+            app,
+            &format!("/api/v1/services/{service}/control"),
+            cookie,
+            Some(json!({"operation":"stop"}))
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    let backed_up = wait_database_job(app, cookie, service, &backup).await;
+    assert_eq!(backed_up["status"], "succeeded", "{backed_up}");
+    assert!(backed_up["size_bytes"].as_i64().unwrap() > 0);
+    // Rows added after the backup distinguish a genuine snapshot from the live database.
+    let write = if engine == "postgres" {
+        "psql -U ferrix -d ferrix -v ON_ERROR_STOP=1 -c \"INSERT INTO persistence_check VALUES ('after-backup');\""
+    } else {
+        "mariadb -u\"$MARIADB_USER\" -p\"$MARIADB_PASSWORD\" \"$MARIADB_DATABASE\" -e \"INSERT INTO persistence_check VALUES ('after-backup');\""
+    };
+    let output = tokio::process::Command::new("docker")
+        .args(["exec", source_container, "sh", "-c", write])
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success());
+    let restore_url = format!("{base}/{}/restore", backup["id"].as_str().unwrap());
+    let (code, restore, _) = call(
+        app,
+        &restore_url,
+        cookie,
+        Some(json!({"name":format!("{engine} restored")})),
+    )
+    .await;
+    assert_eq!(code, StatusCode::ACCEPTED, "{restore}");
+    let target: Uuid = restore["application_id"].as_str().unwrap().parse().unwrap();
+    added.push(target);
+    assert_ne!(target, service);
+    let restored = wait_database_job(app, cookie, service, &restore).await;
+    assert_eq!(restored["status"], "succeeded", "{restored}");
+    let new_settings = call(
+        app,
+        &format!("/api/v1/services/{target}/configuration"),
+        cookie,
+        None,
+    )
+    .await
+    .1;
+    assert_ne!(new_settings["password"], settings["password"]);
+    let target_runtime = call(
+        app,
+        &format!("/api/v1/services/{target}/runtime"),
+        cookie,
+        None,
+    )
+    .await
+    .1;
+    let read = if engine == "postgres" {
+        "psql -U ferrix -d ferrix -At -c 'SELECT value FROM persistence_check ORDER BY value'"
+    } else {
+        "mariadb -u\"$MARIADB_USER\" -p\"$MARIADB_PASSWORD\" \"$MARIADB_DATABASE\" -N -e 'SELECT value FROM persistence_check ORDER BY value'"
+    };
+    let output = tokio::process::Command::new("docker")
+        .args([
+            "exec",
+            target_runtime["container_id"].as_str().unwrap(),
+            "sh",
+            "-c",
+            read,
+        ])
+        .output()
+        .await
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "restored database could not be read"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "survives-redeploy"
+    );
+    let output = tokio::process::Command::new("docker")
+        .args(["exec", source_container, "sh", "-c", read])
+        .output()
+        .await
+        .unwrap();
+    assert!(String::from_utf8_lossy(&output.stdout).contains("after-backup"));
+    if engine == "postgres" {
+        let backup_id: Uuid = backup["id"].as_str().unwrap().parse().unwrap();
+        let original_hash: String =
+            sqlx::query_scalar("SELECT sha256 FROM database_jobs WHERE id=$1")
+                .bind(backup_id)
+                .fetch_one(&state.pool)
+                .await
+                .unwrap();
+        sqlx::query("UPDATE database_jobs SET sha256=repeat('0',64) WHERE id=$1")
+            .bind(backup_id)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        let (code, rejected, _) = call(
+            app,
+            &restore_url,
+            cookie,
+            Some(json!({"name":"Checksum rejected restore"})),
+        )
+        .await;
+        assert_eq!(code, StatusCode::ACCEPTED);
+        let rejected_target: Uuid = rejected["application_id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        added.push(rejected_target);
+        let failure = wait_database_job(app, cookie, service, &rejected).await;
+        assert_eq!(
+            failure["status"], "failed",
+            "corrupted backups must never restore successfully"
+        );
+        assert!(failure["message"].as_str().unwrap().contains("integrity"));
+        assert_eq!(
+            remove_service(
+                app,
+                rejected_target,
+                cookie,
+                "Checksum rejected restore",
+                true
+            )
+            .await,
+            StatusCode::NO_CONTENT
+        );
+        sqlx::query("UPDATE database_jobs SET sha256=$1 WHERE id=$2")
+            .bind(original_hash)
+            .bind(backup_id)
+            .execute(&state.pool)
+            .await
+            .unwrap();
+        // A helper left behind by a previous API process is stopped before the service unlocks.
+        let interrupted = Uuid::new_v4();
+        let helper = state
+            .docker
+            .create_container(
+                Some(
+                    bollard::query_parameters::CreateContainerOptionsBuilder::default()
+                        .name(&format!("ferrix-backup-{}", interrupted.simple()))
+                        .build(),
+                ),
+                bollard::models::ContainerCreateBody {
+                    image: Some("postgres:17-alpine".into()),
+                    entrypoint: Some(vec!["sh".into(), "-c".into()]),
+                    cmd: Some(vec!["sleep 300".into()]),
+                    labels: Some(std::collections::HashMap::from([
+                        ("io.ferrix.managed".into(), "true".into()),
+                        ("io.ferrix.application".into(), service.to_string()),
+                        ("io.ferrix.backup-job".into(), interrupted.to_string()),
+                    ])),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        state
+            .docker
+            .start_container(&helper.id, None)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO database_jobs(id,application_id,requested_by,operation,engine,image,image_id,config_cipher,env_cipher,deployment_id,status) SELECT $1,application_id,requested_by,operation,engine,image,image_id,config_cipher,env_cipher,deployment_id,'running' FROM database_jobs WHERE id=$2")
+            .bind(interrupted).bind(backup_id).execute(&state.pool).await.unwrap();
+        let recovered = wait_database_job(app, cookie, service, &json!({"id":interrupted})).await;
+        assert_eq!(recovered["status"], "failed");
+        assert!(
+            state
+                .docker
+                .inspect_container(&helper.id, None)
+                .await
+                .is_err()
+        );
+    }
+    assert_eq!(
+        remove_service(app, target, cookie, &format!("{engine} restored"), true).await,
+        StatusCode::NO_CONTENT
+    );
+}
 async fn nginx_responds(state: &AppState, port: i64) {
     // Verify the actual host loopback port, not just Docker container state.
     let result = tokio::process::Command::new("curl")
@@ -318,6 +567,8 @@ async fn docker_deployment_flow_and_isolation() {
         assert_eq!(call(&app,&format!("/api/v1/services/{database}/control"),&owner,Some(json!({"operation":"stop"}))).await.0,StatusCode::NOT_FOUND);
         assert_eq!(call(&app,&format!("/api/v1/environments/{environment}/service-status"),&owner,None).await.0,StatusCode::NOT_FOUND);
         call(&app,"/api/v1/auth/organizations/switch",&owner,Some(json!({"organization_id":org}))).await;
+        assert_eq!(call(&app,&format!("/api/v1/services/{database}/backups"),&member,Some(json!({}))).await.0,StatusCode::FORBIDDEN);
+        backup_roundtrip(&app,&state,&owner,database,"postgres",&mut added_services).await;
         assert_eq!(remove_service(&app,database,&owner,"PostgreSQL",false).await,StatusCode::NO_CONTENT);
         assert!(state.docker.inspect_volume(&format!("ferrix-db-{}",database.simple())).await.is_ok(),"data is retained by default");
         assert!(state.docker.inspect_container(second["container_id"].as_str().unwrap(),None).await.is_err());
@@ -368,6 +619,8 @@ async fn docker_deployment_flow_and_isolation() {
             assert_eq!(String::from_utf8_lossy(&output.stdout).trim(),"survives-redeploy","{engine}: data must survive replacement");
             let info=state.docker.inspect_container(second["container_id"].as_str().unwrap(),None).await.unwrap();
             assert!(info.host_config.unwrap().port_bindings.is_none_or(|p|p.is_empty()));
+            if engine=="mariadb" { backup_roundtrip(&app,&state,&owner,service,engine,&mut added_services).await; }
+            else { assert_eq!(call(&app,&format!("{endpoint}/backups"),&owner,None).await.0,StatusCode::UNPROCESSABLE_ENTITY); }
             assert_eq!(remove_service(&app,service,&owner,engine,true).await,StatusCode::NO_CONTENT);
             assert!(state.docker.inspect_volume(&format!("ferrix-db-{}",service.simple())).await.is_err());
             if engine=="mongodb" {assert!(state.docker.inspect_volume(&format!("ferrix-db-{}-config",service.simple())).await.is_err());}

@@ -410,6 +410,9 @@ async fn cycle(
         .execute(&mut *conn).await.map_err(|_|"Could not recover interrupted deployments.")?;
     cleanup(state, conn).await?;
     super::services::database::restore_pending(state, conn).await?;
+    if super::backups::cycle(state, conn, shutdown).await? {
+        return Ok(true);
+    }
     let job=sqlx::query_as::<_,Job>("WITH next AS (SELECT id FROM deployments WHERE status='queued' ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1), claimed AS (UPDATE deployments d SET status='running',started_at=now() FROM next WHERE d.id=next.id RETURNING d.*) SELECT d.id,d.application_id,d.image,d.pinned_image_id,d.container_port,d.env_cipher,d.service_kind,d.service_cipher,p.organization_id,p.id AS project_id,e.id AS environment_id FROM claimed d JOIN applications a ON a.id=d.application_id JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id")
         .fetch_optional(&mut *conn).await.map_err(|_|"Could not claim queued deployment.")?;
     if let Some(job) = job {
