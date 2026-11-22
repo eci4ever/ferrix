@@ -121,6 +121,7 @@ struct Deployment {
     logs: String,
     container_id: Option<String>,
     image_id: Option<String>,
+    rollback_of: Option<Uuid>,
     created_at: DateTime<Utc>,
     started_at: Option<DateTime<Utc>>,
     finished_at: Option<DateTime<Utc>>,
@@ -394,13 +395,50 @@ async fn deploy(
         Json(json!({"id":deployment,"status":"queued"})),
     ))
 }
+#[derive(Deserialize)]
+struct RollbackRequest {
+    deployment_id: Uuid,
+}
+async fn rollback(
+    State(state): State<AppState>,
+    id: Identity,
+    Path(app): Path<Uuid>,
+    Json(input): Json<RollbackRequest>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    id.manager()?;
+    if app_access(&state, &id, app).await?.kind != "application" {
+        return Err(missing());
+    }
+    let mut tx = state.pool.begin().await?;
+    sqlx::query_scalar::<_, Uuid>(
+        "SELECT id FROM applications WHERE id=$1 AND service_kind='application' FOR UPDATE",
+    )
+    .bind(app)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(missing)?;
+    let deployment = Uuid::new_v4();
+    let inserted = sqlx::query("INSERT INTO deployments(id,application_id,requested_by,image,container_port,env_cipher,service_kind,service_cipher,rollback_of,pinned_image_id) SELECT $1,application_id,$2,image,container_port,env_cipher,service_kind,service_cipher,id,image_id FROM deployments WHERE id=$3 AND application_id=$4 AND status='succeeded' AND service_kind='application' AND image_id IS NOT NULL")
+        .bind(deployment).bind(id.user_id).bind(input.deployment_id).bind(app)
+        .execute(&mut *tx).await.map_err(database_error)?;
+    if inserted.rows_affected() != 1 {
+        return Err(invalid(
+            "Choose a successful deployment from this application with a recorded image ID.",
+        ));
+    }
+    tx.commit().await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(json!({"id":deployment,"status":"queued"})),
+    ))
+}
 async fn history(
     State(state): State<AppState>,
     id: Identity,
     Path(app): Path<Uuid>,
 ) -> Result<Json<Vec<Deployment>>, ApiError> {
     app_access(&state, &id, app).await?;
-    Ok(Json(sqlx::query_as("SELECT id,application_id,image,container_port,status,logs,container_id,image_id,created_at,started_at,finished_at FROM deployments WHERE application_id=$1 ORDER BY created_at DESC,id DESC LIMIT 30").bind(app).fetch_all(&state.pool).await?))
+    Ok(Json(sqlx::query_as("SELECT id,application_id,image,container_port,status,logs,container_id,image_id,rollback_of,created_at,started_at,finished_at FROM deployments WHERE application_id=$1 ORDER BY created_at DESC,id DESC LIMIT 30").bind(app).fetch_all(&state.pool).await?))
 }
 async fn runtime(
     State(state): State<AppState>,

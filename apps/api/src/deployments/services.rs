@@ -24,6 +24,7 @@ pub(super) fn routes(state: AppState) -> Router<AppState> {
                 .route("/environments/{id}/services", post(create))
                 .route("/services/{id}/configuration", post(save))
                 .route("/services/{id}/deploy", post(deploy))
+                .route("/services/{id}/rollback", post(rollback))
                 .route("/services/{id}/control", post(control::change))
                 .route(
                     "/services/{id}/environment",
