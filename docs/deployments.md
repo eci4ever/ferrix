@@ -147,3 +147,15 @@ Organization managers can select Rollback on a successful Application deployment
 `POST /api/v1/services/{id}/rollback` accepts `{ "deployment_id": "uuid" }` and returns HTTP 202 with the queued deployment ID. API keys require the deploy scope. Database services and unsuccessful or foreign source deployments are rejected. History exposes `rollback_of` for rollback jobs.
 
 The original image must remain on the connected Docker server. If it has been removed, rollback fails without pulling a mutable tag. The current Application stays active on failure. Rollback does not restore database or external data, and old environment secrets may no longer be valid.
+
+## Custom domains and HTTPS
+
+Application services have a Domains tab for up to ten custom hostnames. Organization managers can add, check and remove domains. Members can view their organization's domain records. Removing a service cascades its domain records, and removing a domain stops routing even while Caddy retains its cached certificate.
+
+On a VPS, point the hostname's A record to `FERRIX_PUBLIC_IP` and add the displayed `_ferrix-challenge.<hostname>` TXT value to prove ownership. Use DNS-only mode during verification and remove conflicting AAAA records. The check requires all resolved addresses to match the configured server. Hostnames become routable after successful DNS proof. A verified hostname can belong to only one Application. Dashboard and generated automatic hostnames are reserved.
+
+Locally, use a name such as `myapp.localhost`. Local domain checks activate it without public DNS records and use the existing local Caddy CA. Trust that root in the operating system to verify HTTPS. Local profiles with HTTPS disabled continue using HTTP.
+
+Caddy's existing on-demand TLS authorization checks verified domains in PostgreSQL without DNS or outbound calls. Public HTTPS issuance requires reachable ports 80/443 and the hostname pointing directly to the VPS. The Domains check establishes a trusted HTTPS connection to the configured ingress IP, using the hostname for SNI, and reports certificate expiry. It never follows redirects or probes DNS-supplied addresses. Checks are explicit, limited to once per minute per domain, with a last-checked timestamp. Caddy handles renewals independently. An unavailable check can reflect DNS propagation, firewall, CA issuance restrictions, untrusted local roots or a server unable to reach its own public address. A successful certificate check does not imply application health.
+
+API routes are `GET/POST /api/v1/services/{id}/domains`, `POST /api/v1/services/{id}/domains/{domain_id}/check` and `DELETE /api/v1/services/{id}/domains/{domain_id}`. API keys require read, manage and delete scopes respectively. Database services reject domain management. Public CA issuance requires a real controlled domain/VPS; the automated Caddy test uses an isolated local CA.

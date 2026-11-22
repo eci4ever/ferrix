@@ -105,6 +105,32 @@ impl GatewayConfig {
         })
     }
 
+    pub(crate) fn domain_target(&self) -> Option<(IpAddr, u16, bool, bool)> {
+        let suffix = self.suffix.as_ref()?;
+        let ip = if self.local {
+            IpAddr::V4(Ipv4Addr::LOCALHOST)
+        } else {
+            suffix
+                .strip_suffix(".sslip.io")?
+                .replace('-', ".")
+                .parse()
+                .ok()?
+        };
+        Some((
+            ip,
+            if self.local { self.port } else { 443 },
+            !self.local || self.https,
+            self.local,
+        ))
+    }
+    pub(crate) fn reserved_domain(&self, name: &str) -> bool {
+        self.resource(name).is_some()
+            || (!self.local
+                && self
+                    .suffix
+                    .as_ref()
+                    .is_some_and(|suffix| name == suffix || name.ends_with(&format!(".{suffix}"))))
+    }
     fn hostname(&self, resource: Resource) -> Option<String> {
         let (prefix, id) = match resource {
             Resource::Application(id) => ("app", id),
@@ -154,12 +180,23 @@ pub fn public_router(state: AppState) -> Router {
         .route("/_ferrix/tls-ask", get(tls_ask))
         .with_state(state)
 }
+async fn resolve_resource(state: &AppState, name: &str) -> Result<Option<Resource>, ApiError> {
+    if let Some(resource) = state.gateway.resource(name) {
+        return Ok(Some(resource));
+    }
+    if state.gateway.domain_target().is_none() {
+        return Ok(None);
+    }
+    let id: Option<Uuid> = sqlx::query_scalar("SELECT application_id FROM application_domains WHERE hostname=$1 AND verified_at IS NOT NULL AND dns_status='ready'")
+        .bind(name).fetch_optional(&state.pool).await?;
+    Ok(id.map(Resource::Application))
+}
 async fn tls_ask(
     State(state): State<AppState>,
     Query(input): Query<HashMap<String, String>>,
 ) -> Result<StatusCode, ApiError> {
     let name = input.get("domain").ok_or_else(missing)?;
-    let Some(Resource::Application(id)) = state.gateway.resource(name) else {
+    let Some(Resource::Application(id)) = resolve_resource(&state, name).await? else {
         return Err(missing());
     };
     let allowed: bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM applications WHERE id=$1 AND service_kind='application' AND active_container_id IS NOT NULL)").bind(id).fetch_one(&state.pool).await?;
@@ -171,7 +208,7 @@ async fn tls_ask(
 async fn route(State(state): State<AppState>, headers: HeaderMap) -> Result<Response, ApiError> {
     let host = host(&headers).ok_or_else(missing)?;
     let upstream;
-    let kind = if let Some(Resource::Application(id)) = state.gateway.resource(&host) {
+    let kind = if let Some(Resource::Application(id)) = resolve_resource(&state, &host).await? {
         let row:Option<(String,i32)>=sqlx::query_as("SELECT a.active_container_id,d.container_port FROM applications a JOIN deployments d ON d.id=a.active_deployment_id AND d.application_id=a.id WHERE a.id=$1 AND a.service_kind='application' AND a.active_container_id IS NOT NULL").bind(id).fetch_optional(&state.pool).await?;
         let (container, port) = row.ok_or_else(missing)?;
         let info = crate::deployments::inspect_gateway_container(&state, id, &container).await?;
