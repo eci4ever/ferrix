@@ -118,6 +118,26 @@ test('Create Service offers only Application and Database', async ({ page, reque
   await expect(page.getByLabel('Username', { exact: true })).toHaveAttribute('readonly', '')
   await page.getByRole('button', { name: 'Cancel', exact: true }).click()
 
+  const databaseUrl = page.url()
+  await page.getByRole('tab', { name: 'Backups', exact: true }).click()
+  await page.getByRole('button', { name: 'Backup now', exact: true }).click()
+  await expect(page.getByText('Backup completed.', { exact: true })).toBeVisible({ timeout: 60_000 })
+  await page.getByRole('button', { name: 'Restore', exact: true }).click()
+  const restoreDialog = page.getByRole('dialog', { name: 'Restore to a new database', exact: true })
+  await restoreDialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await page.getByRole('button', { name: 'Restore', exact: true }).click()
+  await restoreDialog.getByLabel('New service name', { exact: true }).fill('PostgreSQL restored UI')
+  await restoreDialog.getByRole('button', { name: 'Restore backup', exact: true }).click()
+  await expect(page.getByText('Restore completed. The new database service is ready.', { exact: true })).toBeVisible({ timeout: 60_000 })
+  await page.screenshot({ path: '/private/tmp/ferrix-backups-desktop.png', fullPage: true, animations: 'disabled' })
+  await page.setViewportSize({ width: 390, height: 844 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  await page.screenshot({ path: '/private/tmp/ferrix-backups-mobile.png', fullPage: true, animations: 'disabled' })
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.getByRole('link', { name: 'PostgreSQL restored UI', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'PostgreSQL restored UI', exact: true })).toBeVisible()
+  await page.goto(databaseUrl)
+
   await page.screenshot({ path: '/private/tmp/ferrix-service-controls-desktop.png', fullPage: true, animations: 'disabled' })
   await page.setViewportSize({ width: 390, height: 844 })
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
@@ -151,7 +171,7 @@ test('Create Service offers only Application and Database', async ({ page, reque
   await expect(page.getByRole('button', { name: 'Delete service', exact: true })).toBeDisabled()
   await page.getByRole('button', { name: 'Cancel', exact: true }).click()
   await expect(page.getByRole('link', { name: 'nginx', exact: true })).toBeVisible()
-  for (const name of ['nginx', 'PostgreSQL UI']) {
+  for (const name of ['nginx', 'PostgreSQL UI', 'PostgreSQL restored UI']) {
     await page.getByRole('button', { name: `Delete ${name}`, exact: true }).click()
     await page.getByLabel('Type the service name to confirm', { exact: true }).fill(name)
     if (name !== 'nginx') {

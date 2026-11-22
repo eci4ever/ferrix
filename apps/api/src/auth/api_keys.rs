@@ -176,7 +176,8 @@ fn scope(method: &str, route: &str) -> Option<&'static str> {
             | "/services/{id}/runtime"
             | "/services/{id}/logs"
             | "/services/{id}/deployments"
-            | "/services/{id}/domains",
+            | "/services/{id}/domains"
+            | "/services/{id}/backups",
         ) => Some("read"),
         (
             "GET",
@@ -203,6 +204,8 @@ fn scope(method: &str, route: &str) -> Option<&'static str> {
             | "/services/{id}/control"
             | "/services/{id}/rollback",
         ) => Some("deploy"),
+        ("POST", "/services/{id}/backups") => Some("deploy"),
+        ("POST", "/services/{id}/backups/{backup_id}/restore") => Some("manage+deploy"),
         ("DELETE", "/projects/{id}" | "/services/{id}" | "/services/{id}/domains/{domain_id}") => {
             Some("delete")
         }
@@ -309,7 +312,9 @@ pub(crate) async fn run(state: &AppState, mut req: Request, next: Next) -> Respo
     let result = rate(state, principal.key_id).await;
     let record = result.as_ref().is_ok_and(|count| *count <= RATE_LIMIT + 1);
     let allowed = scope(&method, &route).is_some_and(|required| {
-        principal.scopes.iter().any(|value| value == required)
+        required
+            .split('+')
+            .all(|scope| principal.scopes.iter().any(|value| value == scope))
             && (required == "read" || matches!(principal.role.as_str(), "owner" | "admin"))
     });
     let response = match result {

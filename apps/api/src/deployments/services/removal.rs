@@ -48,6 +48,7 @@ pub(super) async fn remove(
     if input.name != current {
         return Err(invalid("Type the exact service name to confirm deletion."));
     }
+    super::super::backups::ensure_idle(&mut tx, service).await?;
     let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM deployments WHERE application_id=$1 AND status IN ('queued','running'))")
         .bind(service).fetch_one(&mut *tx).await?;
     if pending {
