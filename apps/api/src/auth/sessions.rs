@@ -127,6 +127,9 @@ pub(super) async fn resolve(state: &AppState, headers: &HeaderMap) -> Result<Ide
 }
 // Background clock polling authenticates without extending session inactivity expiry.
 pub async fn identify(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
+    if req.extensions().get::<api_keys::KeyAccess>().is_some() {
+        return next.run(req).await;
+    }
     match resolve(&state, req.headers()).await {
         Ok(id) => {
             req.extensions_mut().insert(id);
@@ -137,6 +140,9 @@ pub async fn identify(State(state): State<AppState>, mut req: Request, next: Nex
 }
 
 pub async fn protect(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
+    if req.extensions().get::<api_keys::KeyAccess>().is_some() {
+        return next.run(req).await;
+    }
     let mut id = match resolve(&state, req.headers()).await {
         Ok(id) => id,
         Err(e) => return e.into_response(),
@@ -166,8 +172,8 @@ pub async fn protect(State(state): State<AppState>, mut req: Request, next: Next
     }
     response
 }
-// Origin is required for every unsafe API call, including unauthenticated login/setup.
-// SameSite and JSON requests provide additional browser-side defenses; no CORS is enabled.
+// Browser-session writes require exact Origin, including login/setup. Valid bearer
+// credentials without session cookies may omit Origin; no CORS is enabled.
 pub async fn guard(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
     req.headers_mut().remove("x-ferrix-peer");
     let peer = req
@@ -177,6 +183,19 @@ pub async fn guard(State(state): State<AppState>, mut req: Request, next: Next) 
         .unwrap_or_else(|| "local".into());
     if let Ok(value) = peer.parse() {
         req.headers_mut().insert("x-ferrix-peer", value);
+    }
+    if req.headers().contains_key(header::AUTHORIZATION) {
+        // Credential selection is explicit: a malformed bearer never falls back to cookies.
+        let response = if req
+            .headers()
+            .get(header::ORIGIN)
+            .is_some_and(|origin| origin.to_str().ok() != Some(state.auth.origin.as_str()))
+        {
+            forbidden().into_response()
+        } else {
+            api_keys::run(&state, req, next).await
+        };
+        return security_headers(response);
     }
     if !matches!(
         *req.method(),
@@ -195,7 +214,9 @@ pub async fn guard(State(state): State<AppState>, mut req: Request, next: Next) 
     {
         return e.into_response();
     }
-    let mut response = next.run(req).await;
+    security_headers(next.run(req).await)
+}
+fn security_headers(mut response: Response) -> Response {
     response
         .headers_mut()
         .insert(header::CACHE_CONTROL, "no-store".parse().unwrap());

@@ -2,7 +2,7 @@ import { Link, useRouterState } from '@tanstack/react-router'
 import type { LucideIcon } from 'lucide-react'
 import { SidebarGroup, SidebarGroupLabel, SidebarMenu, SidebarMenuButton, SidebarMenuItem, useSidebar } from '@/components/ui/sidebar'
 
-export type NavigationItem = { title: string; url: '/dashboard' | '/projects' | '/monitoring' | '/containers' | '/security' | '/organization' | '/admin'; icon: LucideIcon }
+export type NavigationItem = { title: string; url: '/dashboard' | '/projects' | '/monitoring' | '/containers' | '/security' | '/organization' | '/admin' | '/api-keys'; icon: LucideIcon }
 export function NavMain({ label, items }: { label: string; items: NavigationItem[] }) {
   const pathname = useRouterState({ select: state => state.location.pathname })
   const { setOpenMobile } = useSidebar()

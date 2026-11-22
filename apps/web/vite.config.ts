@@ -32,6 +32,6 @@ export default defineConfig(() => {
       },
     },
   },
-  server: { port: Number(env.FERRIX_WEB_PORT || 5173), strictPort: true, proxy: { '/api': api, '/health': api } },
+  server: { port: Number(env.FERRIX_WEB_PORT || 5173), strictPort: true, proxy: { '/api/': api, '/health': api } },
   }
 })

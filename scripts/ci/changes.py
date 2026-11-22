@@ -7,6 +7,7 @@ import subprocess
 
 RUST_FILES = {
     'Cargo.toml', 'Cargo.lock', 'rust-toolchain', 'rust-toolchain.toml',
+    'docs/api-keys.md',  # Embedded in the Rust agent documentation endpoint.
     'rustfmt.toml', '.rustfmt.toml', 'clippy.toml', '.clippy.toml',
 }
 SHARED_FILES = {'Dockerfile', '.dockerignore', 'compose.yaml', 'compose.production.yaml'}

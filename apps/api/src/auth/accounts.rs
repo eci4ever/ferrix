@@ -265,6 +265,10 @@ pub async fn change_password(
         .execute(&mut *tx)
         .await?;
     log(&mut tx, id.user_id, id.organization_id, "password.changed").await?;
+    sqlx::query("UPDATE auth_api_keys SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1")
+        .bind(id.user_id)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok((
         [(axum::http::header::SET_COOKIE, state.auth.cookie("", 0))],
@@ -366,6 +370,10 @@ pub async fn reset_password(
         .await?;
     // Emit the event in every organization affected by the account credential change.
     sqlx::query("INSERT INTO auth_audit(id,user_id,organization_id,action) SELECT gen_random_uuid(),user_id,organization_id,'password.reset' FROM auth_members WHERE user_id=$1").bind(user).execute(&mut *tx).await?;
+    sqlx::query("UPDATE auth_api_keys SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1")
+        .bind(user)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }

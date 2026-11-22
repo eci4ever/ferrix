@@ -1,3 +1,4 @@
+import { signInAdmin } from './helpers/session'
 import { test, expect } from '@playwright/test'
 
 test.use({ trace: 'off', screenshot: 'off', video: 'off' })
@@ -8,11 +9,7 @@ test('Manage users and organization with real permissions and confirmation dialo
   expect(new URL(base).port).not.toBe('5173')
   async function userAction(name: string) { await page.getByRole('button', { name: /^Actions for / }).click(); await page.getByRole('menuitem', { name, exact: true }).click() }
   const password = 'A long disposable browser test password!'
-  await page.goto('/login')
-  await page.getByLabel('Email', { exact: true }).fill('services-ui@example.com')
-  await page.getByLabel('Password', { exact: true }).fill(password)
-  await page.getByRole('button', { name: 'Login', exact: true }).click()
-  await expect(page).toHaveURL(/\/dashboard$/)
+  await signInAdmin(page)
   await page.goto('/organization')
   await expect(page.getByRole('button', { name: 'Delete organization', exact: true })).toBeDisabled()
   await expect(page.getByText('The default organization cannot be deleted.', { exact: true })).toBeVisible()

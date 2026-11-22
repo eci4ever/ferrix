@@ -1,3 +1,4 @@
+import { signInAdmin } from './helpers/session'
 import { test, expect } from '@playwright/test'
 import { createHmac } from 'node:crypto'
 import jsQR from 'jsqr'
@@ -19,12 +20,7 @@ test('Scan QR, confirm TOTP, then sign in through a separate MFA challenge', asy
   const base = process.env.FERRIX_E2E_URL!
   expect(new URL(base).port).not.toBe('5173')
   const password = 'A long disposable browser test password!'
-  await page.goto('/login')
-  await page.getByLabel('Email', { exact: true }).fill('services-ui@example.com')
-  await page.getByLabel('Password', { exact: true }).fill(password)
-  await expect(page.getByText('Use two-factor authentication', { exact: true })).toHaveCount(0)
-  await page.getByRole('button', { name: 'Login', exact: true }).click()
-  await expect(page).toHaveURL(/\/dashboard$/)
+  await signInAdmin(page)
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/security')
   await page.getByRole('button', { name: 'Set up authenticator', exact: true }).click()
@@ -106,4 +102,9 @@ test('Scan QR, confirm TOTP, then sign in through a separate MFA challenge', asy
   await page.getByRole('button', { name: 'Verify and sign in', exact: true }).click()
   await expect(page.getByLabel('Password', { exact: true })).toBeVisible()
   await expect(page.getByText('Verification expired. Sign in again.', { exact: true })).toBeVisible()
+  await page.unroute('**/api/v1/auth/sign-in/verify')
+  expect((await page.request.post('/api/v1/auth/sign-in', { headers: { Origin: base }, data: { email: 'services-ui@example.com', password } })).status()).toBe(200)
+  expect((await page.request.post('/api/v1/auth/sign-in/verify', { headers: { Origin: base }, data: { code: recovery[1] } })).status()).toBe(200)
+  expect((await page.request.post('/api/v1/auth/mfa/disable', { headers: { Origin: base }, data: { password, code: recovery[2] } })).status()).toBe(204)
+
 })

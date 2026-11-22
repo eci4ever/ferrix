@@ -11,6 +11,7 @@ FROM rust:1.98-bookworm AS api
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 COPY apps/api/ apps/api/
+COPY docs/api-keys.md docs/api-keys.md
 RUN cargo build --locked --release -p ferrix-api
 
 FROM debian:bookworm-slim AS runtime

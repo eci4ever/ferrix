@@ -32,6 +32,8 @@ pub struct AppState {
 pub fn router(state: AppState) -> Router {
     let monitor = monitoring::start();
     let protected = Router::new()
+        .route("/api/v1/agent", get(auth::api_keys::agent))
+        .route("/api/v1/agent/docs", get(auth::api_keys::documentation))
         .route("/api/v1/monitoring", get(monitoring::get))
         .route("/api/v1/docker/{section}", get(docker_inventory::get))
         .layer(axum::Extension(monitor))

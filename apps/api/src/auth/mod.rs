@@ -1,4 +1,5 @@
 pub(crate) mod accounts;
+pub(crate) mod api_keys;
 mod login;
 mod management;
 mod organizations;
@@ -20,6 +21,9 @@ pub fn routes(state: AppState) -> Router<AppState> {
             "/profile",
             get(accounts::profile).post(accounts::save_profile),
         )
+        .route("/api-keys", get(api_keys::list).post(api_keys::create))
+        .route("/api-keys/{id}/revoke", post(api_keys::revoke))
+        .route("/api-keys/{id}/usage", get(api_keys::usage))
         .route("/session", get(sessions::current))
         .route("/sign-out", post(sessions::sign_out))
         .route("/sessions", get(sessions::list))
@@ -44,6 +48,10 @@ pub fn routes(state: AppState) -> Router<AppState> {
             post(organizations::revoke_invite),
         )
         .route("/admin/users", get(management::users))
+        .route(
+            "/admin/users/{id}/revoke-api-keys",
+            post(api_keys::admin_revoke),
+        )
         .route("/admin/users/{id}", get(management::user_detail))
         .route("/admin/users/{id}/role", post(management::user_role))
         .route("/admin/users/{id}/delete", post(management::delete_user))

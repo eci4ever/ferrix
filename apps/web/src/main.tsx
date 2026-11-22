@@ -18,6 +18,7 @@ import { load, request } from '@/lib/api'
 import type { Project, SystemStatus, HomeSummary } from '@/lib/api'
 import { LoginPage, SecurityPage } from './auth'
 import { TeamPage, AdminPage } from './user-management'
+import { ApiKeysPage } from './api-keys'
 import type { Identity, Security, Session, Audit, Organization, Member, Invitation } from './auth'
 import { ServerClock } from '@/components/server-clock'
 import { AppSidebar } from '@/components/app-sidebar'
@@ -77,7 +78,7 @@ function Shell() {
     return <LoginPage key={pathname} setupRequired={pathname === '/signup' && setup.data.setup_required} initialMode={pathname === '/signup' ? 'signup' : 'login'} refresh={() => router.invalidate()} />
   }
   if (!account.data) return <Navigate to="/login" replace />
-  const pageNames: Record<string, string> = { '/dashboard': 'Home', '/monitoring': 'Monitoring', '/projects': 'Projects', '/containers': 'Docker', '/profile': 'Profile', '/security': 'Security', '/organization': 'Organization', '/admin': 'Users' }
+  const pageNames: Record<string, string> = { '/dashboard': 'Home', '/monitoring': 'Monitoring', '/projects': 'Projects', '/containers': 'Docker', '/profile': 'Profile', '/security': 'Security', '/api-keys': 'API keys', '/organization': 'Organization', '/admin': 'Users' }
   return <TooltipProvider><SidebarProvider>
     <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:bg-background focus:p-4">Skip to content</a>
     <AppSidebar identity={account.data} organizations={organizations.data ?? []} theme={theme} busy={accountBusy} onSwitch={id => accountAction('organizations/switch', { organization_id: id })} onSignOut={() => accountAction('sign-out')} onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} version={status.data?.version} />
@@ -202,8 +203,9 @@ const securityRoute = createRoute({ getParentRoute: () => rootRoute, path: '/sec
 const teamRoute = createRoute({ getParentRoute: () => rootRoute, path: '/organization', loader: async () => {
   const [organizations, members, invitations] = await Promise.all([load<Organization[]>('/auth/organizations'), load<Member[]>('/auth/members'), load<Invitation[]>('/auth/invitations')]); return { organizations, members, invitations }
 }, component: function OrganizationSettings() { const { organizations, members, invitations } = teamRoute.useLoaderData(); const { account } = rootRoute.useLoaderData(); const router = useRouter(); return account.data && organizations.data && members.data ? <TeamPage key={account.data.organization_id} identity={account.data} organizations={organizations.data} members={members.data} invitations={invitations.data ?? []} refresh={() => router.invalidate()} /> : <ErrorNotice message="Could not load organization settings." /> } })
+const apiKeysRoute = createRoute({ getParentRoute: () => rootRoute, path: '/api-keys', component: function Keys() { const { account } = rootRoute.useLoaderData(); return account.data ? <ApiKeysPage key={account.data.organization_id} identity={account.data} /> : null } })
 const adminRoute = createRoute({ getParentRoute: () => rootRoute, path: '/admin', component: function UserAdministration() { const { account } = rootRoute.useLoaderData(); const router = useRouter(); return account.data ? <AdminPage identity={account.data} refresh={() => router.invalidate()} /> : null } })
-const router = createRouter({ routeTree: rootRoute.addChildren([landingRoute, loginRoute, signupRoute, homeRoute, projectsRoute, projectRoute, applicationRoute, serviceRoute, monitoringRoute, containersRoute, profileRoute, securityRoute, teamRoute, adminRoute]), defaultPendingMs: 150, defaultPendingMinMs: 200 })
+const router = createRouter({ routeTree: rootRoute.addChildren([landingRoute, loginRoute, signupRoute, homeRoute, projectsRoute, projectRoute, applicationRoute, serviceRoute, monitoringRoute, containersRoute, profileRoute, securityRoute, teamRoute, apiKeysRoute, adminRoute]), defaultPendingMs: 150, defaultPendingMinMs: 200 })
 declare module '@tanstack/react-router' { interface Register { router: typeof router } }
 
 createRoot(document.getElementById('root')!).render(<StrictMode><RouterProvider router={router} /></StrictMode>)

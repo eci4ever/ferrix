@@ -77,6 +77,8 @@ jobs:
         run: cargo +stable clippy --locked --workspace --all-targets -- -D warnings
       - name: Rust tests including PostgreSQL integration
         run: cargo +stable test --locked --workspace -- --include-ignored
+      - name: Agent client credential transport checks
+        run: python3 -m unittest discover -s scripts/agents -p 'test_*.py' -v
 
   frontend:
     needs: changes
