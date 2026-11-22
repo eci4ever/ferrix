@@ -443,7 +443,7 @@ async fn docker_deployment_flow_and_isolation() {
         assert_eq!(call(&app,&format!("/api/v1/applications/{application_id}/deploy"),&member,Some(json!({}))).await.0,StatusCode::FORBIDDEN);
         let foreign=call(&app,"/api/v1/auth/organizations",&owner,Some(json!({"name":"Other"}))).await.1;
         assert_eq!(call(&app,"/api/v1/auth/organizations/switch",&owner,Some(json!({"organization_id":foreign["id"]}))).await.0,StatusCode::NO_CONTENT);
-        for path in [format!("/api/v1/projects/{project}/environments"),format!("/api/v1/environments/{environment}/applications"),format!("/api/v1/applications/{application_id}"),format!("/api/v1/applications/{application_id}/deployments"),format!("/api/v1/applications/{application_id}/logs")] {
+        for path in [format!("/api/v1/projects/{project}/environments"),format!("/api/v1/environments/{environment}/applications"),format!("/api/v1/applications/{application_id}"),format!("/api/v1/applications/{application_id}/deployments"),format!("/api/v1/applications/{application_id}/logs"),format!("/api/v1/services/{application_id}/metrics")] {
             assert_eq!(call(&app,&path,&owner,None).await.0,StatusCode::NOT_FOUND,"{path}");
         }
         assert_eq!(call(&app,&format!("/api/v1/applications/{application_id}/deploy"),&owner,Some(json!({}))).await.0,StatusCode::NOT_FOUND);
@@ -464,6 +464,39 @@ async fn docker_deployment_flow_and_isolation() {
         let running=call(&app,&format!("/api/v1/applications/{application_id}/runtime"),&owner,None).await.1;
         assert_eq!(running["state"],"running"); nginx_responds(&state,running["host_port"].as_i64().unwrap()).await;
         let old_container=running["container_id"].as_str().unwrap().to_owned();
+        let metrics_url=format!("/api/v1/services/{application_id}/metrics");
+        let (code,metrics,_)=call(&app,&metrics_url,&member,None).await;
+        assert_eq!(code,StatusCode::OK,"{metrics}");
+        assert_eq!(metrics["container_id"],running["container_id"]);
+        assert_eq!(metrics["cpu_limit_cores"],1.0);
+        assert_eq!(metrics["memory_limit_bytes"],512*1024*1024u64);
+        assert!(metrics["cpu_cores_used"].is_number(),"{metrics}");
+        assert!(metrics["memory_used_bytes"].as_u64().unwrap()>0);
+        assert!(metrics["memory_used_bytes"].as_u64().unwrap() <= metrics["memory_raw_bytes"].as_u64().unwrap());
+        let logs_url=format!("/api/v1/services/{application_id}/logs?tail=500&timestamps=true");
+        let logs=call(&app,&logs_url,&member,None).await;
+        assert_eq!(logs.0,StatusCode::OK);
+        assert!(logs.1["logs"].as_str().unwrap().contains("GET / HTTP"));
+        assert_eq!(logs.1["container_id"],running["container_id"]);
+        let output=tokio::process::Command::new("docker").args(["exec",&old_container,"sh","-c","(head -c 70000 /dev/zero | tr '\\000' x; printf '\\nservice-tail-marker-✓\\n') > /proc/1/fd/1"]).output().await.unwrap();
+        assert!(output.status.success());
+        let bounded=call(&app,&format!("/api/v1/services/{application_id}/logs?tail=1000&timestamps=true"),&owner,None).await;
+        assert_eq!(bounded.0,StatusCode::OK);
+        assert_eq!(bounded.1["truncated"],true);
+        let text=bounded.1["logs"].as_str().unwrap();
+        assert!(text.len()<=65536);
+        assert!(text.contains("service-tail-marker-✓"),"newest log output must survive truncation");
+
+        assert_eq!(call(&app,&format!("/api/v1/services/{application_id}/logs?tail=1001"),&owner,None).await.0,StatusCode::UNPROCESSABLE_ENTITY);
+        let control=format!("/api/v1/services/{application_id}/control");
+        assert_eq!(call(&app,&control,&owner,Some(json!({"operation":"stop"}))).await.0,StatusCode::NO_CONTENT);
+        let stopped_metrics=call(&app,&metrics_url,&member,None).await.1;
+        assert_eq!(stopped_metrics["state"],"exited");
+        assert!(stopped_metrics["cpu_cores_used"].is_null());
+        assert!(stopped_metrics["memory_used_bytes"].is_null());
+        assert_eq!(call(&app,&control,&owner,Some(json!({"operation":"start"}))).await.0,StatusCode::NO_CONTENT);
+        assert_eq!(call(&app,&metrics_url,&member,None).await.1["state"],"running");
+
         let unrelated = state.docker.create_container(None, bollard::models::ContainerCreateBody {
             image: Some("nginx:alpine".into()),
             labels: Some(std::collections::HashMap::from([

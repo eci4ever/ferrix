@@ -1,5 +1,6 @@
 mod backups;
 mod domains;
+mod observability;
 mod services;
 mod worker;
 pub use worker::run_worker;
@@ -7,7 +8,7 @@ pub use worker::run_worker;
 use crate::{ApiError, AppState, auth::Identity};
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, Path, State},
+    extract::{DefaultBodyLimit, Path, Query, State},
     http::StatusCode,
     routing::{get, post},
 };
@@ -39,6 +40,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .merge(services::routes(state.clone()))
         .merge(domains::routes(state.clone()))
         .merge(backups::routes(state.clone()))
+        .merge(observability::routes(state.clone()))
         .merge(
             Router::new()
                 .route("/projects/{id}/environments", post(create_environment))
@@ -458,9 +460,10 @@ async fn logs(
     State(state): State<AppState>,
     id: Identity,
     Path(app): Path<Uuid>,
+    Query(input): Query<observability::LogQuery>,
 ) -> Result<Json<Value>, ApiError> {
     let row = app_access(&state, &id, app).await?;
-    worker::logs(&state, &row).await.map(Json)
+    observability::logs(&state, &row, input).await.map(Json)
 }
 #[cfg(test)]
 mod tests {

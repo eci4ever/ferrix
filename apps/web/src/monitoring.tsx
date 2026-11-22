@@ -21,8 +21,8 @@ const percent = (n: number | null | undefined) => n == null ? 'Unavailable' : `$
 const rate = (n: number | null | undefined) => n == null ? 'Unavailable' : `${bytes(n)}/s`
 const time = (n: number) => new Date(n).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 
-function Meter({ value }: { value: number | null }) {
-  return <div role="meter" aria-label="Current usage" aria-valuemin={0} aria-valuemax={100} aria-valuenow={value ?? undefined} aria-valuetext={value == null ? 'Unavailable' : percent(value)} className="h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-series-primary" style={{ width: `${Math.max(0, Math.min(100, value ?? 0))}%` }} /></div>
+export function Meter({ value, label = 'Current usage' }: { value: number | null; label?: string }) {
+  return <div role="meter" aria-label={label} aria-valuemin={0} aria-valuemax={100} aria-valuenow={value == null ? undefined : Math.max(0, Math.min(100, value))} aria-valuetext={value == null ? 'Unavailable' : percent(value)} className="h-2 overflow-hidden rounded-full bg-muted"><div className="h-full rounded-full bg-series-primary" style={{ width: `${Math.max(0, Math.min(100, value ?? 0))}%` }} /></div>
 }
 function History({ samples, series, max, format = bytes }: { samples: Sample[]; series: Series[]; max?: number; format?: (n: number | null) => string }) {
   const id = useId()
@@ -101,3 +101,5 @@ export function MonitoringPage({ admin }: { admin: boolean }) {
     </div><p className="text-xs text-muted-foreground">Last 15 minutes · up to 180 samples · history resets when the API restarts</p></> : !error ? <div role="status" aria-label="Loading monitoring" className="grid gap-6 lg:grid-cols-2">{Array.from({ length: 6 }, (_, i) => <Skeleton key={i} className="h-72 w-full" />)}</div> : null}
   </>
 }
+
+export { bytes as formatBytes }

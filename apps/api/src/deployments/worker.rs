@@ -6,7 +6,7 @@ use bollard::{
     },
     query_parameters::{
         CreateContainerOptionsBuilder, CreateImageOptionsBuilder, ListContainersOptionsBuilder,
-        LogsOptionsBuilder, RemoveContainerOptionsBuilder,
+        RemoveContainerOptionsBuilder,
     },
 };
 use futures_util::StreamExt;
@@ -67,6 +67,16 @@ pub(super) async fn runtime(state: &AppState, app: &Application) -> Result<Value
     match inspect_owned(state, app.id, container).await {
         Ok(info) => {
             let running = info.state.as_ref().and_then(|s| s.running).unwrap_or(false);
+            let host_port = info
+                .network_settings
+                .as_ref()
+                .and_then(|network| network.ports.as_ref())
+                .into_iter()
+                .flat_map(|ports| ports.values())
+                .filter_map(|bindings| bindings.as_ref())
+                .flatten()
+                .filter_map(|binding| binding.host_port.as_deref())
+                .find_map(|port| port.parse::<u16>().ok().filter(|port| *port > 0));
             let health = info
                 .state
                 .as_ref()
@@ -79,39 +89,12 @@ pub(super) async fn runtime(state: &AppState, app: &Application) -> Result<Value
                 .map(|s| s.to_string())
                 .unwrap_or_else(|| "unknown".into());
             Ok(
-                json!({"state":status,"health":health,"host_port":if running {app.host_port}else{None},"container_id":container,"internal_host":format!("ferrix-{}",app.id.simple()),"internal_port":app.container_port}),
+                json!({"state":status,"health":health,"host_port":if running {host_port}else{None},"container_id":container,"internal_host":format!("ferrix-{}",app.id.simple()),"internal_port":app.container_port}),
             )
         }
         Err(error) if error.0 == StatusCode::CONFLICT => Err(error),
         Err(_) => Ok(json!({"state":"unavailable","host_port":null})),
     }
-}
-pub(super) async fn logs(state: &AppState, app: &Application) -> Result<Value, ApiError> {
-    let containers: Vec<_> = app.active_container_id.iter().cloned().collect();
-    let read = async {
-        let mut output = String::new();
-        for container in containers {
-            inspect_owned(state, app.id, &container).await?;
-            let options = LogsOptionsBuilder::default()
-                .stdout(true)
-                .stderr(true)
-                .tail("100")
-                .build();
-            let mut stream = state.docker.logs(&container, Some(options));
-            while let Some(line) = stream.next().await {
-                for character in line.map_err(|_| docker_error())?.to_string().chars() {
-                    if output.len() + character.len_utf8() > 65536 {
-                        return Ok(json!({"logs":output}));
-                    }
-                    output.push(character);
-                }
-            }
-        }
-        Ok::<_, ApiError>(json!({"logs":output}))
-    };
-    tokio::time::timeout(Duration::from_secs(5), read)
-        .await
-        .map_err(|_| docker_error())?
 }
 pub(super) async fn phase(conn: &mut PgConnection, job: Uuid, text: &str) -> Result<(), String> {
     let count=sqlx::query("UPDATE deployments SET logs=left(logs || $1 || E'\\n',65536) WHERE id=$2 AND status='running'")
