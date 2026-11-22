@@ -23,7 +23,7 @@ to the explicitly permitted deployment API routes.
 
 | Scope | Allowed operations |
 | --- | --- |
-| `read` (required) | Projects/environments/services, deployment history, runtime, logs, backup/restore status, organization summary, agent discovery |
+| `read` (required) | Projects/environments/services, deployment history, runtime, logs, service CPU/RAM metrics, backup/restore status, organization summary, agent discovery |
 | `manage` | Create projects/environments/applications/databases; update service configuration and environment variables |
 | `deploy` | Queue deployments, start/stop/reload services and create database backups |
 | `delete` | Delete services and empty projects using their existing confirmation payloads |
@@ -32,6 +32,8 @@ to the explicitly permitted deployment API routes.
 **Manage/deploy can execute container code with saved service secrets.** The
 `secrets:read` scope controls direct configuration reads, not isolation from code
 a trusted deployment agent is allowed to run.
+
+Service telemetry uses `GET /api/v1/services/{id}/metrics` and `GET /api/v1/services/{id}/logs?tail=500&timestamps=true`. Both require read scope. Metrics are scoped to the active container and report usage against configured limits. Logs remain a bounded 64 KiB recent buffer and can contain application secrets. Respect the per-key request rate when polling.
 
 Database restore requires both `manage` and `deploy` because it creates a new Database service in the same environment. Use `POST /api/v1/services/{id}/backups/{backup_id}/restore` with `{ "name": "Restored database" }`, then poll `GET /api/v1/services/{id}/backups` until that operation succeeds. Backups can be queued with `POST /api/v1/services/{id}/backups`. Only PostgreSQL and MariaDB are supported. Keep the returned new service ID and wait for restore completion before connecting an application.
 

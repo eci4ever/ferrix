@@ -174,6 +174,7 @@ fn scope(method: &str, route: &str) -> Option<&'static str> {
             | "/applications/{id}/deployments"
             | "/services/{id}"
             | "/services/{id}/runtime"
+            | "/services/{id}/metrics"
             | "/services/{id}/logs"
             | "/services/{id}/deployments"
             | "/services/{id}/domains"
