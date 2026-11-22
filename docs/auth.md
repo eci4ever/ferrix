@@ -96,7 +96,7 @@ The ignored integration test creates and removes an isolated schema in the speci
 
 Implemented: first owner, invitation-only additional accounts, system administration, fixed owner/admin/member organization roles, active organization, password login, TOTP/recovery codes, session and credential management.
 
-Not included: OAuth/social login, passkeys/WebAuthn, SSO/SCIM, API keys, custom dynamic roles, automatic email delivery/verification, impersonation, self-service account deletion and custom roles. These require separate workflows; no stub or bypass endpoint pretends to support them.
+Not included: OAuth/social login, passkeys/WebAuthn, SSO/SCIM, custom dynamic roles, automatic email delivery/verification, impersonation, self-service account deletion and custom roles. These require separate workflows; no stub or bypass endpoint pretends to support them.
 
 Reference configuration reviewed: [Dokploy auth.ts on canary](https://github.com/Dokploy/dokploy/blob/canary/packages/server/src/lib/auth.ts), [Better Auth organization plugin](https://better-auth.com/docs/plugins/organization), [admin plugin](https://better-auth.com/docs/plugins/admin), and [OWASP session management](https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html). Dokploy uses bcrypt; Ferrix uses Argon2id. Dokploy self-hosted configuration disables Secure cookies; Ferrix instead requires them for HTTPS origins. The 30-day absolute session cap is an additional Ferrix control.
 
@@ -207,3 +207,13 @@ Its Delete action is disabled and the API rejects deletion even after renaming
 or joining another organization. Migration 0016 identifies existing default
 organizations through the installation audit event, falling back to the earliest
 surviving organization. New organizations remain deletable under the usual checks.
+
+## Agent API keys
+
+Organization-bound API keys now support deployment automation. Keys have explicit
+read/manage/deploy/delete/secrets-read scopes, mandatory expiry, live membership
+and role checks, rate limits and 30-day usage metadata. Browser-only API key
+management lives at `/api-keys`; platform admins can revoke all user keys from
+Users. Password changes/resets and bans revoke keys; logout does not. See
+[API key and agent guide](api-keys.md) for the complete API contract and runnable
+Python deployment example.

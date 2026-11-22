@@ -1,3 +1,4 @@
+import { signInAdmin } from './helpers/session'
 import { test, expect } from '@playwright/test'
 
 test('Create Service offers only Application and Database', async ({ page, request }) => {
@@ -6,15 +7,9 @@ test('Create Service offers only Application and Database', async ({ page, reque
   if (!base || process.env.FERRIX_E2E_DISPOSABLE !== '1') throw new Error('Use an isolated preview database with FERRIX_E2E_URL and FERRIX_E2E_DISPOSABLE=1.')
   expect(new URL(base).hostname).toBe('127.0.0.1')
   expect(new URL(base).port).not.toBe('5173')
-  expect((await (await request.get('/api/v1/auth/setup')).json()).setup_required).toBe(true)
   const errors: string[] = []
   page.on('pageerror', error => errors.push(error.message))
-  await page.goto('/signup')
-  await page.getByLabel('Name', { exact: true }).fill('Services UI test')
-  await page.getByLabel('Email', { exact: true }).fill('services-ui@example.com')
-  await page.getByLabel('Password', { exact: true }).fill('A long disposable browser test password!')
-  await page.getByRole('button', { name: 'Create account', exact: true }).click()
-  await expect(page).toHaveURL(/\/dashboard$/)
+  await signInAdmin(page)
   await page.goto('/projects')
   await page.getByRole('button', { name: 'New project', exact: true }).click()
   await page.getByLabel('Project name', { exact: true }).fill('Docker UI test')

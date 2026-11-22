@@ -158,6 +158,12 @@ pub async fn ban(
         return Err(forbidden());
     }
     if input.banned {
+        sqlx::query(
+            "UPDATE auth_api_keys SET revoked_at=COALESCE(revoked_at,now()) WHERE user_id=$1",
+        )
+        .bind(target)
+        .execute(&mut *tx)
+        .await?;
         sqlx::query("DELETE FROM auth_sessions WHERE user_id=$1")
             .bind(target)
             .execute(&mut *tx)

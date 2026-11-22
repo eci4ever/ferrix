@@ -13,7 +13,7 @@ class Classification(unittest.TestCase):
         for path in ['apps/web/src/main.tsx', 'apps/web/package-lock.json', 'apps/web/vendor/picomatch/index.js', 'apps/web/public/favicon.svg']:
             with self.subTest(path=path):
                 self.assertEqual(classify([path]), (False, True))
-        for path in ['apps/api/src/main.rs', 'apps/api/migrations/0010.sql', 'apps/api/tests/http.rs', 'Cargo.lock', 'Cargo.toml', '.cargo/config.toml', 'rust-toolchain.toml']:
+        for path in ['docs/api-keys.md', 'apps/api/src/main.rs', 'apps/api/migrations/0010.sql', 'apps/api/tests/http.rs', 'Cargo.lock', 'Cargo.toml', '.cargo/config.toml', 'rust-toolchain.toml']:
             with self.subTest(path=path):
                 self.assertEqual(classify([path]), (True, False))
 

@@ -1,0 +1,94 @@
+import { signInAdmin } from './helpers/session'
+import { test, expect } from '@playwright/test'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { fileURLToPath } from 'node:url'
+const execute = promisify(execFile)
+// Never retain screenshots/traces while the one-time credential is visible.
+test.use({ actionTimeout: 15_000, trace: 'off', screenshot: 'off', video: 'off' })
+
+test('Create API key, deploy nginx through an agent, inspect usage and revoke access', async ({ page, browser }) => {
+  test.setTimeout(180_000)
+  const base = process.env.FERRIX_E2E_URL!
+  if (process.env.FERRIX_E2E_DISPOSABLE !== '1') throw new Error('Use the disposable Services UI runner.')
+  expect(new URL(base).port).not.toBe('5173')
+  await signInAdmin(page)
+  await page.getByRole('link', { name: 'API keys', exact: true }).click()
+  await page.getByRole('button', { name: 'Create API key', exact: true }).click()
+  let dialog = page.getByRole('dialog')
+  await expect(dialog.getByRole('checkbox', { name: 'Read projects and services', exact: true })).toBeChecked()
+  await expect(dialog.getByRole('checkbox', { name: 'Delete resources', exact: true })).not.toBeChecked()
+  await expect(dialog.getByRole('checkbox', { name: 'Read configuration secrets', exact: true })).not.toBeChecked()
+  await dialog.getByLabel('Key name', { exact: true }).fill('Agent smoke')
+  await dialog.getByRole('button', { name: 'Generate key', exact: true }).click()
+  const credential = page.locator('code[aria-label="New API key"]')
+  await expect(credential).toBeVisible()
+  const secret = await credential.innerText()
+  expect(secret.startsWith('frx_') && secret.length === 68).toBe(true)
+  await page.keyboard.press('Escape'); await expect(dialog).toBeVisible()
+  await dialog.getByRole('button', { name: 'I saved this key', exact: true }).click()
+  await expect(dialog).toHaveCount(0)
+  await page.reload()
+  expect((await page.locator('body').innerText()).includes(secret)).toBe(false)
+  const agent = await browser.newContext({ baseURL: base })
+  try {
+    expect((await agent.request.get('/api/v1/agent', { headers: { Authorization: `Bearer ${secret}` } })).status()).toBe(200)
+    const reference = await agent.request.get('/api/v1/agent/docs', { headers: { Authorization: `Bearer ${secret}` } })
+    expect(reference.status()).toBe(200)
+    expect(await reference.text()).toContain('FERRIX_API_KEY')
+    expect((await agent.request.get('/api/v1/auth/admin/users', { headers: { Authorization: `Bearer ${secret}` } })).status()).toBe(403)
+    const script = fileURLToPath(new URL('../../../scripts/agents/deploy-image.py', import.meta.url))
+    const result = await execute('python3', [script, '--url', base, '--project', 'API agent project', '--application', 'Agent nginx', '--image', 'nginx:alpine', '--port', '80', '--timeout', '100'], { env: { ...process.env, FERRIX_API_KEY: secret }, timeout: 120_000 })
+    const deployment = JSON.parse(result.stdout)
+    expect(deployment.status).toBe('succeeded')
+    expect(deployment.runtime_state).toBe('running')
+    const web = await agent.request.get(`http://127.0.0.1:${deployment.host_port}`)
+    expect(await web.text()).toContain('Welcome to nginx')
+    for (const operation of ['stop', 'start']) expect((await agent.request.post(`/api/v1/services/${deployment.service_id}/control`, { headers: { Authorization: `Bearer ${secret}` }, data: { operation } })).status()).toBe(204)
+    expect(result.stdout.includes(secret) || result.stderr.includes(secret)).toBe(false)
+    const row = page.getByRole('table', { name: 'API keys', exact: true }).getByRole('row').filter({ hasText: 'Agent smoke' })
+    await row.getByRole('button', { name: 'Usage', exact: true }).click()
+    await expect(page.getByRole('table', { name: 'API key usage', exact: true })).toContainText('/api/v1/services/{id}/deploy')
+    expect((await page.getByRole('dialog').innerText()).includes(secret)).toBe(false)
+    await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click()
+    await page.getByRole('button', { name: 'Agent instructions', exact: true }).click()
+    await expect(page.getByRole('dialog')).toContainText('GET /agent')
+    await page.getByRole('dialog').getByRole('button', { name: 'Close', exact: true }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    await page.setViewportSize({ width: 390, height: 844 })
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+    await page.screenshot({ path: '/private/tmp/ferrix-api-keys-mobile.png', fullPage: true, animations: 'disabled' })
+    await row.getByRole('button', { name: 'Revoke', exact: true }).click()
+    await page.getByRole('dialog').getByRole('button', { name: 'Revoke key', exact: true }).click()
+    await expect(page.getByRole('dialog')).toHaveCount(0)
+    await expect(row.getByText('Revoked', { exact: true })).toBeVisible()
+    expect((await agent.request.get('/api/v1/agent', { headers: { Authorization: `Bearer ${secret}` } })).status()).toBe(401)
+  } finally { await agent.close() }
+})
+
+test('Organization member can create only a read-only agent key', async ({ page, browser }) => {
+  const base = process.env.FERRIX_E2E_URL!
+  if (process.env.FERRIX_E2E_DISPOSABLE !== '1') throw new Error('Use the disposable Services UI runner.')
+  const admin = await browser.newContext({ baseURL: base })
+  const agent = await browser.newContext({ baseURL: base })
+  try {
+    await signInAdmin(await admin.newPage())
+    const response = await admin.request.post('/api/v1/auth/invitations', { headers: { Origin: base }, data: { email: 'agent-member@example.com', role: 'member' } })
+    const invite = await response.json()
+    expect((await page.request.post('/api/v1/auth/accept-invitation', { headers: { Origin: base }, data: { email: 'agent-member@example.com', name: 'Agent member', password: 'Disposable member key password!', token: invite.token } })).status()).toBe(200)
+    await page.goto('/api-keys')
+    await page.getByRole('button', { name: 'Create API key', exact: true }).click()
+    const dialog = page.getByRole('dialog')
+    for (const name of ['Manage projects and services', 'Deploy and control services', 'Delete resources', 'Read configuration secrets']) {
+      await expect(dialog.getByRole('checkbox', { name, exact: true })).toBeDisabled()
+      await expect(dialog.getByRole('checkbox', { name, exact: true })).not.toBeChecked()
+    }
+    await dialog.getByLabel('Key name', { exact: true }).fill('Member read key')
+    await dialog.getByRole('button', { name: 'Generate key', exact: true }).click()
+    const credential = page.locator('code[aria-label="New API key"]')
+    await expect(credential).toBeVisible(); const secret = await credential.innerText()
+    await dialog.getByRole('button', { name: 'I saved this key', exact: true }).click()
+    expect((await agent.request.get('/api/v1/projects', { headers: { Authorization: `Bearer ${secret}` } })).status()).toBe(200)
+    expect((await agent.request.post('/api/v1/projects', { headers: { Authorization: `Bearer ${secret}` }, data: { name: 'Should be forbidden' } })).status()).toBe(403)
+  } finally { await admin.close(); await agent.close() }
+})
