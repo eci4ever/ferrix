@@ -28,7 +28,7 @@ Candidate/replaced containers are cleaned only when their Ferrix application/dep
 
 Each application container has 512 MiB memory, one CPU and 256 PIDs, no host mounts or privileged-mode configuration, `no-new-privileges`, an unless-stopped restart policy, and rotating Docker logs. An automatic loopback port is allocated by Docker, preventing fixed-port collisions between users. Its address belongs to the Docker host. On a local installation open `http://127.0.0.1:<port>`; use the automatic domain shown on the Application page for a stable URL through Caddy, locally or on a VPS (see production.md). Existing Applications need one redeploy after enabling automatic domains. The loopback diagnostic port changes on redeploy. Deployments still have a brief handover and do not guarantee zero downtime.
 
-The Application service supports **stateless public Docker images**, one container per application on the connected Docker server. It does not implement private registry credentials, Swarm services, replicas, Git builds, persistent-volume configuration or rollback. Images declaring persistent volumes are rejected before container creation, preventing accidental state loss during replacement. Application containers use the Docker server's native image architecture; the Ferrix release image remains amd64 only.
+The Application service supports **stateless public Docker images**, one container per application on the connected Docker server. It does not implement private registry credentials, Swarm services, replicas, Git builds, persistent-volume configuration. Images declaring persistent volumes are rejected before container creation, preventing accidental state loss during replacement. Application containers use the Docker server's native image architecture; the Ferrix release image remains amd64 only.
 
 Environment values are encrypted at rest using the existing auth key with an application-specific authenticated context, including immutable deployment snapshots. Keep the auth key in backups. Values are passed directly to Docker without shell interpolation. Saved values are returned only to organization managers. Container output is read-only, bounded to the latest 100 lines/64 KiB, and can contain anything the application prints; avoid printing secrets. Deployment progress uses bounded phase messages and does not store environment values. Read polling authenticates without extending inactivity expiry.
 
@@ -139,3 +139,11 @@ COPY dist/ /usr/share/nginx/html/
 Application and Database are the only accepted service types. Historical
 migrations remain unchanged; migration 0010 removes retired Compose service
 records, Static Website releases/files and old Hosting accounts/metadata.
+
+## Application rollback
+
+Organization managers can select Rollback on a successful Application deployment in Deployment History. Confirmation queues a new deployment with the source snapshot’s port and encrypted environment, and its immutable Docker image ID. Saved service settings remain available for a subsequent regular deploy. Pending deployments block another deployment or rollback.
+
+`POST /api/v1/services/{id}/rollback` accepts `{ "deployment_id": "uuid" }` and returns HTTP 202 with the queued deployment ID. API keys require the deploy scope. Database services and unsuccessful or foreign source deployments are rejected. History exposes `rollback_of` for rollback jobs.
+
+The original image must remain on the connected Docker server. If it has been removed, rollback fails without pulling a mutable tag. The current Application stays active on failure. Rollback does not restore database or external data, and old environment secrets may no longer be valid.

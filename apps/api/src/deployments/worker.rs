@@ -19,6 +19,7 @@ pub(super) struct Job {
     pub(super) id: Uuid,
     pub(super) application_id: Uuid,
     pub(super) image: String,
+    pub(super) pinned_image_id: Option<String>,
     pub(super) container_port: i32,
     pub(super) env_cipher: Option<Vec<u8>>,
     pub(super) service_kind: String,
@@ -124,25 +125,36 @@ async fn execute(state: &AppState, conn: &mut PgConnection, job: &Job) -> Result
     if !matches!(job.service_kind.as_str(), "application" | "database") {
         return Err("This service type is no longer supported.".into());
     }
-    phase(conn, job.id, "Pulling Docker image…").await?;
-    let options = CreateImageOptionsBuilder::default()
-        .from_image(&job.image)
-        .build();
-    let mut pull = state.docker.create_image(Some(options), None, None);
-    while let Some(event) = pull.next().await {
-        let event = event
-            .map_err(|_| "Could not pull image. Check its name, tag and registry availability.")?;
-        if event.error_detail.is_some() {
-            return Err(
-                "The registry could not provide this image. Check its name and tag.".into(),
-            );
+    let image = if let Some(image_id) = &job.pinned_image_id {
+        phase(
+            conn,
+            job.id,
+            "Restoring the selected deployment image and configuration…",
+        )
+        .await?;
+        state.docker.inspect_image(image_id).await.map_err(|_| "The original image is no longer available on this Docker server. Rollback cannot continue." )?
+    } else {
+        phase(conn, job.id, "Pulling Docker image…").await?;
+        let options = CreateImageOptionsBuilder::default()
+            .from_image(&job.image)
+            .build();
+        let mut pull = state.docker.create_image(Some(options), None, None);
+        while let Some(event) = pull.next().await {
+            let event = event.map_err(
+                |_| "Could not pull image. Check its name, tag and registry availability.",
+            )?;
+            if event.error_detail.is_some() {
+                return Err(
+                    "The registry could not provide this image. Check its name and tag.".into(),
+                );
+            }
         }
-    }
-    let image = state
-        .docker
-        .inspect_image(&job.image)
-        .await
-        .map_err(|_| "Could not inspect the pulled image.")?;
+        state
+            .docker
+            .inspect_image(&job.image)
+            .await
+            .map_err(|_| "Could not inspect the pulled image.")?
+    };
     if job.service_kind == "application"
         && image
             .config
@@ -398,7 +410,7 @@ async fn cycle(
         .execute(&mut *conn).await.map_err(|_|"Could not recover interrupted deployments.")?;
     cleanup(state, conn).await?;
     super::services::database::restore_pending(state, conn).await?;
-    let job=sqlx::query_as::<_,Job>("WITH next AS (SELECT id FROM deployments WHERE status='queued' ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1), claimed AS (UPDATE deployments d SET status='running',started_at=now() FROM next WHERE d.id=next.id RETURNING d.*) SELECT d.id,d.application_id,d.image,d.container_port,d.env_cipher,d.service_kind,d.service_cipher,p.organization_id,p.id AS project_id,e.id AS environment_id FROM claimed d JOIN applications a ON a.id=d.application_id JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id")
+    let job=sqlx::query_as::<_,Job>("WITH next AS (SELECT id FROM deployments WHERE status='queued' ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1), claimed AS (UPDATE deployments d SET status='running',started_at=now() FROM next WHERE d.id=next.id RETURNING d.*) SELECT d.id,d.application_id,d.image,d.pinned_image_id,d.container_port,d.env_cipher,d.service_kind,d.service_cipher,p.organization_id,p.id AS project_id,e.id AS environment_id FROM claimed d JOIN applications a ON a.id=d.application_id JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id")
         .fetch_optional(&mut *conn).await.map_err(|_|"Could not claim queued deployment.")?;
     if let Some(job) = job {
         let authorized:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM deployments d LEFT JOIN auth_users u ON u.id=d.requested_by LEFT JOIN auth_members m ON m.user_id=u.id AND m.organization_id=$2 WHERE d.id=$1 AND (d.requested_by IS NULL OR (NOT u.banned AND m.role IN ('owner','admin') AND d.service_kind IN ('application','database'))))")

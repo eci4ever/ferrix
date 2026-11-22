@@ -195,7 +195,10 @@ fn scope(method: &str, route: &str) -> Option<&'static str> {
         ) => Some("manage"),
         (
             "POST",
-            "/applications/{id}/deploy" | "/services/{id}/deploy" | "/services/{id}/control",
+            "/applications/{id}/deploy"
+            | "/services/{id}/deploy"
+            | "/services/{id}/control"
+            | "/services/{id}/rollback",
         ) => Some("deploy"),
         ("DELETE", "/projects/{id}" | "/services/{id}") => Some("delete"),
         _ => None,
