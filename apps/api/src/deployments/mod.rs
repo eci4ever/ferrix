@@ -1,3 +1,4 @@
+mod domains;
 mod services;
 mod worker;
 pub use worker::run_worker;
@@ -35,6 +36,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
         ));
     reads
         .merge(services::routes(state.clone()))
+        .merge(domains::routes(state.clone()))
         .merge(
             Router::new()
                 .route("/projects/{id}/environments", post(create_environment))

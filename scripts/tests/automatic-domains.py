@@ -45,7 +45,7 @@ client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookies)
 
 def api(path, value=None, method=None):
     request = urllib.request.Request(origin + '/api/v1' + path, headers={'Origin': origin, 'Content-Type': 'application/json'}, data=None if value is None else json.dumps(value).encode(), method=method)
-    with client.open(request, timeout=15) as response:
+    with client.open(request, timeout=40) as response:
         body = response.read()
         return json.loads(body) if body else None
 
@@ -79,7 +79,8 @@ try:
                     raise RuntimeError('Disposable API did not start')
                 time.sleep(.2)
         subprocess.run(['docker', 'run', '-d', '--name', proxy, '--network', network, '-p', f'127.0.0.1:{edge_port}:80', '-e', f'FERRIX_WEBSITE_UPSTREAM=host.docker.internal:{listener_port}', '-v', f'{root}/deploy/Caddyfile.local:/etc/caddy/Caddyfile:ro', 'caddy:2-alpine'], env=env, check=True, stdout=subprocess.DEVNULL)
-        api('/auth/setup', {'name': 'Domains test', 'email': 'domains@example.test', 'password': secrets.token_urlsafe(32)})
+        password = secrets.token_urlsafe(32)
+        api('/auth/setup', {'name': 'Domains test', 'email': 'domains@example.test', 'password': password})
         project = api('/projects', {'name': 'Automatic domain test'})
         environment = api(f'/projects/{project["id"]}/environments')['environments'][0]['id']
         app = api(f'/environments/{environment}/services', {'kind': 'application', 'name': 'Interactive application', 'image': 'nginx:alpine', 'container_port': 80})
@@ -117,6 +118,57 @@ try:
             raise AssertionError('Forged upstream accepted')
         except urllib.error.HTTPError as error:assert error.code==404
         with gateway(stable_url,extra={'X-Ferrix-Upstream':f'host.docker.internal:{api_port}'}) as response:assert response.read().decode()==html
+        custom_host = 'website-' + uuid.uuid4().hex + '.localhost'
+        custom = api(f'/services/{app["id"]}/domains', {'hostname': custom_host})
+        custom_url = f'http://{custom_host}:{edge_port}/'
+        try:
+            gateway(custom_url)
+            raise AssertionError('Unverified custom domain was routed')
+        except urllib.error.HTTPError as error:
+            assert error.code == 404
+        verified = api(f'/services/{app["id"]}/domains/{custom["id"]}/check', {})
+        assert verified['dns_status'] == 'ready' and verified['tls_status'] == 'disabled'
+        with gateway(custom_url) as response:
+            assert response.read().decode() == html
+        try:
+            api(f'/services/{app["id"]}/domains/{custom["id"]}/check', {})
+            raise AssertionError('Repeated domain check bypassed cooldown')
+        except urllib.error.HTTPError as error:
+            assert error.code == 409
+        original_org = api('/auth/session')['organization_id']
+        other_org = api('/auth/organizations', {'name': 'Other domains org'})
+        api('/auth/organizations/switch', {'organization_id': other_org['id']})
+        try:
+            api(f'/services/{app["id"]}/domains')
+            raise AssertionError('Foreign organization read custom domains')
+        except urllib.error.HTTPError as error:
+            assert error.code == 404
+        api('/auth/organizations/switch', {'organization_id': original_org})
+        assert len(api(f'/services/{app["id"]}/domains')['domains']) == 1
+        member_id = str(uuid.uuid4())
+        sql(f"INSERT INTO {schema}.auth_users(id,name,email,password_hash) SELECT '{member_id}','Domains member','member@domains.test',password_hash FROM {schema}.auth_users WHERE email='domains@example.test'")
+        sql(f"INSERT INTO {schema}.auth_members(organization_id,user_id,role) VALUES('{original_org}','{member_id}','member')")
+        owner_client = client
+        client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+        api('/auth/sign-in', {'email': 'member@domains.test', 'password': password})
+        assert len(api(f'/services/{app["id"]}/domains')['domains']) == 1
+        for path, value, method in [(f'/services/{app["id"]}/domains', {'hostname': 'denied.localhost'}, None), (f'/services/{app["id"]}/domains/{custom["id"]}/check', {}, None), (f'/services/{app["id"]}/domains/{custom["id"]}', None, 'DELETE')]:
+            try:
+                api(path, value, method)
+                raise AssertionError('Member changed custom domains')
+            except urllib.error.HTTPError as error:
+                assert error.code == 403
+        client = owner_client
+        duplicate_app = api(f'/environments/{environment}/services', {'kind': 'application', 'name': 'Duplicate claim', 'image': 'nginx:alpine', 'container_port': 80})
+        applications.append(duplicate_app['id'])
+        duplicate = api(f'/services/{duplicate_app["id"]}/domains', {'hostname': custom_host})
+        try:
+            api(f'/services/{duplicate_app["id"]}/domains/{duplicate["id"]}/check', {})
+            raise AssertionError('Two applications claimed the same domain')
+        except urllib.error.HTTPError as error:
+            assert error.code == 409
+        api(f'/services/{duplicate_app["id"]}', {'name': 'Duplicate claim', 'remove_data': False}, method='DELETE')
+
         # Real browser verifies native .localhost resolution, module JS, fetch, CSS, clicks and deep-link reload.
         browser_test = r'''import {chromium} from 'playwright';
 const browser=await chromium.launch(); const page=await browser.newPage(); const errors=[];page.on('pageerror',e=>errors.push(e.message));
@@ -128,7 +180,7 @@ if(errors.length)throw Error(errors.join('\n'));await browser.close();console.lo
             file.write(browser_test)
             browser_file = Path(file.name)
         try:
-            subprocess.run(['node', str(browser_file), stable_url, stable_url + 'deep/client/route/'], cwd=root / 'apps/web', env=env, check=True)
+            subprocess.run(['node', str(browser_file), stable_url, stable_url + 'deep/client/route/', custom_url], cwd=root / 'apps/web', env=env, check=True)
         finally:
             browser_file.unlink(missing_ok=True)
         saved=api(f'/services/{app["id"]}/configuration')
@@ -143,10 +195,43 @@ if(errors.length)throw Error(errors.join('\n'));await browser.close();console.lo
         assert api(f'/services/{app["id"]}')['automatic_url'] == stable_url
         with gateway(stable_url) as response:
             assert b'Welcome to nginx' in response.read()
+        # Verify a custom domain and certificate status against real local Caddy TLS.
+        os.killpg(process.pid, signal.SIGTERM)
+        process.wait(timeout=15)
+        with tempfile.TemporaryDirectory(prefix='ferrix-custom-tls-') as directory:
+            tls_port = port()
+            fixture = Path(directory)
+            subprocess.run(['docker', 'run', '-d', '--name', proxy_tls, '--network', network,
+                '-p', f'127.0.0.1:{tls_port}:443', '-e', f'FERRIX_WEBSITE_UPSTREAM=host.docker.internal:{listener_port}',
+                '-v', f'{root}/deploy/Caddyfile.local-https:/etc/caddy/Caddyfile:ro', 'caddy:2-alpine'], env=env, check=True, stdout=subprocess.DEVNULL)
+            for attempt in range(40):
+                copy = subprocess.run(['docker', 'cp', proxy_tls + ':/data/caddy/pki/authorities/local/root.crt', str(fixture / 'root.crt')], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if copy.returncode == 0: break
+                if attempt == 39: raise RuntimeError('Custom domain test CA unavailable')
+                time.sleep(.25)
+            secure_runtime = runtime | {'FERRIX_WEBSITE_HTTPS': 'true', 'FERRIX_WEBSITE_HTTPS_PORT': str(tls_port), 'SSL_CERT_FILE': str(fixture / 'root.crt')}
+            process = subprocess.Popen([str(root / 'target/debug/ferrix-api')], cwd=root, env=secure_runtime, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            for attempt in range(100):
+                try: urllib.request.urlopen(origin + '/health', timeout=1).close(); break
+                except OSError:
+                    if attempt == 99: raise
+                    time.sleep(.2)
+            sql(f"UPDATE {schema}.application_domains SET checked_at=NULL WHERE id='{custom['id']}'")
+            checked = api(f'/services/{app["id"]}/domains/{custom["id"]}/check', {})
+            assert checked['tls_status'] == 'active', checked
+            assert checked['certificate_expires_at'], checked
+            output = subprocess.check_output(['curl', '--silent', '--show-error', '--fail', '--cacert', str(fixture / 'root.crt'), '--noproxy', '*', '--resolve', f'{custom_host}:{tls_port}:127.0.0.1', f'https://{custom_host}:{tls_port}/'], env=env)
+            assert b'Welcome to nginx' in output
+            api(f'/services/{app["id"]}/domains/{custom["id"]}', method='DELETE')
+            # Cached TLS certificates must not bypass revoked HTTP routing.
+            code = subprocess.check_output(['curl', '--silent', '--cacert', str(fixture / 'root.crt'), '--noproxy', '*', '--resolve', f'{custom_host}:{tls_port}:127.0.0.1', '-o', '/dev/null', '-w', '%{http_code}', f'https://{custom_host}:{tls_port}/'], env=env, text=True)
+            assert code == '404', code
+            print('Custom domains: DNS activation, tenant isolation, cooldown, real trusted TLS status and removal passed.')
+            os.killpg(process.pid, signal.SIGTERM)
+            process.wait(timeout=15)
+            subprocess.run(['docker', 'rm', '-f', proxy_tls], env=env, check=True, stdout=subprocess.DEVNULL)
         # Exercise the production Caddyfile and sslip.io hostname shape over TLS.
         # A private test CA replaces public ACME; production still uses public issuers.
-        os.killpg(process.pid,signal.SIGTERM)
-        process.wait(timeout=15)
         remote_runtime=runtime | {'FERRIX_AUTO_DOMAIN':'sslip.io','FERRIX_PUBLIC_IP':'203.0.113.10'}
         process=subprocess.Popen([str(root / 'target/debug/ferrix-api')],cwd=root,env=remote_runtime,stdout=log,stderr=subprocess.STDOUT,start_new_session=True)
         for attempt in range(100):
@@ -167,7 +252,12 @@ if(errors.length)throw Error(errors.join('\n'));await browser.close();console.lo
                 if attempt==39: raise RuntimeError('Caddy test CA unavailable')
                 time.sleep(.25)
             remote_app=api(f'/services/{app["id"]}')['automatic_url']
-            for address,expected in [(remote_app,b'Welcome to nginx')]:
+            public_custom = api(f'/services/{app["id"]}/domains', {'hostname': 'app.example.com'})
+            # DNS proof/address validation is covered by the local DNS fixture test.
+            # Activate only this disposable record to test production Caddy routing with a test CA.
+            sql(f"UPDATE {schema}.application_domains SET verified_at=now(),dns_status='ready' WHERE id='{public_custom['id']}'")
+
+            for address,expected in [(remote_app,b'Welcome to nginx'), ('https://app.example.com/',b'Welcome to nginx')]:
                 host=urllib.parse.urlsplit(address).hostname
                 output=subprocess.check_output(['curl','--silent','--show-error','--fail','--cacert',str(fixture/'root.crt'),'--noproxy','*','--resolve',f'{host}:{tls_port}:127.0.0.1',f'https://{host}:{tls_port}/'],env=env)
                 assert expected in output

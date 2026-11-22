@@ -175,7 +175,8 @@ fn scope(method: &str, route: &str) -> Option<&'static str> {
             | "/services/{id}"
             | "/services/{id}/runtime"
             | "/services/{id}/logs"
-            | "/services/{id}/deployments",
+            | "/services/{id}/deployments"
+            | "/services/{id}/domains",
         ) => Some("read"),
         (
             "GET",
@@ -191,7 +192,9 @@ fn scope(method: &str, route: &str) -> Option<&'static str> {
             | "/environments/{id}/services"
             | "/applications/{id}/configuration"
             | "/services/{id}/configuration"
-            | "/services/{id}/environment",
+            | "/services/{id}/environment"
+            | "/services/{id}/domains"
+            | "/services/{id}/domains/{domain_id}/check",
         ) => Some("manage"),
         (
             "POST",
@@ -200,7 +203,9 @@ fn scope(method: &str, route: &str) -> Option<&'static str> {
             | "/services/{id}/control"
             | "/services/{id}/rollback",
         ) => Some("deploy"),
-        ("DELETE", "/projects/{id}" | "/services/{id}") => Some("delete"),
+        ("DELETE", "/projects/{id}" | "/services/{id}" | "/services/{id}/domains/{domain_id}") => {
+            Some("delete")
+        }
         _ => None,
     }
 }
