@@ -56,6 +56,56 @@ test('Docker tabs load on demand and recover from a failed request', async ({ pa
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 })
 
+test('Swarm services display task counts and recover across manager, inactive and empty states', async ({ page }) => {
+  let swarm: Record<string, unknown> = { state: 'inactive', manager: false, node_list: null, service_list: null }
+  let unavailable = false
+  await page.route('**/api/v1/**', route => {
+    const path = new URL(route.request().url()).pathname
+    if (path === '/api/v1/docker/swarm') return unavailable
+      ? route.fulfill({ status: 503, json: { error: 'Docker unavailable.' } })
+      : route.fulfill({ json: swarm })
+    const responses: Record<string, unknown> = {
+      '/api/v1/auth/session': { name: 'Admin', system_role: 'admin', organization_id: 'org', organization_name: 'Test', role: 'owner' },
+      '/api/v1/auth/organizations': [], '/api/v1/auth/setup': { setup_required: false },
+      '/api/v1/status': { database: true, docker: true, version: '0.2.0' },
+      '/api/v1/server-time': { unix_ms: Date.now(), timezone: 'UTC', utc_offset: '+00:00' },
+      '/api/v1/containers': [],
+    }
+    return route.fulfill({ json: responses[path] ?? {} })
+  })
+  await page.goto('/containers')
+  await page.getByRole('tab', { name: 'Swarm', exact: true }).click()
+  await page.getByRole('tab', { name: 'Services', exact: true }).click()
+  await expect(page.getByText('Services unavailable: Swarm is not active', { exact: true })).toBeVisible()
+  swarm = { state: 'active', manager: false, node_list: null, service_list: null }
+  await page.getByRole('button', { name: 'Refresh swarm' }).click()
+  await expect(page.getByText('Services require manager access', { exact: true })).toBeVisible()
+  swarm = { state: 'active', manager: true, node_list: [], service_list: [
+    { id: 'web-id', name: 'web', mode: 'Replicated', image: 'nginx:alpine@sha256:abc', running_tasks: 2, desired_tasks: 3, update_state: 'paused', ports: [{ published: 8080, target: 80, protocol: 'tcp', mode: 'ingress' }] },
+    { id: 'job-id', name: 'backup-job', mode: 'ReplicatedJob', running_tasks: 0, desired_tasks: 1, completed_tasks: 5, ports: [] },
+    { id: 'global-id', name: 'agent', mode: 'Global', running_tasks: null, desired_tasks: null, ports: null },
+  ] }
+  await page.getByRole('button', { name: 'Refresh swarm' }).click()
+  await expect(page.getByRole('table', { name: 'Swarm services', exact: true })).toBeVisible()
+  await expect(page.getByRole('cell', { name: '2 / 3', exact: true })).toBeVisible()
+  await expect(page.getByText('5 completed', { exact: true })).toBeVisible()
+  await expect(page.getByText('8080 → 80/tcp (ingress)', { exact: true })).toBeVisible()
+  await expect(page.getByRole('cell', { name: '— / —', exact: true })).toBeVisible()
+  await page.getByRole('textbox', { name: 'Search Swarm services', exact: true }).fill('backup-job')
+  await expect(page.getByText('nginx:alpine@sha256:abc', { exact: true })).toHaveCount(0)
+  await page.getByRole('textbox', { name: 'Search Swarm services', exact: true }).fill('')
+  await page.setViewportSize({ width: 390, height: 844 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  unavailable = true
+  await page.getByRole('button', { name: 'Refresh swarm' }).click()
+  await expect(page.getByText('Swarm unavailable', { exact: true })).toBeVisible()
+  unavailable = false
+  swarm = { state: 'active', manager: true, node_list: [], service_list: [] }
+  await page.getByRole('button', { name: 'Refresh swarm' }).click()
+  await expect(page.getByText('No Swarm services', { exact: true })).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'Services', exact: true })).toHaveAttribute('aria-selected', 'true')
+})
+
 test('Swarm shows real node capacity, worker limits and inactive state without invented counts', async ({ page }) => {
   let swarm: Record<string, unknown> = { state: 'inactive', manager: false, node_list: null }
   let unavailable = false
