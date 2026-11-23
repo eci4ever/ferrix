@@ -85,7 +85,7 @@ impl Identity {
             Err(forbidden())
         }
     }
-    pub(super) fn fresh(&self) -> Result<(), ApiError> {
+    pub(crate) fn fresh(&self) -> Result<(), ApiError> {
         if self.authenticated_at > Utc::now() - chrono::Duration::minutes(15) {
             Ok(())
         } else {

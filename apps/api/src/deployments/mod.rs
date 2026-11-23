@@ -1,4 +1,6 @@
 mod backups;
+mod github;
+pub use github::webhook_routes;
 mod domains;
 pub(crate) mod observability;
 mod services;
@@ -42,6 +44,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .merge(services::routes(state.clone()))
         .merge(domains::routes(state.clone()))
         .merge(backups::routes(state.clone()))
+        .merge(github::routes(state.clone()))
         .merge(observability::routes(state.clone()))
         .merge(terminal::routes(state.clone()))
         .merge(
@@ -104,6 +107,8 @@ pub(crate) struct Application {
     #[sqlx(default)]
     automatic_url: Option<String>,
     database_engine: Option<String>,
+    source_type: String,
+    source_repository: Option<String>,
     kind: String,
     deployed: bool,
     active_deployment_id: Option<Uuid>,
@@ -132,6 +137,11 @@ struct Deployment {
     container_id: Option<String>,
     image_id: Option<String>,
     rollback_of: Option<Uuid>,
+    source_repository: Option<String>,
+    source_branch: Option<String>,
+    git_commit: Option<String>,
+    trigger_kind: String,
+    trigger_sender: Option<String>,
     requested_by: Option<Uuid>,
     requested_by_name: Option<String>,
     requested_by_key_id: Option<Uuid>,
@@ -140,7 +150,7 @@ struct Deployment {
     started_at: Option<DateTime<Utc>>,
     finished_at: Option<DateTime<Utc>>,
 }
-const APP_COLUMNS: &str = "CASE WHEN a.service_kind='database' THEN CASE WHEN a.image LIKE 'mongo:%' THEN 'mongodb' WHEN a.image LIKE 'mariadb:%' THEN 'mariadb' WHEN a.image LIKE 'redis:%' THEN 'redis' ELSE 'postgres' END END AS database_engine,a.service_kind AS kind,(a.active_deployment_id IS NOT NULL) AS deployed,a.active_deployment_id,(SELECT image FROM deployments WHERE id=a.active_deployment_id) AS active_image,EXISTS(SELECT 1 FROM deployments d WHERE d.id=a.active_deployment_id AND (a.image IS DISTINCT FROM d.image OR a.container_port IS DISTINCT FROM d.container_port OR a.env_cipher IS DISTINCT FROM d.env_cipher OR a.service_cipher IS DISTINCT FROM d.service_cipher)) AS pending_changes,EXISTS(SELECT 1 FROM database_jobs j WHERE j.status IN ('queued','running') AND (j.application_id=a.id OR j.source_application_id=a.id)) AS database_operation_pending,a.id,a.environment_id,(SELECT project_id FROM environments WHERE id=a.environment_id) AS project_id,a.name,a.image,a.container_port,a.active_container_id,a.host_port,a.created_at,a.updated_at";
+const APP_COLUMNS: &str = "CASE WHEN a.service_kind='database' THEN CASE WHEN a.image LIKE 'mongo:%' THEN 'mongodb' WHEN a.image LIKE 'mariadb:%' THEN 'mariadb' WHEN a.image LIKE 'redis:%' THEN 'redis' ELSE 'postgres' END END AS database_engine,CASE WHEN EXISTS(SELECT 1 FROM application_git_sources s WHERE s.application_id=a.id AND s.enabled) THEN 'github' ELSE 'image' END AS source_type,(SELECT repository FROM application_git_sources s WHERE s.application_id=a.id AND s.enabled) AS source_repository,a.service_kind AS kind,(a.active_deployment_id IS NOT NULL) AS deployed,a.active_deployment_id,(SELECT image FROM deployments WHERE id=a.active_deployment_id) AS active_image,EXISTS(SELECT 1 FROM deployments d WHERE d.id=a.active_deployment_id AND ((CASE WHEN EXISTS(SELECT 1 FROM application_git_sources s WHERE s.application_id=a.id AND s.enabled) THEN (SELECT revision FROM application_git_sources WHERE application_id=a.id) IS DISTINCT FROM d.source_revision ELSE d.source_revision IS NOT NULL OR a.image IS DISTINCT FROM d.image END) OR a.container_port IS DISTINCT FROM d.container_port OR a.env_cipher IS DISTINCT FROM d.env_cipher OR a.service_cipher IS DISTINCT FROM d.service_cipher)) AS pending_changes,EXISTS(SELECT 1 FROM database_jobs j WHERE j.status IN ('queued','running') AND (j.application_id=a.id OR j.source_application_id=a.id)) AS database_operation_pending,a.id,a.environment_id,(SELECT project_id FROM environments WHERE id=a.environment_id) AS project_id,a.name,a.image,a.container_port,a.active_container_id,a.host_port,a.created_at,a.updated_at";
 async fn project_access(state: &AppState, id: &Identity, project: Uuid) -> Result<(), ApiError> {
     if !sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1 AND organization_id=$2)",
@@ -409,6 +419,7 @@ async fn deploy(
     let deployment = Uuid::new_v4();
     sqlx::query("INSERT INTO deployments(id,application_id,requested_by,image,container_port,env_cipher,service_kind,service_cipher,requested_by_name,requested_by_key_id,requested_by_key_name) SELECT $1,id,$2,image,container_port,env_cipher,service_kind,service_cipher,$4,$5,$6 FROM applications WHERE id=$3")
         .bind(deployment).bind(id.user_id).bind(app).bind(&id.name).bind(key.as_ref().map(|key|key.id)).bind(key.as_ref().map(|key|key.name.as_str())).execute(&mut *tx).await.map_err(database_error)?;
+    github::snapshot(&mut tx, app, deployment).await?;
     tx.commit().await?;
     Ok((
         StatusCode::ACCEPTED,
@@ -447,6 +458,7 @@ async fn rollback(
             "Choose a successful deployment from this application with a recorded image ID.",
         ));
     }
+    sqlx::query("UPDATE deployments d SET source_repository=s.source_repository,source_branch=s.source_branch,git_commit=s.git_commit,source_revision=s.source_revision FROM deployments s WHERE d.id=$1 AND s.id=$2").bind(deployment).bind(input.deployment_id).execute(&mut *tx).await?;
     tx.commit().await?;
     Ok((
         StatusCode::ACCEPTED,
@@ -459,7 +471,7 @@ async fn history(
     Path(app): Path<Uuid>,
 ) -> Result<Json<Vec<Deployment>>, ApiError> {
     app_access(&state, &id, app).await?;
-    Ok(Json(sqlx::query_as("SELECT id,application_id,image,container_port,status,logs,container_id,image_id,rollback_of,requested_by,requested_by_name,requested_by_key_id,requested_by_key_name,created_at,started_at,finished_at FROM deployments WHERE application_id=$1 ORDER BY created_at DESC,id DESC LIMIT 30").bind(app).fetch_all(&state.pool).await?))
+    Ok(Json(sqlx::query_as("SELECT id,application_id,image,container_port,status,logs,container_id,image_id,rollback_of,source_repository,source_branch,git_commit,trigger_kind,trigger_sender,requested_by,requested_by_name,requested_by_key_id,requested_by_key_name,created_at,started_at,finished_at FROM deployments WHERE application_id=$1 ORDER BY created_at DESC,id DESC LIMIT 30").bind(app).fetch_all(&state.pool).await?))
 }
 async fn runtime(
     State(state): State<AppState>,

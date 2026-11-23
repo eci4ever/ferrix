@@ -70,6 +70,7 @@ pub fn router(state: AppState) -> Router {
             state.clone(),
             auth::sessions::guard,
         ))
+        .merge(deployments::webhook_routes(state.clone()))
         .route(
             "/health",
             get(|| async { Json(serde_json::json!({"service":"ferrix", "status":"ok"})) }),

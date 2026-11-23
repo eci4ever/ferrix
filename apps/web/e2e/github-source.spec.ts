@@ -1,0 +1,60 @@
+import {test,expect} from '@playwright/test'
+import {signInAdmin} from './helpers/session'
+import {createHmac,randomUUID} from 'node:crypto'
+test.use({trace:'off',screenshot:'off',video:'off'})
+test('Save a private GitHub source, configure a one-time webhook secret and inspect commit history',async({page,browser})=>{
+ const base=process.env.FERRIX_E2E_URL!
+ if(process.env.FERRIX_E2E_DISPOSABLE!=='1')throw new Error('Use the disposable browser runner.')
+ await signInAdmin(page);const headers={Origin:base}
+ const project=await(await page.request.post('/api/v1/projects',{headers,data:{name:'GitHub UI project'}})).json()
+ const environment=(await(await page.request.get(`/api/v1/projects/${project.id}/environments`)).json()).environments[0]
+ const service=await(await page.request.post(`/api/v1/environments/${environment.id}/services`,{headers,data:{kind:'application',name:'GitHub UI app',image:'nginx:alpine',container_port:80,environment:''}})).json()
+ const sourceUrl=`/api/v1/services/${service.id}/source`
+ await page.goto(`/projects/${project.id}/services/${service.id}`)
+ await page.getByRole('tab',{name:'Source',exact:true}).click()
+ await page.getByRole('radio',{name:'GitHub repository',exact:true}).check()
+ await page.getByLabel('Repository',{exact:true}).fill('https://github.com/example/private-app')
+ await page.getByLabel('GitHub token (optional for public repositories)',{exact:true}).fill('ghp_disposable_browser_token')
+ await page.getByRole('checkbox',{name:'Auto-deploy when this branch receives a push',exact:true}).check()
+ await page.getByRole('button',{name:'Save source',exact:true}).click()
+ await expect(page.getByText('Source saved. Deploy to apply it.',{exact:true})).toBeVisible()
+ let source=await(await page.request.get(sourceUrl)).json()
+ expect(source.repository).toBe('example/private-app');expect(source.token_saved).toBe(true);expect(source.auto_deploy).toBe(true)
+ expect(JSON.stringify(source)).not.toContain('ghp_disposable_browser_token')
+ await page.route(`**${sourceUrl}/test`,route=>route.fulfill({json:{message:'Repository and branch are accessible.',commit:'a'.repeat(40)}}))
+ await page.getByRole('button',{name:'Test repository',exact:true}).click()
+ await expect(page.getByText('Repository and branch are accessible. Commit aaaaaaaaaaaa.',{exact:true})).toBeVisible()
+ await page.getByRole('button',{name:'Generate webhook secret',exact:true}).click()
+ const dialog=page.getByRole('dialog',{name:'Save your GitHub webhook secret',exact:true})
+ const secret=await dialog.getByLabel('New webhook secret',{exact:true}).innerText();expect(secret.length).toBe(64)
+ await page.keyboard.press('Escape');await expect(dialog).toBeVisible()
+ await dialog.getByRole('button',{name:'I saved this secret',exact:true}).click()
+ await expect(dialog).toHaveCount(0)
+ expect((await page.locator('body').innerText()).includes(secret)).toBe(false)
+ await expect(page.getByText('GitHub cannot reach a localhost URL.',{exact:false})).toBeVisible()
+ // Disable auto-deploy before delivering the signed test event: no fake token
+ // or test repository should cause an outbound GitHub build from this UI suite.
+ await page.getByRole('checkbox',{name:'Auto-deploy when this branch receives a push',exact:true}).uncheck()
+ await page.getByRole('button',{name:'Save source',exact:true}).click()
+ await expect(page.getByText('Source saved. Deploy to apply it.',{exact:true})).toBeVisible()
+ const payload=JSON.stringify({ref:'refs/heads/main',after:'b'.repeat(40),deleted:false,repository:{full_name:'example/private-app'},sender:{login:'octocat'}})
+ const delivery=await page.request.post(`/api/v1/webhooks/github/${service.id}`,{headers:{'Content-Type':'application/json','X-Hub-Signature-256':`sha256=${createHmac('sha256',secret).update(payload).digest('hex')}`,'X-GitHub-Event':'push','X-GitHub-Delivery':randomUUID()},data:payload})
+ expect(delivery.status()).toBe(200);expect((await delivery.json()).status).toBe('ignored')
+ source=await(await page.request.get(sourceUrl)).json();expect(JSON.stringify(source).includes(secret)).toBe(false)
+ await page.reload();await page.getByRole('tab',{name:'Source',exact:true}).click()
+ await expect(page.getByLabel('Repository',{exact:true})).toHaveValue('example/private-app')
+ await expect(page.getByLabel('GitHub token (optional for public repositories)',{exact:true})).toHaveCount(0)
+ await page.setViewportSize({width:390,height:844})
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)
+ await page.screenshot({path:'/private/tmp/ferrix-github-source-mobile.png',fullPage:true,animations:'disabled'})
+ const now=new Date().toISOString()
+ await page.route(`**/api/v1/services/${service.id}/deployments`,route=>route.fulfill({json:[{id:randomUUID(),image:'ferrix-build:fixture',status:'succeeded',logs:'Build completed.',created_at:now,source_repository:'example/private-app',source_branch:'main',git_commit:'b'.repeat(40),trigger_kind:'webhook',trigger_sender:'octocat',requested_by_name:'Services UI test'}]}))
+ await page.getByRole('tab',{name:'Deployments',exact:true}).click()
+ const history=page.getByRole('table',{name:'Deployment history',exact:true})
+ await expect(history).toContainText('example/private-app');await expect(history).toContainText('bbbbbbbbbbbb');await expect(history).toContainText('GitHub push · @octocat')
+ await page.getByLabel('Search Deployment history',{exact:true}).fill('octocat')
+ await expect(history).toContainText('example/private-app')
+ const invite=await(await page.request.post('/api/v1/auth/invitations',{headers,data:{email:'github-source-member@example.com',role:'member'}})).json()
+ const member=await browser.newContext({baseURL:base})
+ try{expect((await member.request.post('/api/v1/auth/accept-invitation',{headers,data:{email:'github-source-member@example.com',name:'Git member',password:'Disposable Github member password!',token:invite.token}})).status()).toBe(200);expect((await member.request.get(sourceUrl)).status()).toBe(403);expect((await member.request.post(`${sourceUrl}/webhook-secret`,{headers,data:{}})).status()).toBe(403)}finally{await member.close()}
+})

@@ -20,6 +20,7 @@ pub(super) struct Job {
     pub(super) application_id: Uuid,
     pub(super) image: String,
     pub(super) pinned_image_id: Option<String>,
+    pub(super) source_cipher: Option<Vec<u8>>,
     pub(super) container_port: i32,
     pub(super) env_cipher: Option<Vec<u8>>,
     pub(super) service_kind: String,
@@ -104,7 +105,11 @@ pub(super) async fn phase(conn: &mut PgConnection, job: Uuid, text: &str) -> Res
     }
     Ok(())
 }
-async fn execute(state: &AppState, conn: &mut PgConnection, job: &Job) -> Result<(), String> {
+pub(super) async fn execute(
+    state: &AppState,
+    conn: &mut PgConnection,
+    job: &Job,
+) -> Result<(), String> {
     if !matches!(job.service_kind.as_str(), "application" | "database") {
         return Err("This service type is no longer supported.".into());
     }
@@ -116,6 +121,8 @@ async fn execute(state: &AppState, conn: &mut PgConnection, job: &Job) -> Result
         )
         .await?;
         state.docker.inspect_image(image_id).await.map_err(|_| "The original image is no longer available on this Docker server. Rollback cannot continue." )?
+    } else if job.source_cipher.is_some() {
+        super::github::build_image(state, conn, job).await?
     } else {
         phase(conn, job.id, "Pulling Docker image…").await?;
         let options = CreateImageOptionsBuilder::default()
@@ -396,14 +403,15 @@ async fn cycle(
     if super::backups::cycle(state, conn, shutdown).await? {
         return Ok(true);
     }
-    let job=sqlx::query_as::<_,Job>("WITH next AS (SELECT id FROM deployments WHERE status='queued' ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1), claimed AS (UPDATE deployments d SET status='running',started_at=now() FROM next WHERE d.id=next.id RETURNING d.*) SELECT d.id,d.application_id,d.image,d.pinned_image_id,d.container_port,d.env_cipher,d.service_kind,d.service_cipher,p.organization_id,p.id AS project_id,e.id AS environment_id FROM claimed d JOIN applications a ON a.id=d.application_id JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id")
+    super::github::dispatch(state, conn).await?;
+    let job=sqlx::query_as::<_,Job>("WITH next AS (SELECT id FROM deployments WHERE status='queued' ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1), claimed AS (UPDATE deployments d SET status='running',started_at=now() FROM next WHERE d.id=next.id RETURNING d.*) SELECT d.id,d.application_id,d.image,d.pinned_image_id,d.source_cipher,d.container_port,d.env_cipher,d.service_kind,d.service_cipher,p.organization_id,p.id AS project_id,e.id AS environment_id FROM claimed d JOIN applications a ON a.id=d.application_id JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id")
         .fetch_optional(&mut *conn).await.map_err(|_|"Could not claim queued deployment.")?;
     if let Some(job) = job {
-        let authorized:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM deployments d LEFT JOIN auth_users u ON u.id=d.requested_by LEFT JOIN auth_members m ON m.user_id=u.id AND m.organization_id=$2 WHERE d.id=$1 AND (d.requested_by IS NULL OR (NOT u.banned AND m.role IN ('owner','admin') AND d.service_kind IN ('application','database'))))")
+        let authorized:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM deployments d LEFT JOIN auth_users u ON u.id=d.requested_by LEFT JOIN auth_members m ON m.user_id=u.id AND m.organization_id=$2 WHERE d.id=$1 AND (d.requested_by IS NULL OR (NOT auth_user_banned(u.banned,u.ban_expires_at) AND m.role IN ('owner','admin') AND d.service_kind IN ('application','database'))))")
             .bind(job.id).bind(job.organization_id).fetch_one(&mut *conn).await.map_err(|_|"Could not verify deployment authorization.")?;
         let result = if authorized {
             tokio::select! {
-                result=tokio::time::timeout(Duration::from_secs(300),execute(state,conn,&job))=>result.unwrap_or_else(|_|Err("Deployment timed out after five minutes. The previous deployment is preserved.".into())),
+                result=tokio::time::timeout(Duration::from_secs(if job.source_cipher.is_some() && job.pinned_image_id.is_none(){1200}else{300}),execute(state,conn,&job))=>result.unwrap_or_else(|_|Err("Deployment timed out. GitHub builds have a twenty-minute limit; image deploys have five minutes. The previous deployment is preserved.".into())),
                 _=shutdown.changed()=>Err("Deployment interrupted during server shutdown. Redeploy to try again.".into()),
             }
         } else {

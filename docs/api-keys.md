@@ -164,3 +164,5 @@ References: [OWASP REST security](https://cheatsheetseries.owasp.org/cheatsheets
 [Axum matched-path middleware](https://docs.rs/axum/latest/axum/extract/struct.MatchedPath.html).
 
 Backup schedules and S3 credentials are managed through owner/admin browser settings. API keys cannot access `/services/{id}/backup-policy` or its connection test; existing backup requests use the saved destination without exposing credentials.
+
+Application GitHub credentials and webhook settings require an owner/admin browser session. A deploy-scoped key can deploy the saved GitHub source through the normal service deploy endpoint; source settings endpoints remain unavailable to keys. The image-agent script rejects GitHub-source applications instead of changing their source implicitly.

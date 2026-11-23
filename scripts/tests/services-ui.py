@@ -58,7 +58,7 @@ try:
     preview['FERRIX_AUTO_DOMAIN'] = 'off'
     preview['FERRIX_PUBLIC_IP'] = ''
     preview['FERRIX_WEBSITE_BIND'] = '127.0.0.1:0'  # Prevent dotenv from reloading the development port.
-    with tempfile.TemporaryFile() as api_log, tempfile.TemporaryFile() as web_log:
+    with tempfile.TemporaryDirectory(prefix="ferrix-ui-auth-") as session_dir, tempfile.TemporaryFile() as api_log, tempfile.TemporaryFile() as web_log:
         api = subprocess.Popen([str(root / 'target/debug/ferrix-api')], cwd=root, env=preview, stdout=api_log, stderr=subprocess.STDOUT, start_new_session=True)
         web = subprocess.Popen(['npm', 'run', 'dev'], cwd=root / 'apps/web', env=preview, stdout=web_log, stderr=subprocess.STDOUT, start_new_session=True)
         for address in [f'http://127.0.0.1:{api_port}/health', f'http://127.0.0.1:{web_port}/signup']:
@@ -71,7 +71,7 @@ try:
                     if attempt == 119:
                         raise RuntimeError('Preview failed to become ready; no user data was changed.')
                     time.sleep(.5)
-        subprocess.run(['npm', 'run', 'test:e2e'], cwd=root / 'apps/web', env=env | {'FERRIX_E2E_URL': f'http://127.0.0.1:{web_port}', 'FERRIX_E2E_DISPOSABLE': '1'}, check=True)
+        subprocess.run(['npm', 'run', 'test:e2e'], cwd=root / 'apps/web', env=env | {'FERRIX_E2E_URL': f'http://127.0.0.1:{web_port}', 'FERRIX_E2E_DISPOSABLE': '1', 'FERRIX_E2E_SESSION_CACHE': str(Path(session_dir) / 'session.json')}, check=True)
 finally:
     stop(web)
     stop(api)
