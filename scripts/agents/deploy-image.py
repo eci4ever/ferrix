@@ -99,7 +99,7 @@ def deploy(client, args):
             'kind': 'application', 'name': args.application, 'image': args.image,
             'container_port': args.port, 'environment': '',
         })
-    elif service['kind'] != 'application' or service['image'] != args.image or service['container_port'] != args.port:
+    elif service['kind'] != 'application' or service.get('source_type', 'image') != 'image' or service['image'] != args.image or service['container_port'] != args.port:
         raise AgentError('Existing service configuration differs. Update it explicitly in Ferrix first; this script preserves existing environment variables and database settings.')
     service_id = urllib.parse.quote(service['id'], safe='')
     job = client.call('POST', f'/services/{service_id}/deploy', {})

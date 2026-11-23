@@ -9,6 +9,7 @@ const INTERVAL: Duration = Duration::from_secs(15 * 60);
 
 // These identifiers/expressions are fixed program constants, never request input.
 const TARGETS: &[(&str, &str, &str, &str)] = &[
+    ("github_webhook_deliveries", "id", "expires_at", "true"),
     ("notifications", "id", "expires_at", "true"),
     (
         "terminal_connections",

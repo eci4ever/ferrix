@@ -193,3 +193,5 @@ snapshots preserved after renames and key deletion. Older records use the known
 user name where available, otherwise “Unknown user”. No API credential is exposed.
 
 Scheduled backups, retention and S3-compatible storage are configured in the same Backups tab. See [Scheduled backups and S3 storage](scheduled-s3-backups.md) for setup, permissions and restore behavior.
+
+GitHub repositories can be configured in the Application Source tab for Dockerfile builds and signed push auto-deploy. See [GitHub Dockerfile deployments](github-deployments.md) for setup, webhook instructions and limits.
