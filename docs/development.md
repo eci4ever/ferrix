@@ -131,6 +131,16 @@ refreshing the inventory. Successful requests trigger a refresh; task convergenc
 is asynchronous, so refresh again to check the running/desired counts. Timeouts
 may occur after Docker accepts an update; check the inventory before retrying.
 
+Restart uses a separate confirmation dialog for ordinary Replicated and Global
+services. `POST /api/v1/docker/swarm/services/{id}/restart` requires the same
+system-admin, active-manager and optimistic-version checks. It increments
+`TaskTemplate.ForceUpdate` without changing replicas, task configuration or the
+service update policy. Docker replaces tasks asynchronously; existing connections
+may be interrupted. Job modes are excluded to avoid accidentally rerunning work.
+The UI reports the request as accepted and refreshes inventory; refresh again
+until running/desired counts recover. A service with zero desired replicas stays
+at zero after restart. Refresh before retrying failed or timed-out requests.
+
 ### Host monitoring
 
 System administrators can open **Monitoring** (`/monitoring`). `GET /api/v1/monitoring`
