@@ -53,6 +53,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let (worker_shutdown, receiver) = tokio::sync::watch::channel(false);
     let state_shutdown = receiver.clone();
+    let terminals = tokio::spawn(ferrix_api::deployments::run_terminal_worker(
+        state.clone(),
+        receiver.clone(),
+    ));
+    let notifications = tokio::spawn(ferrix_api::notifications::run_worker(
+        state.clone(),
+        receiver.clone(),
+    ));
     let housekeeping = tokio::spawn(ferrix_api::housekeeping::run_worker(
         pool.clone(),
         receiver.clone(),
@@ -86,6 +94,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     worker.await?;
     housekeeping.await?;
+    notifications.await?;
+    terminals.await?;
     pool.close().await;
     Ok(())
 }

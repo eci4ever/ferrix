@@ -5,6 +5,7 @@ pub mod gateway;
 mod home;
 pub mod housekeeping;
 mod monitoring;
+pub mod notifications;
 mod projects;
 mod server_time;
 
@@ -32,6 +33,7 @@ pub struct AppState {
 pub fn router(state: AppState) -> Router {
     let monitor = monitoring::start();
     let protected = Router::new()
+        .merge(notifications::routes())
         .route("/api/v1/agent", get(auth::api_keys::agent))
         .route("/api/v1/agent/docs", get(auth::api_keys::documentation))
         .route("/api/v1/monitoring", get(monitoring::get))

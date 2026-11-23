@@ -20,6 +20,7 @@ import { LoginPage, SecurityPage } from './auth'
 import { TeamPage, AdminPage } from './user-management'
 import { ApiKeysPage } from './api-keys'
 import type { Identity, Security, Session, Audit, Organization, Member, Invitation } from './auth'
+import { Notifications } from './notifications'
 import { ServerClock } from '@/components/server-clock'
 import { AppSidebar } from '@/components/app-sidebar'
 import { SidebarProvider, SidebarInset, SidebarTrigger } from '@/components/ui/sidebar'
@@ -85,7 +86,7 @@ function Shell() {
     <SidebarInset id="main" tabIndex={-1}>
       <header className="flex min-h-16 shrink-0 flex-wrap items-center justify-between gap-2 px-4 py-2 sm:flex-nowrap transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12 motion-reduce:transition-none">
         <div className="flex min-w-0 max-w-full items-center gap-2"><SidebarTrigger className="-ml-1" /><Separator orientation="vertical" className="mr-2 data-[orientation=vertical]:h-4" /><Breadcrumb><BreadcrumbList className="min-w-0 flex-wrap"><BreadcrumbItem className="hidden md:block"><BreadcrumbLink asChild><Link to="/organization">{account.data.organization_name}</Link></BreadcrumbLink></BreadcrumbItem><BreadcrumbSeparator className="hidden md:block" /><BreadcrumbItem><BreadcrumbPage className="max-w-40 truncate sm:max-w-none">{pageNames[pathname] ?? (pathname.startsWith('/projects/') ? 'Projects' : 'Page not found')}</BreadcrumbPage></BreadcrumbItem></BreadcrumbList></Breadcrumb></div>
-        <div className="ml-auto flex shrink-0 items-center gap-2"><ServerClock /><Button variant="outline" onClick={refresh} disabled={refreshing} aria-label="Refresh workspace"><RefreshCw data-icon="inline-start" /><span className="hidden sm:inline">{refreshing ? 'Refreshing…' : 'Refresh'}</span></Button></div>
+        <div className="ml-auto flex shrink-0 items-center gap-2"><ServerClock /><Notifications key={account.data.organization_id} /><Button variant="outline" onClick={refresh} disabled={refreshing} aria-label="Refresh workspace"><RefreshCw data-icon="inline-start" /><span className="hidden sm:inline">{refreshing ? 'Refreshing…' : 'Refresh'}</span></Button></div>
       </header>
       <div className="flex min-w-0 flex-1 flex-col gap-6 p-4 pt-2 md:p-6 md:pt-2">
         {refreshError ? <ErrorNotice message={refreshError} /> : null}
