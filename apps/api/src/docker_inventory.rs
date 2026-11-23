@@ -51,15 +51,20 @@ async fn inventory(docker: &Docker, section: &str) -> Result<Value, ApiError> {
         "swarm" => {
             let swarm = docker.info().await.map_err(unavailable)?.swarm.unwrap_or_default();
             let state = swarm.local_node_state.map(|state| state.to_string());
-            let nodes = if state.as_deref() == Some("active") && swarm.control_available == Some(true) {
-                Some(docker.list_nodes(None::<bollard::query_parameters::ListNodesOptions>).await.map_err(unavailable)?
-                    .into_iter().map(|node| swarm_node(&json!(node))).collect::<Vec<_>>())
-            } else { None };
+            let (nodes, services) = if state.as_deref() == Some("active") && swarm.control_available == Some(true) {
+                let (nodes, services) = tokio::try_join!(
+                    docker.list_nodes(None::<bollard::query_parameters::ListNodesOptions>),
+                    docker.list_services(Some(bollard::query_parameters::ListServicesOptionsBuilder::default().status(true).build())),
+                ).map_err(unavailable)?;
+                (Some(nodes.into_iter().map(|node| swarm_node(&json!(node))).collect::<Vec<_>>()),
+                 Some(services.into_iter().map(|service| swarm_service(&json!(service))).collect::<Vec<_>>()))
+            } else { (None, None) };
             json!({
                 "state": state,
                 "manager": swarm.control_available, "nodes": swarm.nodes, "managers": swarm.managers,
                 "node_id": swarm.node_id, "node_address": swarm.node_addr,
                 "node_list": nodes,
+                "service_list": services,
             })
         }
         "events" => {
@@ -84,6 +89,37 @@ async fn inventory(docker: &Docker, section: &str) -> Result<Value, ApiError> {
             json!({ "connected": true, "version": version.version, "api": version.api_version, "os": version.os, "arch": version.arch })
         }
         _ => return Err(ApiError(StatusCode::NOT_FOUND, "Unknown Docker section.")),
+    })
+}
+
+// Service specs may contain environment credentials, secrets, mounts and labels.
+// Never return the raw spec or update-status message to the browser.
+fn swarm_service(service: &Value) -> Value {
+    let field = |path| service.pointer(path).cloned().unwrap_or(Value::Null);
+    let mode = ["Replicated", "Global", "ReplicatedJob", "GlobalJob"]
+        .into_iter()
+        .find(|mode| {
+            service
+                .pointer(&format!("/Spec/Mode/{mode}"))
+                .is_some_and(|value| !value.is_null())
+        });
+    let ports =
+        service
+            .pointer("/Endpoint/Ports")
+            .and_then(Value::as_array)
+            .map(|ports| {
+                ports.iter().map(|port| json!({
+            "published": port.get("PublishedPort"), "target": port.get("TargetPort"),
+            "protocol": port.get("Protocol"), "mode": port.get("PublishMode"),
+        })).collect::<Vec<_>>()
+            });
+    json!({
+        "id": field("/ID"), "name": field("/Spec/Name"), "mode": mode,
+        "image": field("/Spec/TaskTemplate/ContainerSpec/Image"),
+        "running_tasks": field("/ServiceStatus/RunningTasks"),
+        "desired_tasks": field("/ServiceStatus/DesiredTasks"),
+        "completed_tasks": field("/ServiceStatus/CompletedTasks"),
+        "update_state": field("/UpdateStatus/State"), "ports": ports,
     })
 }
 
@@ -115,8 +151,13 @@ mod tests {
                     Json(json!({"Swarm": {"LocalNodeState": state, "ControlAvailable": manager, "NodeID": "local"}}))
                 } else {
                     assert!(manager && state == "active", "worker/inactive must not query nodes");
-                    assert!(uri.path().ends_with("/nodes"));
-                    Json(json!([{"ID": "local", "Description": {"Hostname": "vps"}, "Spec": {"Role": "manager"}, "Status": {"State": "ready"}}]))
+                    if uri.path().ends_with("/nodes") {
+                        Json(json!([{"ID": "local", "Description": {"Hostname": "vps"}, "Spec": {"Role": "manager"}, "Status": {"State": "ready"}}]))
+                    } else {
+                        assert!(uri.path().ends_with("/services"));
+                        assert!(uri.query().unwrap_or_default().contains("status=true"));
+                        Json(json!([{"ID": "web", "Spec": {"Name": "web", "Mode": {"Replicated": {"Replicas": 3}}}, "ServiceStatus": {"RunningTasks": 2, "DesiredTasks": 3}}]))
+                    }
                 }
             });
             let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
@@ -126,10 +167,28 @@ mod tests {
             assert_eq!(result["state"], state);
             if manager {
                 assert_eq!(result["node_list"][0]["hostname"], "vps");
+                assert_eq!(result["service_list"][0]["running_tasks"], 2);
+                assert_eq!(result["service_list"][0]["desired_tasks"], 3);
             } else {
                 assert!(result["node_list"].is_null());
+                assert!(result["service_list"].is_null());
             }
             server.abort();
+        }
+    }
+
+    #[test]
+    fn service_projection_handles_modes_and_excludes_secrets() {
+        for mode in ["Replicated", "Global", "ReplicatedJob", "GlobalJob"] {
+            let mut raw = json!({"ID": "web", "Spec": {"Name": "web", "Mode": {}, "Labels": {"secret": "private"}, "TaskTemplate": {"ContainerSpec": {"Image": "nginx:alpine", "Env": ["PASSWORD=private"], "Secrets": [{"SecretID": "private"}]}}}, "Endpoint": {"Ports": [{"PublishedPort": 8080, "TargetPort": 80, "Protocol": "tcp", "PublishMode": "ingress"}]}, "UpdateStatus": {"State": "paused", "Message": "private"}});
+            raw["Spec"]["Mode"][mode] = json!({});
+            let service = swarm_service(&raw);
+            assert_eq!(service["mode"], mode);
+            assert_eq!(service["image"], "nginx:alpine");
+            assert_eq!(service["ports"][0]["published"], 8080);
+            assert_eq!(service["update_state"], "paused");
+            assert!(service["running_tasks"].is_null());
+            assert!(!service.to_string().contains("private"));
         }
     }
 

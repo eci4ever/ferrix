@@ -6,6 +6,40 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { request } from '@/lib/api'
+import { DataTable } from '@/components/data-table'
+
+type SwarmService = {
+  id: string; name: string | null; image: string | null; mode: string | null
+  running_tasks: number | null; desired_tasks: number | null; completed_tasks: number | null
+  update_state: string | null
+  ports: { published: number | null; target: number | null; protocol: string | null; mode: string | null }[] | null
+}
+
+function modeLabel(mode: string | null) {
+  return ({ Replicated: 'Replicated', Global: 'Global', ReplicatedJob: 'Replicated job', GlobalJob: 'Global job' })[mode ?? ''] || 'Unknown'
+}
+
+function portLabels(service: SwarmService) {
+  return service.ports?.map(port => `${port.published ?? '—'} → ${port.target ?? '—'}/${port.protocol ?? 'unknown'} (${port.mode ?? 'unknown'})`).join(', ') || 'None reported'
+}
+
+function SwarmServices({ services, active, manager }: { services: SwarmService[] | null | undefined; active: boolean; manager: boolean }) {
+  if (!active) return <Alert><AlertTitle>Services unavailable: Swarm is not active</AlertTitle><AlertDescription>Activate or join a Swarm cluster outside Ferrix, then refresh to view its services.</AlertDescription></Alert>
+  if (!manager) return <Alert><AlertTitle>Services require manager access</AlertTitle><AlertDescription>The connected Docker node cannot list cluster services. Connect Ferrix to an active Swarm manager and refresh.</AlertDescription></Alert>
+  if (!services) return <Alert><AlertTitle>Service inventory unavailable</AlertTitle><AlertDescription>Docker did not return a service inventory. Refresh swarm to retry.</AlertDescription></Alert>
+  if (!services.length) return <Alert><AlertTitle>No Swarm services</AlertTitle><AlertDescription>This manager reported no services in the cluster.</AlertDescription></Alert>
+  return <div className="min-w-0 space-y-4">
+    <p className="text-sm text-muted-foreground">{services.length} cluster {services.length === 1 ? 'service' : 'services'}. Tasks show running / desired counts reported by Docker. Completed tasks are shown separately for jobs.</p>
+    <DataTable<SwarmService> label="Swarm services" data={services} columns={[
+      { id: 'name', label: 'Service', value: service => service.name || service.id, cell: service => <div className="min-w-36 max-w-64 whitespace-normal break-all"><p className="font-medium">{service.name || service.id}</p><p className="text-xs text-muted-foreground">{service.id}</p></div> },
+      { id: 'mode', label: 'Mode', value: service => modeLabel(service.mode), cell: service => <Badge variant="secondary">{modeLabel(service.mode)}</Badge> },
+      { id: 'tasks', label: 'Tasks', value: service => `${service.running_tasks ?? '—'} / ${service.desired_tasks ?? '—'}`, cell: service => <div className="min-w-28 tabular-nums"><p>{service.running_tasks ?? '—'} / {service.desired_tasks ?? '—'}</p>{service.mode?.endsWith('Job') && <p className="text-xs text-muted-foreground">{service.completed_tasks ?? '—'} completed</p>}</div> },
+      { id: 'image', label: 'Image', value: service => service.image || '—', cell: service => <span className="block min-w-40 max-w-80 whitespace-normal break-all">{service.image || '—'}</span> },
+      { id: 'ports', label: 'Published ports', value: portLabels, cell: service => <span className="block min-w-36 max-w-64 whitespace-normal break-words">{portLabels(service)}</span> },
+      { id: 'update', label: 'Update', value: service => service.update_state || 'No update reported', cell: service => service.update_state ? <Badge variant={['paused', 'rollback_paused'].includes(service.update_state) ? 'destructive' : 'outline'}>{service.update_state.replaceAll('_', ' ')}</Badge> : <span className="text-muted-foreground">No update reported</span> },
+    ]} />
+  </div>
+}
 
 type SwarmNode = {
   id: string | null; hostname: string | null; role: string | null
@@ -16,6 +50,7 @@ type SwarmNode = {
 type Swarm = {
   state: string | null; manager: boolean | null; nodes: number | null; managers: number | null
   node_id: string | null; node_address: string | null; node_list: SwarmNode[] | null
+  service_list: SwarmService[] | null
 }
 
 function NodeCard({ node }: { node: SwarmNode }) {
@@ -50,6 +85,7 @@ export function SwarmInventory({ refreshVersion }: { refreshVersion: number }) {
   const [data, setData] = useState<Swarm | null>(null)
   const [error, setError] = useState('')
   const [refresh, setRefresh] = useState(0)
+  const [view, setView] = useState('overview')
   useEffect(() => {
     const controller = new AbortController()
     setData(null)
@@ -71,10 +107,10 @@ export function SwarmInventory({ refreshVersion }: { refreshVersion: number }) {
       {!data && !error && <p role="status" className="text-sm text-muted-foreground">Loading swarm…</p>}
       {data && <>
         <div className="flex flex-wrap items-center gap-2 text-sm"><Badge variant={active ? 'default' : 'secondary'}>{data.state || 'unknown'}</Badge><span className="text-muted-foreground">Local node{data.manager ? ' · Manager access' : ''}</span></div>
-        {!active && <Alert><AlertTitle>{data.state === 'inactive' ? 'Swarm is not active' : 'Swarm is not ready'}</AlertTitle><AlertDescription>This Docker host {data.state === 'inactive' ? 'has not joined a Swarm cluster' : 'cannot currently provide an active cluster view'}. Cluster counts and nodes are unavailable. Refresh after Swarm is active; Ferrix does not change cluster configuration.</AlertDescription></Alert>}
-        {active && !data.manager && <Alert><AlertTitle>Manager access required</AlertTitle><AlertDescription>This host is a Swarm worker. Connect Ferrix to a manager to view cluster counts and nodes. Local node: {data.node_id || '—'} · {data.node_address || '—'}.</AlertDescription></Alert>}
-        <Tabs defaultValue="overview" className="min-w-0">
-          <TabsList aria-label="Swarm views"><TabsTrigger value="overview">Overview</TabsTrigger><TabsTrigger value="nodes">Nodes</TabsTrigger></TabsList>
+        {!active && <Alert><AlertTitle>{data.state === 'inactive' ? 'Swarm is not active' : 'Swarm is not ready'}</AlertTitle><AlertDescription>This Docker host {data.state === 'inactive' ? 'has not joined a Swarm cluster' : 'cannot currently provide an active cluster view'}. Cluster counts, nodes and services are unavailable. Refresh after Swarm is active; Ferrix does not change cluster configuration.</AlertDescription></Alert>}
+        {active && !data.manager && <Alert><AlertTitle>Manager access required</AlertTitle><AlertDescription>This host is a Swarm worker. Connect Ferrix to a manager to view cluster counts, nodes and services. Local node: {data.node_id || '—'} · {data.node_address || '—'}.</AlertDescription></Alert>}
+        <Tabs value={view} onValueChange={setView} className="min-w-0">
+          <TabsList aria-label="Swarm views"><TabsTrigger value="overview">Overview</TabsTrigger><TabsTrigger value="nodes">Nodes</TabsTrigger><TabsTrigger value="services">Services</TabsTrigger></TabsList>
           <TabsContent value="overview" className="space-y-4">
             <div className="grid gap-4 md:grid-cols-3">
               {[
@@ -85,6 +121,7 @@ export function SwarmInventory({ refreshVersion }: { refreshVersion: number }) {
             </div>
             <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">{nodes?.map((node, index) => <NodeCard key={node.id || index} node={node} />)}</div>
           </TabsContent>
+          <TabsContent value="services" className="min-w-0"><SwarmServices services={data.service_list} active={active} manager={data.manager === true} /></TabsContent>
           <TabsContent value="nodes">
             {nodes ? nodes.length ? <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">{nodes.map((node, index) => <NodeCard key={node.id || index} node={node} />)}</div> : <p className="py-4 text-sm text-muted-foreground">Docker returned no nodes. Refresh to check the cluster again.</p> : <p className="py-4 text-sm text-muted-foreground">Node inventory is unavailable until this host is an active Swarm manager.</p>}
           </TabsContent>

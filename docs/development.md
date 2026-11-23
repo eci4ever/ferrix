@@ -104,7 +104,7 @@ an older CI run for the same pull request.
 
 ### Docker Swarm inventory
 
-The administrator-only Docker → Swarm page has Overview and Nodes views.
+The administrator-only Docker → Swarm page has Overview, Nodes and Services views.
 `GET /api/v1/docker/swarm` reads Docker info and lists nodes only when the
 connected daemon is an active Swarm manager. Ready nodes are counted separately
 from scheduling availability (active/pause/drain). CPU and RAM are node capacity,
@@ -112,6 +112,13 @@ not current utilization. Node responses include only display fields; labels,
 certificates and join tokens are excluded. Inactive, transitional and worker
 states display an explanation with unavailable counts rather than invented zeros.
 Refresh swarm fetches a new snapshot; this page never initializes or changes Swarm.
+Services are read from the manager with `status=true` for Docker's running,
+desired and completed task counts. The searchable table shows deployment mode,
+image, published ports and update state; missing counts stay unknown. Completed
+job tasks are displayed separately from running tasks. No service environment,
+secret/config references, mounts or labels are returned. An empty manager
+inventory is distinguished from unavailable inventory or missing manager access.
+Refreshing preserves the selected Swarm view.
 
 ### Host monitoring
 
