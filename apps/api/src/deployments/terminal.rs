@@ -327,11 +327,33 @@ mod tests {
     use futures_util::FutureExt;
     use std::panic::AssertUnwindSafe;
     #[tokio::test]
-    #[ignore = "requires Docker with nginx:alpine available"]
+    #[ignore = "requires Docker and access to the nginx:alpine image"]
     async fn cleanup_targets_only_the_marked_shell_and_keeps_the_service_running() {
         let service = Uuid::new_v4();
         let connection = Uuid::new_v4();
         let docker = bollard::Docker::connect_with_defaults().unwrap();
+        // CI starts with an empty image store; make this fixture self-contained.
+        if let Err(error) = docker.inspect_image("nginx:alpine").await {
+            assert!(
+                matches!(
+                    error,
+                    bollard::errors::Error::DockerResponseServerError {
+                        status_code: 404,
+                        ..
+                    }
+                ),
+                "{error}"
+            );
+            let options = bollard::query_parameters::CreateImageOptionsBuilder::default()
+                .from_image("nginx")
+                .tag("alpine")
+                .build();
+            let mut pull = docker.create_image(Some(options), None, None);
+            while let Some(progress) = pull.next().await {
+                let progress = progress.unwrap();
+                assert!(progress.error_detail.is_none(), "Image fixture pull failed");
+            }
+        }
         let container = docker
             .create_container(
                 None::<bollard::query_parameters::CreateContainerOptions>,
