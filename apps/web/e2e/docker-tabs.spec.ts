@@ -19,7 +19,7 @@ test('Docker tabs load on demand and recover from a failed request', async ({ pa
       '/api/v1/auth/session': { name: 'Admin', system_role: 'admin', organization_id: 'org', organization_name: 'Test', role: 'owner' },
       '/api/v1/auth/organizations': [],
       '/api/v1/auth/setup': { setup_required: false },
-      '/api/v1/status': { database: true, docker: true, version: 'test' },
+      '/api/v1/status': { database: true, docker: true, version: '0.2.0' },
       '/api/v1/server-time': { unix_ms: Date.now(), timezone: 'UTC', utc_offset: '+00:00' },
       '/api/v1/containers': [
         { id: 'one', name: 'running-db', image: 'postgres:17', state: 'running', status: 'Up' },
@@ -67,7 +67,7 @@ test('Swarm shows real node capacity, worker limits and inactive state without i
     const responses: Record<string, unknown> = {
       '/api/v1/auth/session': { name: 'Admin', system_role: 'admin', organization_id: 'org', organization_name: 'Test', role: 'owner' },
       '/api/v1/auth/organizations': [], '/api/v1/auth/setup': { setup_required: false },
-      '/api/v1/status': { database: true, docker: true, version: 'test' },
+      '/api/v1/status': { database: true, docker: true, version: '0.2.0' },
       '/api/v1/server-time': { unix_ms: Date.now(), timezone: 'UTC', utc_offset: '+00:00' },
       '/api/v1/containers': [],
     }
@@ -75,6 +75,7 @@ test('Swarm shows real node capacity, worker limits and inactive state without i
   })
   await page.goto('/containers')
   await page.getByRole('tab', { name: 'Swarm', exact: true }).click()
+  await expect(page.getByText('Version 0.2.0', { exact: true })).toBeVisible()
   await expect(page.getByText('Swarm is not active', { exact: true })).toBeVisible()
   await page.getByRole('tab', { name: 'Nodes', exact: true }).click()
   await expect(page.getByText('Node inventory is unavailable', { exact: false })).toBeVisible()

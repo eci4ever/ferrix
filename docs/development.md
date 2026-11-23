@@ -53,6 +53,22 @@ The dashboard reads authenticated `GET /api/v1/server-time` for the server times
 
 ## Pull request CI
 
+### Release versions
+
+The sidebar shows the running API version from `workspace.package.version` in
+the root `Cargo.toml`. Before tagging a release, update that version and the
+`ferrix-api` entry in `Cargo.lock` together, merge the PR, and tag that commit
+with the matching `v` prefix (for example `0.3.0` → `v0.3.0`). The API inherits
+the workspace version; the private frontend package version is not displayed.
+Release CI checks the exact tagged source and lockfile before building or
+publishing an image, including manual release runs. A mismatched tag fails
+rather than publishing an image whose sidebar reports another version.
+Existing published tags are immutable; this change does not rewrite v0.2.0
+or replace an already published image. Source builds need an API rebuild/restart
+after a version change; installed releases need the corrected image.
+
+### Checks
+
 The `CI` GitHub Actions workflow runs on every pull request, including updates,
 on pushes to `main`, and can also be started manually. A small change-detection
 job selects the existing build jobs from the complete Git diff:
@@ -75,7 +91,7 @@ Detection tests run on every invocation; a failed detector cannot skip builds.
 Selected jobs check Rust formatting, Clippy with warnings denied, all Rust tests
 (including ignored PostgreSQL integration tests), and the frontend production
 build. Rust uses the stable toolchain; the frontend uses Node.js 24 and npm
-12.2.2 with the committed lockfile. To test the selector locally:
+12.2.2 with the committed lockfile. To test the CI scripts locally (Python 3.11 or newer):
 
 ```sh
 python3 -m unittest discover -s scripts/ci -p 'test_*.py' -v

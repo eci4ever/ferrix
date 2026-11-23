@@ -32,6 +32,7 @@ jobs:
         run: |
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.-]+)?$ ]] || { echo 'Expected a version tag'; exit 1; }
           commit=$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")
+          python3 scripts/ci/release_version.py "$RELEASE_TAG" "$commit"
           {
             echo "commit=$commit"
             echo "version=${RELEASE_TAG#v}"
