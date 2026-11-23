@@ -239,6 +239,8 @@ async fn check(app: &Router, pool: &PgPool) {
         "/api/v1/containers",
         "/api/v1/docker/images",
         "/api/v1/monitoring",
+        "/api/v1/notifications",
+        "/api/v1/services/00000000-0000-0000-0000-000000000001/terminal",
     ] {
         assert_eq!(
             key(app, "GET", path, Value::Null, &write).await.status,

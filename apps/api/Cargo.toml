@@ -15,7 +15,7 @@ futures-util = "0.3"
 chacha20poly1305 = "0.10"
 totp-rs = { version = "5.7", features = ["otpauth"] }
 url = "2"
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 bollard = "0.20"
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls-native-roots"] }
 hickory-resolver = "0.25"

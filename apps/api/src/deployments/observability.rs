@@ -88,17 +88,17 @@ fn append_tail(output: &mut Vec<u8>, bytes: &[u8], truncated: &mut bool) {
 }
 
 #[derive(Clone, Serialize)]
-struct Metrics {
-    container_id: Option<String>,
+pub(crate) struct Metrics {
+    pub(crate) container_id: Option<String>,
     state: String,
     checked_at: DateTime<Utc>,
     cpu_cores_used: Option<f64>,
     cpu_limit_cores: Option<f64>,
-    cpu_percent_of_limit: Option<f64>,
+    pub(crate) cpu_percent_of_limit: Option<f64>,
     memory_used_bytes: Option<u64>,
     memory_raw_bytes: Option<u64>,
     memory_limit_bytes: Option<u64>,
-    memory_percent_of_limit: Option<f64>,
+    pub(crate) memory_percent_of_limit: Option<f64>,
 }
 #[derive(Default)]
 struct Cached {
@@ -106,7 +106,7 @@ struct Cached {
 }
 type CacheSlots = HashMap<Uuid, (Instant, Arc<Mutex<Cached>>)>;
 #[derive(Clone, Default)]
-struct MetricsCache(Arc<Mutex<CacheSlots>>);
+pub(crate) struct MetricsCache(Arc<Mutex<CacheSlots>>);
 impl MetricsCache {
     async fn entry(&self, service: Uuid) -> Arc<Mutex<Cached>> {
         let mut slots = self.0.lock().await;
@@ -133,12 +133,19 @@ async fn metrics(
     Extension(cache): Extension<MetricsCache>,
 ) -> Result<Json<Metrics>, ApiError> {
     let app = app_access(&state, &id, service).await?;
+    sample(&state, &app, &cache).await.map(Json)
+}
+pub(crate) async fn sample(
+    state: &AppState,
+    app: &Application,
+    cache: &MetricsCache,
+) -> Result<Metrics, ApiError> {
     let read = async {
         let Some(container) = app.active_container_id.as_ref() else {
             return Ok(empty(None, "not_deployed", None));
         };
         // Check ownership before cache access. Cache entries never authorize a caller.
-        let info = worker::inspect_owned(&state, app.id, container).await?;
+        let info = worker::inspect_owned(state, app.id, container).await?;
         let host = info.host_config.as_ref();
         if !info.state.as_ref().is_some_and(|s| s.running == Some(true)) {
             let status = info
@@ -153,7 +160,7 @@ async fn metrics(
             .as_ref()
             .and_then(|s| s.started_at.as_ref())
             .map(ToString::to_string);
-        let slot = cache.entry(service).await;
+        let slot = cache.entry(app.id).await;
         let mut cached = slot.lock().await;
         if let Some((at, started, sample)) = &cached.sample
             && at.elapsed() < Duration::from_secs(3)
@@ -191,7 +198,6 @@ async fn metrics(
     tokio::time::timeout(Duration::from_secs(7), read)
         .await
         .map_err(|_| unavailable())?
-        .map(Json)
 }
 fn empty(container_id: Option<String>, state: &str, host: Option<&HostConfig>) -> Metrics {
     Metrics {

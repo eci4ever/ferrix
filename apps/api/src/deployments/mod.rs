@@ -1,8 +1,10 @@
 mod backups;
 mod domains;
-mod observability;
+pub(crate) mod observability;
 mod services;
+mod terminal;
 mod worker;
+pub use terminal::run_terminal_worker;
 pub use worker::run_worker;
 
 use crate::{ApiError, AppState, auth::Identity};
@@ -41,6 +43,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .merge(domains::routes(state.clone()))
         .merge(backups::routes(state.clone()))
         .merge(observability::routes(state.clone()))
+        .merge(terminal::routes(state.clone()))
         .merge(
             Router::new()
                 .route("/projects/{id}/environments", post(create_environment))
@@ -97,7 +100,7 @@ struct Environment {
     created_at: DateTime<Utc>,
 }
 #[derive(Serialize, sqlx::FromRow)]
-struct Application {
+pub(crate) struct Application {
     #[sqlx(default)]
     automatic_url: Option<String>,
     database_engine: Option<String>,
@@ -169,7 +172,11 @@ impl Application {
         self
     }
 }
-async fn app_access(state: &AppState, id: &Identity, app: Uuid) -> Result<Application, ApiError> {
+pub(crate) async fn app_access(
+    state: &AppState,
+    id: &Identity,
+    app: Uuid,
+) -> Result<Application, ApiError> {
     sqlx::query_as::<_,Application>(&format!("SELECT {APP_COLUMNS} FROM applications a JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id WHERE a.id=$1 AND p.organization_id=$2 AND a.service_kind IN ('application','database')"))
         .bind(app).bind(id.organization_id).fetch_optional(&state.pool).await?.map(|app|app.with_gateway(state)).ok_or_else(missing)
 }

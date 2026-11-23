@@ -9,6 +9,13 @@ const INTERVAL: Duration = Duration::from_secs(15 * 60);
 
 // These identifiers/expressions are fixed program constants, never request input.
 const TARGETS: &[(&str, &str, &str, &str)] = &[
+    ("notifications", "id", "expires_at", "true"),
+    (
+        "terminal_connections",
+        "id",
+        "created_at + interval '30 days'",
+        "true",
+    ),
     (
         "auth_sessions",
         "id",
