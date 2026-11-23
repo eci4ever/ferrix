@@ -39,10 +39,6 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/monitoring", get(monitoring::get))
         .route("/api/v1/docker/{section}", get(docker_inventory::get))
         .route(
-            "/api/v1/docker/swarm/services/{id}/logs",
-            get(docker_inventory::logs),
-        )
-        .route(
             "/api/v1/docker/swarm/services/{id}/restart",
             axum::routing::post(docker_inventory::restart),
         )
@@ -67,6 +63,10 @@ pub fn router(state: AppState) -> Router {
             auth::sessions::protect,
         ));
     let clock = Router::new()
+        .route(
+            "/api/v1/docker/swarm/services/{id}/logs",
+            get(docker_inventory::logs),
+        )
         .route("/api/v1/projects/service-status", get(projects::statuses))
         .route("/api/v1/server-time", get(server_time::get))
         .route_layer(axum::middleware::from_fn_with_state(
