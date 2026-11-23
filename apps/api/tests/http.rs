@@ -85,6 +85,16 @@ async fn liveness_and_unauthenticated_access() {
         .unwrap());
     assert_eq!(get(&app, "/health", "").await.0, StatusCode::OK);
     assert_eq!(
+        get(
+            &app,
+            "/api/v1/docker/swarm/services/aaaaaaaaaaaaaaaaaaaaaaaaa/logs",
+            ""
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
         post(
             &app,
             "/api/v1/docker/swarm/services/aaaaaaaaaaaaaaaaaaaaaaaaa/restart",
@@ -564,6 +574,16 @@ async fn postgres_auth_security_and_tenant_isolation() {
     let (status, _, member2) = post(&app, "/api/v1/auth/sign-in", login.clone(), "").await;
     assert_eq!(status, StatusCode::OK);
     assert_ne!(member, member2);
+    assert_eq!(
+        get(
+            &app,
+            "/api/v1/docker/swarm/services/aaaaaaaaaaaaaaaaaaaaaaaaa/logs",
+            &member2
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
     assert_eq!(
         post(
             &app,
