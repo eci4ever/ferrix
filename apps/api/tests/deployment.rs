@@ -130,6 +130,23 @@ async fn backup_roundtrip(
     added: &mut Vec<Uuid>,
 ) {
     let base = format!("/api/v1/services/{service}/backups");
+    let remote = std::env::var("FERRIX_TEST_S3_ENDPOINT").ok();
+    if let Some(endpoint) = remote.as_ref() {
+        let configured=call(app,&format!("/api/v1/services/{service}/backup-policy"),cookie,Some(json!({"enabled":false,"cron":"0 2 * * *","timezone":"Asia/Kuala_Lumpur","keep_last":10,"s3":{"endpoint":endpoint,"region":"us-east-1","bucket":std::env::var("FERRIX_TEST_S3_BUCKET").unwrap(),"prefix":"roundtrip","path_style":true,"credentials":{"access_key":std::env::var("FERRIX_TEST_S3_ACCESS_KEY").unwrap(),"secret_key":std::env::var("FERRIX_TEST_S3_SECRET_KEY").unwrap(),"session_token":null}}}))).await;
+        assert_eq!(configured.0, StatusCode::NO_CONTENT);
+        assert_eq!(
+            call(
+                app,
+                &format!("/api/v1/services/{service}/backup-policy/test"),
+                cookie,
+                Some(json!({}))
+            )
+            .await
+            .0,
+            StatusCode::OK
+        );
+    }
+
     let settings = call(
         app,
         &format!("/api/v1/services/{service}/configuration"),
@@ -147,6 +164,13 @@ async fn backup_roundtrip(
     .await
     .1;
     let source_container = source_runtime["container_id"].as_str().unwrap();
+    if remote.is_some() && engine == "postgres" {
+        // Incompressible fixture crosses the multipart threshold without changing
+        // the application table used to verify snapshot restoration.
+        let payload=tokio::process::Command::new("docker").args(["exec",source_container,"psql","-U","ferrix","-d","ferrix","-v","ON_ERROR_STOP=1","-c","CREATE TABLE backup_payload AS SELECT md5(random()::text)||md5(random()::text) AS value FROM generate_series(1,400000)"]).output().await.unwrap();
+        assert!(payload.status.success());
+    }
+
     let (code, backup, _) = call(app, &base, cookie, Some(json!({}))).await;
     assert_eq!(code, StatusCode::ACCEPTED, "{backup}");
     assert_eq!(
@@ -174,6 +198,33 @@ async fn backup_roundtrip(
     let backed_up = wait_database_job(app, cookie, service, &backup).await;
     assert_eq!(backed_up["status"], "succeeded", "{backed_up}");
     assert!(backed_up["size_bytes"].as_i64().unwrap() > 0);
+    if remote.is_some() {
+        assert_eq!(backed_up["storage"], "s3");
+        if engine == "postgres" {
+            assert!(
+                backed_up["size_bytes"].as_i64().unwrap() > 8 * 1024 * 1024,
+                "fixture must exercise multipart S3 upload"
+            );
+        }
+        // Prove restore downloads S3 rather than relying on the local copy.
+        let volume = format!("ferrix-backups-{}", service.simple());
+        let owned = state.docker.inspect_volume(&volume).await.unwrap();
+        assert_eq!(
+            owned.labels.get("io.ferrix.application"),
+            Some(&service.to_string())
+        );
+        state
+            .docker
+            .remove_volume(
+                &volume,
+                None::<bollard::query_parameters::RemoveVolumeOptions>,
+            )
+            .await
+            .unwrap();
+        // Saved destination changes must not rewrite the backup snapshot.
+        assert_eq!(call(app,&format!("/api/v1/services/{service}/backup-policy"),cookie,Some(json!({"enabled":false,"cron":"0 2 * * *","timezone":"UTC","keep_last":10,"s3":null}))).await.0,StatusCode::NO_CONTENT);
+    }
+
     // Rows added after the backup distinguish a genuine snapshot from the live database.
     let write = if engine == "postgres" {
         "psql -U ferrix -d ferrix -v ON_ERROR_STOP=1 -c \"INSERT INTO persistence_check VALUES ('after-backup');\""
@@ -336,6 +387,73 @@ async fn backup_roundtrip(
                 .inspect_container(&helper.id, None)
                 .await
                 .is_err()
+        );
+    }
+    if let Some(endpoint) = remote.as_ref() {
+        assert_eq!(call(app,&format!("/api/v1/services/{service}/backup-policy"),cookie,Some(json!({"enabled":false,"cron":"0 2 * * *","timezone":"UTC","keep_last":1,"s3":null}))).await.0,StatusCode::NO_CONTENT);
+        let (code, new_backup, _) = call(app, &base, cookie, Some(json!({}))).await;
+        assert_eq!(code, StatusCode::ACCEPTED);
+        assert_eq!(
+            wait_database_job(app, cookie, service, &new_backup).await["status"],
+            "succeeded"
+        );
+        let original: Uuid = backup["id"].as_str().unwrap().parse().unwrap();
+        let mut removed = false;
+        for _ in 0..60 {
+            if sqlx::query_scalar::<_, bool>(
+                "SELECT pruned_at IS NOT NULL FROM database_jobs WHERE id=$1",
+            )
+            .bind(original)
+            .fetch_one(&state.pool)
+            .await
+            .unwrap()
+            {
+                removed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        assert!(
+            removed,
+            "retention must remove the original remote backup after a replacement succeeds"
+        );
+        let credentials = s3::creds::Credentials::new(
+            Some(&std::env::var("FERRIX_TEST_S3_ACCESS_KEY").unwrap()),
+            Some(&std::env::var("FERRIX_TEST_S3_SECRET_KEY").unwrap()),
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let bucket = s3::Bucket::new(
+            &std::env::var("FERRIX_TEST_S3_BUCKET").unwrap(),
+            s3::Region::Custom {
+                region: "us-east-1".into(),
+                endpoint: endpoint.clone(),
+            },
+            credentials,
+        )
+        .unwrap()
+        .with_path_style();
+        let key = format!(
+            "roundtrip/ferrix/{}/{}.dump",
+            service.simple(),
+            original.simple()
+        );
+        assert!(
+            bucket.head_object(&key).await.is_err(),
+            "expired object must be removed from S3"
+        );
+        assert_eq!(
+            call(
+                app,
+                &restore_url,
+                cookie,
+                Some(json!({"name":"Must not restore pruned backup"}))
+            )
+            .await
+            .0,
+            StatusCode::NOT_FOUND
         );
     }
     assert_eq!(

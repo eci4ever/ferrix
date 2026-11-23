@@ -18,6 +18,11 @@ url = "2"
 axum = { version = "0.8", features = ["ws"] }
 bollard = "0.20"
 reqwest = { version = "0.12", default-features = false, features = ["stream", "rustls-tls-native-roots"] }
+croner = "5"
+rust-s3 = { version = "0.38", default-features = false, features = ["tokio-rustls-tls-ring", "fail-on-err"] }
+tempfile = "3"
+tar = "0.4"
+tokio-util = { version = "0.7", features = ["io"] }
 hickory-resolver = "0.25"
 x509-parser = "0.18"
 chrono-tz = "0.10"
@@ -27,7 +32,7 @@ dotenvy = "0.15"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres", "uuid", "chrono", "macros", "migrate"] }
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time", "sync", "process", "io-util"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "time", "sync", "process", "io-util", "fs"] }
 tower-http = { version = "0.6", features = ["trace", "fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -162,3 +162,5 @@ platform-admin `POST /auth/admin/users/{id}/revoke-api-keys`.
 
 References: [OWASP REST security](https://cheatsheetseries.owasp.org/cheatsheets/REST_Security_Cheat_Sheet.html),
 [Axum matched-path middleware](https://docs.rs/axum/latest/axum/extract/struct.MatchedPath.html).
+
+Backup schedules and S3 credentials are managed through owner/admin browser settings. API keys cannot access `/services/{id}/backup-policy` or its connection test; existing backup requests use the saved destination without exposing credentials.
