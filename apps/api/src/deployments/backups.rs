@@ -1,3 +1,5 @@
+mod policy;
+mod remote;
 use super::*;
 use bollard::{
     models::{
@@ -16,6 +18,7 @@ use tokio::sync::watch;
 
 pub(super) fn routes(state: AppState) -> Router<AppState> {
     Router::new()
+        .merge(policy::routes(state.clone()))
         .route("/services/{id}/backups", get(list))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -43,6 +46,11 @@ struct Record {
     status: String,
     message: String,
     size_bytes: Option<i64>,
+    storage: String,
+    scheduled_for: Option<DateTime<Utc>>,
+    pruning: bool,
+    pruned_at: Option<DateTime<Utc>>,
+    retention_error: Option<String>,
     created_at: DateTime<Utc>,
     started_at: Option<DateTime<Utc>>,
     finished_at: Option<DateTime<Utc>>,
@@ -59,6 +67,10 @@ struct Job {
     image_id: String,
     config_cipher: Vec<u8>,
     env_cipher: Option<Vec<u8>>,
+    #[sqlx(default)]
+    s3_cipher: Option<Vec<u8>>,
+    #[sqlx(default)]
+    s3_key: Option<String>,
 }
 async fn access(state: &AppState, id: &Identity, service: Uuid) -> Result<Application, ApiError> {
     let app = app_access(state, id, service).await?;
@@ -91,7 +103,7 @@ async fn list(
     Path(service): Path<Uuid>,
 ) -> Result<Json<Vec<Record>>, ApiError> {
     access(&state, &id, service).await?;
-    Ok(Json(sqlx::query_as("SELECT j.id,j.application_id,a.name AS service_name,e.project_id,j.source_backup_id,j.operation,j.engine,j.status,j.message,j.size_bytes,j.created_at,j.started_at,j.finished_at FROM database_jobs j JOIN applications a ON a.id=j.application_id JOIN environments e ON e.id=a.environment_id WHERE j.application_id=$1 OR j.source_application_id=$1 ORDER BY j.created_at DESC,j.id DESC LIMIT 100")
+    Ok(Json(sqlx::query_as("SELECT j.id,j.application_id,a.name AS service_name,e.project_id,j.source_backup_id,j.operation,j.engine,j.status,j.message,j.size_bytes,CASE WHEN j.s3_cipher IS NULL THEN 'local' ELSE 's3' END AS storage,j.scheduled_for,j.pruning,j.pruned_at,j.retention_error,j.created_at,j.started_at,j.finished_at FROM database_jobs j JOIN applications a ON a.id=j.application_id JOIN environments e ON e.id=a.environment_id WHERE j.application_id=$1 OR j.source_application_id=$1 ORDER BY j.created_at DESC,j.id DESC LIMIT 100")
         .bind(service).fetch_all(&state.pool).await?))
 }
 async fn create(
@@ -123,6 +135,13 @@ async fn create(
             "Deploy and start this database before creating a backup.",
         ));
     }
+    let (s3_cipher, s3_key) = policy::snapshot(&state, &mut tx, service, job).await?;
+    sqlx::query("UPDATE database_jobs SET s3_cipher=$2,s3_key=$3 WHERE id=$1")
+        .bind(job)
+        .bind(s3_cipher)
+        .bind(s3_key)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok((
         StatusCode::ACCEPTED,
@@ -150,7 +169,7 @@ async fn restore(
         .await?
         .ok_or_else(missing)?;
     ensure_idle(&mut tx, service).await?;
-    let saved: Job = sqlx::query_as("SELECT id,application_id,source_application_id,source_backup_id,operation,engine,image,image_id,config_cipher,env_cipher,size_bytes,sha256 FROM database_jobs WHERE id=$1 AND application_id=$2 AND operation='backup' AND status='succeeded' AND size_bytes>0 AND sha256 IS NOT NULL")
+    let saved: Job = sqlx::query_as("SELECT id,application_id,source_application_id,source_backup_id,operation,engine,image,image_id,config_cipher,env_cipher,size_bytes,sha256,s3_cipher,s3_key FROM database_jobs WHERE id=$1 AND application_id=$2 AND operation='backup' AND status='succeeded' AND size_bytes>0 AND sha256 IS NOT NULL AND pruned_at IS NULL AND NOT pruning FOR UPDATE")
         .bind(backup).bind(service).fetch_optional(&mut *tx).await?.ok_or_else(missing)?;
     let target = Uuid::new_v4();
     let deployment = Uuid::new_v4();
@@ -169,6 +188,12 @@ async fn restore(
         .bind(deployment).bind(target).bind(id.user_id).bind(&saved.image).bind(config.engine.port()).bind(&env_cipher).bind(&config_cipher).bind(&saved.image_id).bind(&id.name).bind(key.as_ref().map(|key|key.id)).bind(key.as_ref().map(|key|key.name.as_str())).execute(&mut *tx).await.map_err(database_error)?;
     sqlx::query("INSERT INTO database_jobs(id,application_id,source_application_id,source_backup_id,deployment_id,requested_by,operation,engine,image,image_id,config_cipher,env_cipher) VALUES($1,$2,$3,$4,$5,$6,'restore',$7,$8,$9,$10,$11)")
         .bind(job).bind(target).bind(service).bind(backup).bind(deployment).bind(id.user_id).bind(saved.engine).bind(saved.image).bind(saved.image_id).bind(config_cipher).bind(env_cipher).execute(&mut *tx).await.map_err(database_error)?;
+    sqlx::query("UPDATE database_jobs SET s3_cipher=$2,s3_key=$3 WHERE id=$1")
+        .bind(job)
+        .bind(saved.s3_cipher)
+        .bind(saved.s3_key)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok((
         StatusCode::ACCEPTED,
@@ -192,7 +217,12 @@ fn owned(labels: Option<&HashMap<String, String>>, job: &Job) -> bool {
     })
 }
 async fn cleanup_helper(state: &AppState, job: &Job) -> Result<(), String> {
-    let name = helper_name(job.id);
+    for name in [helper_name(job.id), remote::transfer_name(job.id)] {
+        cleanup_one(state, job, name).await?;
+    }
+    Ok(())
+}
+async fn cleanup_one(state: &AppState, job: &Job, name: String) -> Result<(), String> {
     match state.docker.inspect_container(&name, None).await {
         Err(bollard::errors::Error::DockerResponseServerError {
             status_code: 404, ..
@@ -297,6 +327,10 @@ async fn execute(
     let restoring = job.operation == "restore";
     let source = job.source_application_id.unwrap_or(job.application_id);
     let file_id = job.source_backup_id.unwrap_or(job.id);
+    if restoring && job.s3_cipher.is_some() {
+        sqlx::query("UPDATE database_jobs SET message='Downloading and verifying the original S3 backup.' WHERE id=$1").bind(job.id).execute(&mut *conn).await.map_err(|_|"Could not record download progress.")?;
+        remote::download(state, conn, job, source, file_id).await?;
+    }
     let volume = storage(state, source, !restoring).await?;
     let checksum: Option<String> = if restoring {
         sqlx::query_scalar("SELECT sha256 FROM database_jobs WHERE id=$1 AND application_id=$2 AND operation='backup' AND status='succeeded'")
@@ -466,6 +500,16 @@ async fn execute(
         .filter(|s| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit()))
         .ok_or("Backup checksum is missing.")?
         .to_owned();
+    if job.s3_cipher.is_some() {
+        sqlx::query(
+            "UPDATE database_jobs SET message='Uploading verified backup to S3.' WHERE id=$1",
+        )
+        .bind(job.id)
+        .execute(&mut *conn)
+        .await
+        .map_err(|_| "Could not record upload progress.")?;
+        remote::upload(state, job, size, &hash).await?;
+    }
     Ok((Some(size), Some(hash)))
 }
 
@@ -492,6 +536,8 @@ pub(super) async fn cycle(
         sqlx::query("UPDATE database_jobs SET status='failed',message=$2,finished_at=now() WHERE id=$1 AND status='running'")
             .bind(job.id).bind(message).execute(&mut *conn).await.map_err(|_| "Could not record interrupted database operation.")?;
     }
+    policy::schedule_due(state, conn).await?;
+    policy::prune_one(state, conn).await?;
     let job: Option<Job> = sqlx::query_as("WITH next AS (SELECT j.id FROM database_jobs j LEFT JOIN deployments d ON d.id=j.deployment_id WHERE j.status='queued' AND (j.operation='backup' OR d.status IN ('succeeded','failed') OR d.id IS NULL) ORDER BY j.created_at,j.id LIMIT 1 FOR UPDATE OF j SKIP LOCKED) UPDATE database_jobs j SET status='running',started_at=now() FROM next WHERE j.id=next.id RETURNING j.*")
         .fetch_optional(&mut *conn).await.map_err(|_| "Could not claim database operation.")?;
     let Some(job) = job else {
@@ -512,11 +558,23 @@ pub(super) async fn cycle(
     tokio::time::timeout(Duration::from_secs(15), cleanup_helper(state, &job))
         .await
         .map_err(|_| "Database helper cleanup timed out.")??;
+    if result.is_err() && job.operation == "backup" && job.s3_cipher.is_some() {
+        tokio::time::timeout(Duration::from_secs(15), remote::remove_local(state, &job))
+            .await
+            .map_err(|_| "Failed backup file cleanup timed out.")??;
+        tokio::time::timeout(Duration::from_secs(15), cleanup_helper(state, &job))
+            .await
+            .map_err(|_| "Failed transfer helper cleanup timed out.")??;
+    }
     let (status, message, size, hash) = match result {
         Ok((size, hash)) => (
             "succeeded",
             if job.operation == "backup" {
-                "Backup completed.".to_owned()
+                if job.s3_cipher.is_some() {
+                    "Backup saved locally and on S3.".to_owned()
+                } else {
+                    "Backup completed.".to_owned()
+                }
             } else {
                 "Restore completed. The new database service is ready.".to_owned()
             },
@@ -527,5 +585,8 @@ pub(super) async fn cycle(
     };
     sqlx::query("UPDATE database_jobs SET status=$1,message=$2,size_bytes=$3,sha256=$4,finished_at=now() WHERE id=$5 AND status='running'")
         .bind(status).bind(message).bind(size).bind(hash).bind(job.id).execute(&mut *conn).await.map_err(|_| "Could not persist database operation completion.")?;
+    if status == "succeeded" && job.operation == "backup" {
+        policy::mark_excess(conn, job.application_id).await?;
+    }
     Ok(true)
 }

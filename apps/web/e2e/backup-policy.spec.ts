@@ -1,0 +1,46 @@
+import { test,expect } from '@playwright/test'
+import { signInAdmin } from './helpers/session'
+test.use({trace:'off',screenshot:'off',video:'off'})
+test('Configure cron, retention and encrypted S3 credentials in Backups',async({page,browser})=>{
+ const base=process.env.FERRIX_E2E_URL!
+ if(process.env.FERRIX_E2E_DISPOSABLE!=='1')throw new Error('Use the disposable browser runner.')
+ await signInAdmin(page)
+ const headers={Origin:base}
+ const project=await(await page.request.post('/api/v1/projects',{headers,data:{name:'Backup policy test'}})).json()
+ const environment=(await(await page.request.get(`/api/v1/projects/${project.id}/environments`)).json()).environments[0]
+ const service=await(await page.request.post(`/api/v1/environments/${environment.id}/services`,{headers,data:{kind:'database',name:'Scheduled database',engine:'postgres',database_name:'app',username:'app'}})).json()
+ const policyUrl=`/api/v1/services/${service.id}/backup-policy`
+ await page.goto(`/projects/${project.id}/services/${service.id}`)
+ await page.getByRole('tab',{name:'Backups',exact:true}).click()
+ await page.getByRole('checkbox',{name:'Enable scheduled backups',exact:true}).check()
+ await page.getByLabel('Cron expression',{exact:true}).fill('0 2 * * *')
+ await page.getByLabel('Timezone',{exact:true}).fill('Asia/Kuala_Lumpur')
+ await page.getByLabel('Successful backups to keep',{exact:true}).fill('3')
+ await page.getByLabel('Backup storage',{exact:true}).selectOption('s3')
+ await page.getByLabel('S3 endpoint',{exact:true}).fill('https://s3.example.com')
+ await page.getByLabel('Bucket',{exact:true}).fill('ferrix-disposable-test')
+ await page.getByLabel('Access key ID',{exact:true}).fill('disposable-browser-access')
+ await page.getByLabel('Secret access key',{exact:true}).fill('disposable-browser-secret')
+ await page.getByRole('button',{name:'Save backup settings',exact:true}).click()
+ await expect(page.getByText('Backup schedule and storage saved.',{exact:true})).toBeVisible()
+ await expect(page.getByText('S3 credentials are saved and encrypted.',{exact:false})).toBeVisible()
+ const policy=await(await page.request.get(policyUrl)).json()
+ expect(policy.enabled).toBe(true);expect(policy.keep_last).toBe(3);expect(policy.timezone).toBe('Asia/Kuala_Lumpur');expect(policy.next_run_at).toBeTruthy()
+ expect(JSON.stringify(policy)).not.toContain('disposable-browser')
+ await page.route(`**${policyUrl}/test`,route=>route.fulfill({status:422,json:{error:'S3 test failed. Check endpoint, bucket, region and read/write/delete permissions.'}}))
+ await page.getByRole('button',{name:'Test connection',exact:true}).click()
+ await expect(page.getByRole('alert')).toContainText('S3 test failed')
+ await page.reload();await page.getByRole('tab',{name:'Backups',exact:true}).click()
+ await expect(page.getByLabel('Timezone',{exact:true})).toHaveValue('Asia/Kuala_Lumpur')
+ await expect(page.getByLabel('Secret access key',{exact:true})).toHaveCount(0)
+ await page.setViewportSize({width:390,height:844})
+ expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)
+ await page.screenshot({path:'/private/tmp/ferrix-backup-policy-mobile.png',fullPage:true,animations:'disabled'})
+ await page.getByRole('checkbox',{name:'Enable scheduled backups',exact:true}).uncheck()
+ await page.getByRole('button',{name:'Save backup settings',exact:true}).click()
+ await expect(page.getByText('Backup schedule and storage saved.',{exact:true})).toBeVisible()
+ const saved=await(await page.request.get(policyUrl)).json();expect(saved.enabled).toBe(false);expect(saved.next_run_at).toBeNull();expect(saved.s3.credentials_saved).toBe(true)
+ const invite=await(await page.request.post('/api/v1/auth/invitations',{headers,data:{email:'backup-policy-member@example.com',role:'member'}})).json()
+ const member=await browser.newContext({baseURL:base})
+ try{expect((await member.request.post('/api/v1/auth/accept-invitation',{headers,data:{email:'backup-policy-member@example.com',name:'Backup member',password:'Disposable backup member password!',token:invite.token}})).status()).toBe(200);expect((await member.request.get(policyUrl)).status()).toBe(403);expect((await member.request.post(policyUrl,{headers,data:{enabled:false,cron:'0 2 * * *',timezone:'UTC',keep_last:1,s3:null}})).status()).toBe(403)}finally{await member.close()}
+})

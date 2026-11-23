@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { Link } from '@tanstack/react-router'
+import { BackupPolicy } from './backup-policy'
 import { DatabaseBackup, RotateCcw } from 'lucide-react'
 import { request } from '@/lib/api'
 import { DataTable } from '@/components/data-table'
@@ -41,6 +42,11 @@ type DatabaseJob = {
   engine: string
   status: 'queued' | 'running' | 'succeeded' | 'failed'
   message: string
+  storage?: 'local' | 's3'
+  scheduled_for?: string | null
+  pruning?: boolean
+  pruned_at?: string | null
+  retention_error?: string | null
   size_bytes: number | null
   created_at: string
   started_at: string | null
@@ -153,8 +159,8 @@ export function ServiceBackups({
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <p className="text-sm text-muted-foreground">
-            Backups are stored on this Docker server in a dedicated volume. Keep
-            a separate off-server copy for protection against host or disk loss.
+            Backups use the destination configured below. S3 backups keep a local
+            copy and are only marked successful after upload completes.
             Avoid schema changes during a backup. MariaDB consistency requires
             transactional tables.
           </p>
@@ -181,6 +187,7 @@ export function ServiceBackups({
           ) : null}
         </CardContent>
       </Card>
+      {canManage ? <BackupPolicy serviceId={serviceId} /> : null}
       <Card>
         <CardHeader>
           <CardTitle>
@@ -204,7 +211,7 @@ export function ServiceBackups({
                   label: 'Operation',
                   value: (job) => job.operation,
                   cell: (job) =>
-                    job.operation === 'backup' ? 'Backup' : 'Restore',
+                    job.operation === 'backup' ? (job.scheduled_for ? 'Scheduled backup' : 'Backup') : 'Restore',
                 },
                 {
                   id: 'status',
@@ -223,6 +230,9 @@ export function ServiceBackups({
                       {job.status}
                     </Badge>
                   ),
+                },
+                {
+                  id: 'storage', label: 'Storage', value: (job) => job.pruned_at ? 'Removed' : job.pruning ? 'Removal pending' : job.storage ?? 'local', cell: (job) => job.pruned_at ? 'Removed by retention' : job.pruning ? 'Removal pending' : job.storage === 's3' ? 'Local + S3' : 'Local',
                 },
                 {
                   id: 'created',
@@ -250,7 +260,7 @@ export function ServiceBackups({
                   label: 'Progress',
                   value: (job) => job.message,
                   cell: (job) => (
-                    <span className="whitespace-normal">{job.message}</span>
+                    <span className="whitespace-normal">{job.message}{job.retention_error ? <span className="block text-destructive">{job.retention_error}</span> : null}</span>
                   ),
                 },
                 {
@@ -282,6 +292,7 @@ export function ServiceBackups({
                         cell: (job: DatabaseJob) =>
                           job.operation === 'backup' &&
                           job.status === 'succeeded' &&
+                          !job.pruning && !job.pruned_at &&
                           job.application_id === serviceId ? (
                             <Button
                               variant="outline"
