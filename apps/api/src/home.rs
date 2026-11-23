@@ -6,7 +6,7 @@ use serde_json::Value;
 // or Docker host inventory are used to infer organization totals/runtime health.
 const SUMMARY: &str = r#"
 WITH org_projects AS MATERIALIZED (
-    SELECT id, created_at FROM projects WHERE organization_id = $1
+    SELECT id, created_at FROM projects WHERE organization_id = $1 AND ($2::UUID IS NULL OR id=$2)
 ), org_services AS MATERIALIZED (
     SELECT a.id, a.name, a.service_kind, e.project_id
     FROM applications a JOIN environments e ON e.id = a.environment_id
@@ -43,9 +43,11 @@ SELECT json_build_object(
 pub(crate) async fn get(
     State(state): State<AppState>,
     id: Identity,
+    key: Option<axum::Extension<crate::auth::api_keys::KeyAccess>>,
 ) -> Result<Json<Value>, ApiError> {
     let summary: sqlx::types::Json<Value> = sqlx::query_scalar(SUMMARY)
         .bind(id.organization_id)
+        .bind(key.and_then(|key| key.project_id))
         .fetch_one(&state.pool)
         .await?;
     Ok(Json(summary.0))

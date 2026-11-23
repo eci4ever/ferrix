@@ -137,6 +137,7 @@ async fn restore(
     State(state): State<AppState>,
     id: Identity,
     Path((service, backup)): Path<(Uuid, Uuid)>,
+    key: Option<axum::Extension<crate::auth::api_keys::KeyAccess>>,
     Json(input): Json<RestoreRequest>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     id.manager()?;
@@ -164,8 +165,8 @@ async fn restore(
     let env_cipher = encrypt(&state, target, &values)?;
     sqlx::query("INSERT INTO applications(id,environment_id,name,image,container_port,service_kind,service_cipher,env_cipher) VALUES($1,$2,$3,$4,$5,'database',$6,$7)")
         .bind(target).bind(source.environment_id).bind(label).bind(&saved.image).bind(config.engine.port()).bind(&config_cipher).bind(&env_cipher).execute(&mut *tx).await.map_err(database_error)?;
-    sqlx::query("INSERT INTO deployments(id,application_id,requested_by,image,container_port,env_cipher,service_kind,service_cipher,pinned_image_id) VALUES($1,$2,$3,$4,$5,$6,'database',$7,$8)")
-        .bind(deployment).bind(target).bind(id.user_id).bind(&saved.image).bind(config.engine.port()).bind(&env_cipher).bind(&config_cipher).bind(&saved.image_id).execute(&mut *tx).await.map_err(database_error)?;
+    sqlx::query("INSERT INTO deployments(id,application_id,requested_by,image,container_port,env_cipher,service_kind,service_cipher,pinned_image_id,requested_by_name,requested_by_key_id,requested_by_key_name) VALUES($1,$2,$3,$4,$5,$6,'database',$7,$8,$9,$10,$11)")
+        .bind(deployment).bind(target).bind(id.user_id).bind(&saved.image).bind(config.engine.port()).bind(&env_cipher).bind(&config_cipher).bind(&saved.image_id).bind(&id.name).bind(key.as_ref().map(|key|key.id)).bind(key.as_ref().map(|key|key.name.as_str())).execute(&mut *tx).await.map_err(database_error)?;
     sqlx::query("INSERT INTO database_jobs(id,application_id,source_application_id,source_backup_id,deployment_id,requested_by,operation,engine,image,image_id,config_cipher,env_cipher) VALUES($1,$2,$3,$4,$5,$6,'restore',$7,$8,$9,$10,$11)")
         .bind(job).bind(target).bind(service).bind(backup).bind(deployment).bind(id.user_id).bind(saved.engine).bind(saved.image).bind(saved.image_id).bind(config_cipher).bind(env_cipher).execute(&mut *tx).await.map_err(database_error)?;
     tx.commit().await?;

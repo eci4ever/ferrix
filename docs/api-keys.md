@@ -6,7 +6,7 @@ browser's currently selected organization. Create a separate key per AI agent.
 
 ## Create and use a key
 
-Open **API keys** in the sidebar, choose a name, expiry and permissions, then
+Open **API keys** in the sidebar, choose a name, project access, expiry and permissions, then
 save the credential shown once. Creation and revocation require browser login
 and identity verification within the last 15 minutes; use Security to verify
 password and TOTP if prompted. Store the key in the agent's secret store as
@@ -18,6 +18,20 @@ put the key in a URL, commit it to source control, or print it in command logs.
 Keys cannot create other keys, sign in as a browser, manage users/organizations,
 or access Docker host administration. Even a platform admin's key is restricted
 to the explicitly permitted deployment API routes.
+
+## Project access
+
+Keys can access **all projects in their organization** (the default), or one
+existing project selected when creating the key. The creation endpoint accepts
+an optional `project_id`; omitted or `null` keeps organization access. Existing
+keys retain their original organization access.
+
+A project key can only list or operate on that project's environments, services,
+deployments, domains and backups, subject to its permissions. Project lists,
+service status and summary counts are filtered to that project. It cannot create
+projects or access other projects, even inside the same organization. Deleting
+the assigned project invalidates its keys. The assignment cannot be changed;
+create a replacement key if access needs to change.
 
 ## Permissions
 
@@ -49,7 +63,7 @@ can themselves contain application secrets; treat read access accordingly.
 
 Start with `GET /api/v1/agent`. Read `GET /api/v1/agent/docs` for this guide
 as Markdown; it is bundled in the server and accessible to keys with read scope. It returns the key ID, effective `scopes` (and stored `granted_scopes`), organization and
-current organization role, plus a deployment workflow. Stop if the role/scopes
+current organization role, plus optional `project_id` and `project_name` and a deployment workflow. Stop if the role/scopes
 do not authorize the requested work. The response never returns the credential.
 
 1. `GET /api/v1/projects`, or `POST /api/v1/projects` with
@@ -97,6 +111,10 @@ python3 scripts/agents/deploy-image.py \
   --project "Agent project" --application web --image nginx:alpine --port 80
 ```
 
+For a project key, the client automatically uses the assigned project returned by
+agent discovery. A conflicting `--project-id` is rejected; `--project` does not
+override the assignment. Organization keys keep the existing find/create flow.
+
 The standard-library Python client finds/creates a project and application,
 queues a deployment and waits for its result. It emits a JSON summary without
 credentials or deployment logs. Use `--project-id` to disambiguate existing
@@ -104,6 +122,11 @@ projects. Existing application config is preserved: if image/port/kind differs,
 the client stops and asks for an explicit configuration update. It does not
 follow redirects, send cookies, automatically retry writes or delete resources.
 A timeout does not cancel a queued/running deployment.
+
+Deployment History records the initiating user's name and, for agent requests,
+the API key's friendly name. These are snapshots taken when a deployment,
+rollback or restore bootstrap is queued; later renames or key deletion do not
+rewrite history. Credentials are never included.
 
 ## Lifecycle, limits and audit
 
