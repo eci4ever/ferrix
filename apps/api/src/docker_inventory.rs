@@ -50,9 +50,16 @@ async fn inventory(docker: &Docker, section: &str) -> Result<Value, ApiError> {
             })).collect::<Vec<_>>()),
         "swarm" => {
             let swarm = docker.info().await.map_err(unavailable)?.swarm.unwrap_or_default();
+            let state = swarm.local_node_state.map(|state| state.to_string());
+            let nodes = if state.as_deref() == Some("active") && swarm.control_available == Some(true) {
+                Some(docker.list_nodes(None::<bollard::query_parameters::ListNodesOptions>).await.map_err(unavailable)?
+                    .into_iter().map(|node| swarm_node(&json!(node))).collect::<Vec<_>>())
+            } else { None };
             json!({
-                "state": swarm.local_node_state.map(|state| state.to_string()),
+                "state": state,
                 "manager": swarm.control_available, "nodes": swarm.nodes, "managers": swarm.managers,
+                "node_id": swarm.node_id, "node_address": swarm.node_addr,
+                "node_list": nodes,
             })
         }
         "events" => {
@@ -78,4 +85,66 @@ async fn inventory(docker: &Docker, section: &str) -> Result<Value, ApiError> {
         }
         _ => return Err(ApiError(StatusCode::NOT_FOUND, "Unknown Docker section.")),
     })
+}
+
+// Deliberately exclude node labels, TLS certificates and manager addresses.
+fn swarm_node(node: &Value) -> Value {
+    let field = |path| node.pointer(path).cloned().unwrap_or(Value::Null);
+    json!({
+        "id": field("/ID"), "hostname": field("/Description/Hostname"),
+        "role": field("/Spec/Role"), "availability": field("/Spec/Availability"),
+        "state": field("/Status/State"), "address": field("/Status/Addr"),
+        "leader": field("/ManagerStatus/Leader"), "reachability": field("/ManagerStatus/Reachability"),
+        "engine_version": field("/Description/Engine/EngineVersion"),
+        "nano_cpus": field("/Description/Resources/NanoCPUs"),
+        "memory_bytes": field("/Description/Resources/MemoryBytes"),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn swarm_inventory_handles_manager_worker_and_inactive_daemons() {
+        for (state, manager) in [("active", true), ("active", false), ("inactive", false)] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let app = axum::Router::new().fallback(move |uri: axum::http::Uri| async move {
+                if uri.path().ends_with("/info") {
+                    Json(json!({"Swarm": {"LocalNodeState": state, "ControlAvailable": manager, "NodeID": "local"}}))
+                } else {
+                    assert!(manager && state == "active", "worker/inactive must not query nodes");
+                    assert!(uri.path().ends_with("/nodes"));
+                    Json(json!([{"ID": "local", "Description": {"Hostname": "vps"}, "Spec": {"Role": "manager"}, "Status": {"State": "ready"}}]))
+                }
+            });
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let docker =
+                Docker::connect_with_http(&endpoint, 3, bollard::API_DEFAULT_VERSION).unwrap();
+            let result = inventory(&docker, "swarm").await.unwrap();
+            assert_eq!(result["state"], state);
+            if manager {
+                assert_eq!(result["node_list"][0]["hostname"], "vps");
+            } else {
+                assert!(result["node_list"].is_null());
+            }
+            server.abort();
+        }
+    }
+
+    #[test]
+    fn node_projection_preserves_capacity_without_exposing_metadata() {
+        let node = swarm_node(&json!({
+            "ID": "node-1", "Spec": {"Role": "manager", "Labels": {"secret": "private"}},
+            "Description": {"Hostname": "vps", "Resources": {"NanoCPUs": 2000000000_i64, "MemoryBytes": 4096}, "TLSInfo": {"TrustRoot": "certificate"}},
+            "Status": {"State": "ready"}, "ManagerStatus": {"Leader": true}
+        }));
+        assert_eq!(node["nano_cpus"], 2000000000_i64);
+        assert_eq!(node["state"], "ready");
+        assert_eq!(node["leader"], true);
+        assert!(node["address"].is_null());
+        assert!(!node.to_string().contains("private"));
+        assert!(!node.to_string().contains("certificate"));
+    }
 }

@@ -86,6 +86,17 @@ database. No developer `.env`, external database or repository secrets are neede
 The integration test applies migrations in an isolated schema. New commits cancel
 an older CI run for the same pull request.
 
+### Docker Swarm inventory
+
+The administrator-only Docker → Swarm page has Overview and Nodes views.
+`GET /api/v1/docker/swarm` reads Docker info and lists nodes only when the
+connected daemon is an active Swarm manager. Ready nodes are counted separately
+from scheduling availability (active/pause/drain). CPU and RAM are node capacity,
+not current utilization. Node responses include only display fields; labels,
+certificates and join tokens are excluded. Inactive, transitional and worker
+states display an explanation with unavailable counts rather than invented zeros.
+Refresh swarm fetches a new snapshot; this page never initializes or changes Swarm.
+
 ### Host monitoring
 
 System administrators can open **Monitoring** (`/monitoring`). `GET /api/v1/monitoring`
