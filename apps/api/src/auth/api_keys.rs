@@ -20,10 +20,15 @@ const RATE_LIMIT: i32 = 120;
 pub(crate) struct KeyAccess {
     pub id: Uuid,
     pub scopes: Vec<String>,
+    pub project_id: Option<Uuid>,
+    pub project_name: Option<String>,
+    pub name: String,
 }
 #[derive(Serialize, FromRow)]
 struct KeyInfo {
     id: Uuid,
+    project_id: Option<Uuid>,
+    project_name: Option<String>,
     name: String,
     prefix: String,
     scopes: Vec<String>,
@@ -33,10 +38,19 @@ struct KeyInfo {
     last_used_at: Option<DateTime<Utc>>,
 }
 pub async fn list(State(state): State<AppState>, id: Identity) -> Result<Json<Value>, ApiError> {
-    let rows:Vec<KeyInfo>=sqlx::query_as("SELECT id,name,prefix,scopes,created_at,expires_at,revoked_at,last_used_at FROM auth_api_keys WHERE user_id=$1 AND organization_id=$2 ORDER BY (revoked_at IS NULL AND expires_at>now()) DESC,created_at DESC,id LIMIT 100")
+    let rows:Vec<KeyInfo>=sqlx::query_as("SELECT k.id,k.name,k.prefix,k.scopes,k.created_at,k.expires_at,k.revoked_at,k.last_used_at,k.project_id,p.name AS project_name FROM auth_api_keys k LEFT JOIN projects p ON p.id=k.project_id WHERE k.user_id=$1 AND k.organization_id=$2 ORDER BY (k.revoked_at IS NULL AND k.expires_at>now()) DESC,k.created_at DESC,k.id LIMIT 100")
         .bind(id.user_id).bind(id.organization_id).fetch_all(&state.pool).await?;
+    let projects: Vec<(Uuid, String)> =
+        sqlx::query_as("SELECT id,name FROM projects WHERE organization_id=$1 ORDER BY name,id")
+            .bind(id.organization_id)
+            .fetch_all(&state.pool)
+            .await?;
+    let projects: Vec<Value> = projects
+        .into_iter()
+        .map(|(id, name)| json!({"id":id,"name":name}))
+        .collect();
     Ok(Json(
-        json!({"keys":rows,"scopes":SCOPES,"rate_limit_per_minute":RATE_LIMIT}),
+        json!({"projects":projects,"keys":rows,"scopes":SCOPES,"rate_limit_per_minute":RATE_LIMIT}),
     ))
 }
 #[derive(Deserialize)]
@@ -45,6 +59,7 @@ pub struct Create {
     name: String,
     scopes: Vec<String>,
     expires_in_days: u32,
+    project_id: Option<Uuid>,
 }
 pub async fn create(
     State(state): State<AppState>,
@@ -73,6 +88,21 @@ pub async fn create(
     if role == "member" && scopes.iter().any(|s| s != "read") {
         return Err(forbidden());
     }
+    if let Some(project) = input.project_id {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1 AND organization_id=$2)",
+        )
+        .bind(project)
+        .bind(id.organization_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if !exists {
+            return Err(ApiError(
+                StatusCode::NOT_FOUND,
+                "Project not found in this organization.",
+            ));
+        }
+    }
     let count:i64=sqlx::query_scalar("SELECT count(*) FROM auth_api_keys WHERE user_id=$1 AND revoked_at IS NULL AND expires_at>now()")
         .bind(id.user_id).fetch_one(&mut *tx).await?;
     if count >= 20 {
@@ -80,8 +110,8 @@ pub async fn create(
             "Revoke an existing key before creating more than 20 active keys.",
         ));
     }
-    sqlx::query("INSERT INTO auth_api_keys(id,user_id,organization_id,name,key_hash,prefix,scopes,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
-        .bind(key).bind(id.user_id).bind(id.organization_id).bind(name).bind(digest(&value)).bind(prefix).bind(scopes).bind(expiry).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO auth_api_keys(id,user_id,organization_id,name,key_hash,prefix,scopes,expires_at,project_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)")
+        .bind(key).bind(id.user_id).bind(id.organization_id).bind(name).bind(digest(&value)).bind(prefix).bind(scopes).bind(expiry).bind(input.project_id).execute(&mut *tx).await?;
     log(&mut tx, id.user_id, id.organization_id, "api_key.created").await?;
     tx.commit().await?;
     Ok((
@@ -251,6 +281,9 @@ fn credential(headers: &HeaderMap, state: &AppState) -> Result<String, ApiError>
 #[derive(FromRow)]
 struct Principal {
     key_id: Uuid,
+    key_name: String,
+    project_id: Option<Uuid>,
+    project_name: Option<String>,
     scopes: Vec<String>,
     user_id: Uuid,
     name: String,
@@ -273,7 +306,7 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<Principal
             return Err(error);
         }
     };
-    let found=sqlx::query_as("SELECT k.id key_id,k.scopes,u.id user_id,u.name,u.email,u.system_role,o.id organization_id,o.name organization_name,m.role,k.expires_at FROM auth_api_keys k JOIN auth_users u ON u.id=k.user_id JOIN auth_members m ON m.user_id=u.id AND m.organization_id=k.organization_id JOIN auth_organizations o ON o.id=m.organization_id WHERE k.key_hash=$1 AND k.revoked_at IS NULL AND k.expires_at>now() AND NOT auth_user_banned(u.banned,u.ban_expires_at)")
+    let found=sqlx::query_as("SELECT k.id key_id,k.name key_name,k.project_id,p.name AS project_name,k.scopes,u.id user_id,u.name,u.email,u.system_role,o.id organization_id,o.name organization_name,m.role,k.expires_at FROM auth_api_keys k JOIN auth_users u ON u.id=k.user_id JOIN auth_members m ON m.user_id=u.id AND m.organization_id=k.organization_id JOIN auth_organizations o ON o.id=m.organization_id LEFT JOIN projects p ON p.id=k.project_id AND p.organization_id=k.organization_id WHERE (k.project_id IS NULL OR p.id IS NOT NULL) AND k.key_hash=$1 AND k.revoked_at IS NULL AND k.expires_at>now() AND NOT auth_user_banned(u.banned,u.ban_expires_at)")
         .bind(digest(&value)).fetch_optional(&state.pool).await?;
     if let Some(found) = found {
         Ok(found)
@@ -286,6 +319,29 @@ async fn rate(state: &AppState, key: Uuid) -> Result<i32, ApiError> {
     let count:i32=sqlx::query_scalar("UPDATE auth_api_keys SET rate_count=CASE WHEN rate_window<date_trunc('minute',now()) THEN 1 ELSE LEAST(rate_count+1,122) END,rate_window=date_trunc('minute',now()),last_used_at=now() WHERE id=$1 AND revoked_at IS NULL AND expires_at>now() RETURNING rate_count")
         .bind(key).fetch_optional(&state.pool).await?.ok_or_else(unauthorized)?;
     Ok(count)
+}
+async fn project_access(
+    state: &AppState,
+    project: Option<Uuid>,
+    method: &str,
+    route: &str,
+    resource: Option<Uuid>,
+) -> Result<bool, ApiError> {
+    let Some(project) = project else {
+        return Ok(true);
+    };
+    let route = route.strip_prefix("/api/v1").unwrap_or("");
+    match (method, route) {
+        ("GET", "/agent" | "/agent/docs" | "/projects" | "/projects/service-status" | "/home-summary" | "/status" | "/server-time") => Ok(true),
+        (_, "/projects/{id}" | "/projects/{id}/environments") => Ok(resource == Some(project)),
+        (_, "/environments/{id}/applications" | "/environments/{id}/services" | "/environments/{id}/service-status") => {
+            Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM environments WHERE id=$1 AND project_id=$2)").bind(resource).bind(project).fetch_one(&state.pool).await?)
+        },
+        (_, path) if path == "/services/{id}" || path.starts_with("/services/{id}/") || path == "/applications/{id}" || path.starts_with("/applications/{id}/") => {
+            Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM applications a JOIN environments e ON e.id=a.environment_id WHERE a.id=$1 AND e.project_id=$2)").bind(resource).bind(project).fetch_one(&state.pool).await?)
+        },
+        _ => Ok(false),
+    }
 }
 pub(crate) async fn run(state: &AppState, mut req: Request, next: Next) -> Response {
     let principal = match authenticate(state, req.headers()).await {
@@ -318,6 +374,11 @@ pub(crate) async fn run(state: &AppState, mut req: Request, next: Next) -> Respo
             .all(|scope| principal.scopes.iter().any(|value| value == scope))
             && (required == "read" || matches!(principal.role.as_str(), "owner" | "admin"))
     });
+    let project_access = if allowed {
+        project_access(state, principal.project_id, &method, &route, resource).await
+    } else {
+        Ok(false)
+    };
     let response = match result {
         Err(error) => error.into_response(),
         Ok(count) if count > RATE_LIMIT => (
@@ -329,6 +390,12 @@ pub(crate) async fn run(state: &AppState, mut req: Request, next: Next) -> Respo
         )
             .into_response(),
         Ok(_) if !allowed => forbidden().into_response(),
+        Ok(_) if matches!(project_access, Ok(false)) => ApiError(
+            StatusCode::NOT_FOUND,
+            "Resource is outside this key's project access.",
+        )
+        .into_response(),
+        Ok(_) if project_access.is_err() => project_access.unwrap_err().into_response(),
         Ok(_) => {
             req.extensions_mut().insert(Identity {
                 session_id: Uuid::nil(),
@@ -345,12 +412,15 @@ pub(crate) async fn run(state: &AppState, mut req: Request, next: Next) -> Respo
             req.extensions_mut().insert(KeyAccess {
                 id: principal.key_id,
                 scopes: principal.scopes,
+                project_id: principal.project_id,
+                project_name: principal.project_name,
+                name: principal.key_name,
             });
             next.run(req).await
         }
     };
     // Only matched route templates and UUIDs are retained: no bodies, queries, keys or headers.
-    if record && let Err(error)=sqlx::query("INSERT INTO auth_api_key_requests(id,key_id,user_id,organization_id,method,route,resource_id,status,ip_address) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)")
+    if record && let Err(error)=sqlx::query("INSERT INTO auth_api_key_requests(id,key_id,user_id,organization_id,method,route,resource_id,status,ip_address) VALUES($1,(SELECT id FROM auth_api_keys WHERE id=$2),$3,$4,$5,$6,$7,$8,$9)")
         .bind(Uuid::new_v4()).bind(principal.key_id).bind(principal.user_id).bind(principal.organization_id).bind(method).bind(route).bind(resource).bind(i16::try_from(response.status().as_u16()).unwrap_or(500)).bind(peer).execute(&state.pool).await{
         tracing::warn!(%error,"Could not record API key request metadata");
     }
@@ -366,8 +436,28 @@ pub async fn agent(
         .iter()
         .filter(|scope| scope.as_str() == "read" || matches!(id.role.as_str(), "owner" | "admin"))
         .collect();
+    let workflow = if key.project_id.is_some() {
+        vec![
+            "GET /api/v1/projects",
+            "GET /api/v1/projects/{id}/environments",
+            "POST /api/v1/environments/{id}/services",
+            "POST /api/v1/services/{id}/deploy",
+            "GET /api/v1/services/{id}/deployments",
+            "GET /api/v1/services/{id}/runtime",
+        ]
+    } else {
+        vec![
+            "GET /api/v1/projects",
+            "POST /api/v1/projects",
+            "GET /api/v1/projects/{id}/environments",
+            "POST /api/v1/environments/{id}/services",
+            "POST /api/v1/services/{id}/deploy",
+            "GET /api/v1/services/{id}/deployments",
+            "GET /api/v1/services/{id}/runtime",
+        ]
+    };
     Ok(Json(
-        json!({"api_version":"v1","user_id":id.user_id,"organization_id":id.organization_id,"organization_name":id.organization_name,"organization_role":id.role,"key_id":key.id,"scopes":effective,"granted_scopes":key.scopes,"rate_limit_per_minute":RATE_LIMIT,"documentation":"/api/v1/agent/docs","workflow":["GET /api/v1/projects","POST /api/v1/projects","GET /api/v1/projects/{id}/environments","POST /api/v1/environments/{id}/services","POST /api/v1/services/{id}/deploy","GET /api/v1/services/{id}/deployments","GET /api/v1/services/{id}/runtime"],"constraints":["Scopes never exceed the current organization role","Account and organization administration require a browser session","Configuration reads require secrets:read; deployment and application logs may contain sensitive application output"]}),
+        json!({"project_id":key.project_id,"project_name":key.project_name,"api_version":"v1","user_id":id.user_id,"organization_id":id.organization_id,"organization_name":id.organization_name,"organization_role":id.role,"key_id":key.id,"scopes":effective,"granted_scopes":key.scopes,"rate_limit_per_minute":RATE_LIMIT,"documentation":"/api/v1/agent/docs","workflow":workflow,"constraints":["Scopes never exceed the current organization role","Account and organization administration require a browser session","Configuration reads require secrets:read; deployment and application logs may contain sensitive application output"]}),
     ))
 }
 

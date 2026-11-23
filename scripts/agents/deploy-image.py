@@ -76,7 +76,12 @@ def deploy(client, args):
     identity = client.call('GET', '/agent')
     if identity['organization_role'] not in ('owner', 'admin') or not {'read', 'manage', 'deploy'}.issubset(identity['scopes']):
         raise AgentError('This workflow needs read/manage/deploy and an owner/admin organization role.')
-    if args.project_id:
+    bound_project = identity.get('project_id')
+    if bound_project:
+        if args.project_id and args.project_id != bound_project:
+            raise AgentError('This API key is limited to another project. Use its assigned project ID.')
+        project = {'id': bound_project}
+    elif args.project_id:
         project = {'id': args.project_id}
     else:
         project = choose(client.call('GET', '/projects'), args.project, 'project')

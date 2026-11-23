@@ -183,3 +183,11 @@ Every Application and Database service has Logs and Monitoring tabs available to
 `GET /api/v1/services/{id}/metrics` reads only the verified active container, with CPU usage in vCPU, configured CPU limit, RAM usage/limit and percentages of those limits. CPU uses Docker counter deltas; one vCPU is one CPU core. CPU quota and cpuset restrictions determine the configured limit. RAM follows Docker CLI working-set accounting by excluding reclaimable inactive file cache; raw usage is also returned. Missing counters, stopped containers and absent limits produce unavailable values rather than fabricated zero usage. The runtime diagnostic port is read from current Docker port bindings, including after stop/start changes an automatically allocated port.
 
 Monitoring refreshes every five seconds while visible. Docker samples are bounded by a seven-second request deadline and coalesced in a bounded per-service cache for three seconds. Each request checks organization access and container ownership before cache use. Container replacement/restart invalidates the cached generation. No background collector samples inactive services, and no database history is written. API keys require read scope for logs and metrics. Read polling does not renew browser session inactivity expiry. Container logs may contain application secrets.
+
+## Deployment initiator
+
+Deployment History includes **Started by** with the initiating user and, for
+bearer requests, the API key's friendly name. Normal deployments, rollbacks and
+database-restore bootstrap deployments all record the current caller. Names are
+snapshots preserved after renames and key deletion. Older records use the known
+user name where available, otherwise “Unknown user”. No API credential is exposed.
