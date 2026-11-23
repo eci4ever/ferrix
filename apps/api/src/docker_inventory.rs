@@ -9,6 +9,125 @@ use futures_util::{StreamExt, TryStreamExt};
 use serde_json::{Value, json};
 use std::time::Duration;
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ScaleRequest {
+    replicas: i64,
+    version: i32,
+}
+
+pub(crate) async fn scale(
+    id: Identity,
+    State(state): State<AppState>,
+    Path(service_id): Path<String>,
+    Json(input): Json<ScaleRequest>,
+) -> Result<StatusCode, ApiError> {
+    id.admin()?;
+    if !(0..=100).contains(&input.replicas)
+        || input.version < 1
+        || service_id.len() != 25
+        || !service_id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "Use a service ID, a valid version and 0–100 replicas.",
+        ));
+    }
+    tokio::time::timeout(Duration::from_secs(8), scale_service(&state.docker, &service_id, input))
+        .await.map_err(|_| ApiError(StatusCode::SERVICE_UNAVAILABLE, "Scale request timed out. Refresh swarm to check whether it was applied before retrying."))??;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+fn scale_error(error: bollard::errors::Error) -> ApiError {
+    match error {
+        bollard::errors::Error::DockerResponseServerError {
+            status_code: 404, ..
+        } => ApiError(
+            StatusCode::NOT_FOUND,
+            "Swarm service no longer exists. Refresh swarm.",
+        ),
+        bollard::errors::Error::DockerResponseServerError {
+            status_code: 409, ..
+        } => ApiError(
+            StatusCode::CONFLICT,
+            "Service changed. Refresh swarm before scaling again.",
+        ),
+        _ => ApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Docker could not scale this service. Refresh swarm to check its state before retrying.",
+        ),
+    }
+}
+
+async fn scale_service(
+    docker: &Docker,
+    service_id: &str,
+    input: ScaleRequest,
+) -> Result<(), ApiError> {
+    let swarm = docker
+        .info()
+        .await
+        .map_err(scale_error)?
+        .swarm
+        .unwrap_or_default();
+    if swarm
+        .local_node_state
+        .map(|state| state.to_string())
+        .as_deref()
+        != Some("active")
+        || swarm.control_available != Some(true)
+    {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "Scaling requires an active Swarm manager.",
+        ));
+    }
+    let service = docker
+        .inspect_service(service_id, None)
+        .await
+        .map_err(scale_error)?;
+    if service.version.and_then(|version| version.index) != Some(input.version as u64) {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "Service changed. Refresh swarm before scaling again.",
+        ));
+    }
+    let mut spec = service.spec.ok_or(ApiError(
+        StatusCode::CONFLICT,
+        "Service configuration unavailable. Refresh swarm.",
+    ))?;
+    let mode = spec.mode.as_mut().ok_or(ApiError(
+        StatusCode::BAD_REQUEST,
+        "Only Replicated services can be scaled.",
+    ))?;
+    if mode.global.is_some() || mode.global_job.is_some() || mode.replicated_job.is_some() {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "Only Replicated services can be scaled. Global and job modes are not supported.",
+        ));
+    }
+    let replicated = mode.replicated.as_mut().ok_or(ApiError(
+        StatusCode::BAD_REQUEST,
+        "Only Replicated services can be scaled.",
+    ))?;
+    replicated.replicas = Some(input.replicas);
+    docker
+        .update_service(
+            service_id,
+            spec,
+            bollard::query_parameters::UpdateServiceOptionsBuilder::default()
+                .version(input.version)
+                .registry_auth_from("spec")
+                .build(),
+            None,
+        )
+        .await
+        .map_err(scale_error)?;
+    Ok(())
+}
+
 pub(crate) async fn get(
     id: Identity,
     State(state): State<AppState>,
@@ -115,6 +234,7 @@ fn swarm_service(service: &Value) -> Value {
             });
     json!({
         "id": field("/ID"), "name": field("/Spec/Name"), "mode": mode,
+        "version": field("/Version/Index"), "replicas": field("/Spec/Mode/Replicated/Replicas"),
         "image": field("/Spec/TaskTemplate/ContainerSpec/Image"),
         "running_tasks": field("/ServiceStatus/RunningTasks"),
         "desired_tasks": field("/ServiceStatus/DesiredTasks"),
@@ -140,6 +260,60 @@ fn swarm_node(node: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn scaling_preserves_spec_and_rejects_worker_modes_and_stale_versions() {
+        for scenario in [
+            "success", "worker", "inactive", "global", "job", "stale", "deleted", "race",
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let app = axum::Router::new().fallback(move |request: axum::extract::Request| async move {
+                let uri = request.uri().clone();
+                let payload = if uri.path().ends_with("/info") {
+                    json!({"Swarm":{"LocalNodeState":if scenario == "inactive" {"inactive"} else {"active"},"ControlAvailable":scenario != "worker"}})
+                } else if uri.path().ends_with("/update") {
+                    assert_eq!(request.method(), axum::http::Method::POST);
+                    assert!(uri.query().unwrap_or_default().contains("version=12"));
+                    assert!(uri.query().unwrap_or_default().contains("registryAuthFrom=spec"));
+                    let body = axum::body::to_bytes(request.into_body(), 65536).await.unwrap();
+                    let actual: Value = serde_json::from_slice(&body).unwrap();
+                    assert_eq!(actual["Mode"]["Replicated"]["Replicas"], 3);
+                    assert_eq!(actual["TaskTemplate"]["ContainerSpec"]["Image"], "nginx:alpine");
+                    assert_eq!(actual["TaskTemplate"]["ContainerSpec"]["Env"][0], "KEEP=secret");
+                    assert_eq!(actual["Labels"]["keep"], "yes");
+                    if scenario == "race" { return (StatusCode::CONFLICT, Json(json!({"message":"out of sequence"}))); }
+                    assert_eq!(scenario, "success");
+                    json!({"Warnings":[]})
+                } else {
+                    assert!(!["inactive", "worker"].contains(&scenario));
+                    if scenario == "deleted" { return (StatusCode::NOT_FOUND, Json(json!({"message":"missing"}))); }
+                    json!({"ID":"aaaaaaaaaaaaaaaaaaaaaaaaa","Version":{"Index":if scenario == "stale" {13} else {12}},"Spec":{"Name":"demo","Labels":{"keep":"yes"},"Mode":if scenario == "global" {json!({"Global":{}})} else if scenario == "job" {json!({"ReplicatedJob":{}})} else {json!({"Replicated":{"Replicas":2}})},"TaskTemplate":{"ContainerSpec":{"Image":"nginx:alpine","Env":["KEEP=secret"]}}}})
+                };
+                (StatusCode::OK, Json(payload))
+            });
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let docker =
+                Docker::connect_with_http(&endpoint, 3, bollard::API_DEFAULT_VERSION).unwrap();
+            let result = scale_service(
+                &docker,
+                "aaaaaaaaaaaaaaaaaaaaaaaaa",
+                ScaleRequest {
+                    replicas: 3,
+                    version: 12,
+                },
+            )
+            .await;
+            let expected = match scenario {
+                "success" => None,
+                "global" | "job" => Some(StatusCode::BAD_REQUEST),
+                "deleted" => Some(StatusCode::NOT_FOUND),
+                _ => Some(StatusCode::CONFLICT),
+            };
+            assert_eq!(result.err().map(|error| error.0), expected, "{scenario}");
+            server.abort();
+        }
+    }
 
     #[tokio::test]
     async fn swarm_inventory_handles_manager_worker_and_inactive_daemons() {
