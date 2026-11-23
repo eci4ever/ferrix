@@ -748,6 +748,20 @@ async fn postgres_auth_security_and_tenant_isolation() {
             .await
             .unwrap();
     assert_eq!(before, after, "clock polling must not renew idle sessions");
+    let (log_status, _, log_cookie) =
+        get(&app, "/api/v1/docker/swarm/services/invalid/logs", &owner).await;
+    assert_eq!(log_status, StatusCode::BAD_REQUEST);
+    assert!(log_cookie.is_empty(), "log polling must not renew cookies");
+    let after_logs: chrono::DateTime<chrono::Utc> =
+        sqlx::query_scalar("SELECT expires_at FROM auth_sessions WHERE user_id=$1")
+            .bind(owner_id.parse::<uuid::Uuid>().unwrap())
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        before, after_logs,
+        "log polling must not renew idle sessions"
+    );
     assert_eq!(
         get(&app, "/api/v1/projects", &owner).await.0,
         StatusCode::OK

@@ -152,6 +152,16 @@ no-store`. Missing services and empty logs have explicit displays; read errors
 include guidance about Docker connectivity and logging drivers. Refresh logs fetches a new snapshot;
 closing the dialog aborts the browser request. No tasks are restarted or scaled.
 
+Swarm log dialogs auto-refresh by default, scheduling the next snapshot three
+seconds after the previous request completes (no overlapping reads). Pause
+auto-refresh cancels the current browser request and retains the last snapshot;
+manual Refresh logs still works while paused. Resume fetches immediately.
+Hidden tabs do not start new reads, and visible tabs resume polling. Closing
+the dialog aborts requests and removes timers/listeners. Transient errors retain
+the last successful snapshot with an error notice; 401/403/404 responses clear
+it and pause polling. Snapshot timestamps show when data was last received.
+Log polling validates sessions without extending their inactivity expiry.
+
 ### Host monitoring
 
 System administrators can open **Monitoring** (`/monitoring`). `GET /api/v1/monitoring`
