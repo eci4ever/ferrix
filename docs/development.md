@@ -111,7 +111,7 @@ from scheduling availability (active/pause/drain). CPU and RAM are node capacity
 not current utilization. Node responses include only display fields; labels,
 certificates and join tokens are excluded. Inactive, transitional and worker
 states display an explanation with unavailable counts rather than invented zeros.
-Refresh swarm fetches a new snapshot; this page never initializes or changes Swarm.
+Refresh swarm fetches a new snapshot; this page never initializes Swarm or changes cluster membership.
 Services are read from the manager with `status=true` for Docker's running,
 desired and completed task counts. The searchable table shows deployment mode,
 image, published ports and update state; missing counts stay unknown. Completed
@@ -119,6 +119,17 @@ job tasks are displayed separately from running tasks. No service environment,
 secret/config references, mounts or labels are returned. An empty manager
 inventory is distinguished from unavailable inventory or missing manager access.
 Refreshing preserves the selected Swarm view.
+
+System administrators can scale ordinary Replicated services from the Services
+table. The confirmation dialog accepts 0–100 replicas and warns that zero stops
+all tasks. Global and job modes cannot be scaled here. The POST endpoint at
+`/api/v1/docker/swarm/services/{id}/scale` checks the active-manager state and
+the inspected service version before updating only the replica count in the
+existing spec. Docker receives the same version for its concurrent-write guard
+and retains registry authorization from the current spec. Stale versions require
+refreshing the inventory. Successful requests trigger a refresh; task convergence
+is asynchronous, so refresh again to check the running/desired counts. Timeouts
+may occur after Docker accepts an update; check the inventory before retrying.
 
 ### Host monitoring
 

@@ -38,6 +38,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/agent/docs", get(auth::api_keys::documentation))
         .route("/api/v1/monitoring", get(monitoring::get))
         .route("/api/v1/docker/{section}", get(docker_inventory::get))
+        .route(
+            "/api/v1/docker/swarm/services/{id}/scale",
+            axum::routing::post(docker_inventory::scale),
+        )
         .layer(axum::Extension(monitor))
         .route("/api/v1/home-summary", get(home::get))
         .route("/api/v1/status", get(status))
