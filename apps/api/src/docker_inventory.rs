@@ -16,6 +16,40 @@ pub(crate) struct ScaleRequest {
     version: i32,
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RestartRequest {
+    version: i32,
+}
+
+enum ServiceChange {
+    Scale(i64),
+    Restart,
+}
+
+pub(crate) async fn restart(
+    id: Identity,
+    State(state): State<AppState>,
+    Path(service_id): Path<String>,
+    Json(input): Json<RestartRequest>,
+) -> Result<StatusCode, ApiError> {
+    id.admin()?;
+    if input.version < 1
+        || service_id.len() != 25
+        || !service_id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "Use a service ID and a valid version.",
+        ));
+    }
+    tokio::time::timeout(Duration::from_secs(8), change_service(&state.docker, &service_id, input.version, ServiceChange::Restart))
+        .await.map_err(|_| ApiError(StatusCode::SERVICE_UNAVAILABLE, "Restart request timed out. Refresh swarm to check whether it was applied before retrying."))??;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 pub(crate) async fn scale(
     id: Identity,
     State(state): State<AppState>,
@@ -40,7 +74,7 @@ pub(crate) async fn scale(
     Ok(StatusCode::NO_CONTENT)
 }
 
-fn scale_error(error: bollard::errors::Error) -> ApiError {
+fn service_update_error(error: bollard::errors::Error) -> ApiError {
     match error {
         bollard::errors::Error::DockerResponseServerError {
             status_code: 404, ..
@@ -52,11 +86,11 @@ fn scale_error(error: bollard::errors::Error) -> ApiError {
             status_code: 409, ..
         } => ApiError(
             StatusCode::CONFLICT,
-            "Service changed. Refresh swarm before scaling again.",
+            "Service changed. Refresh swarm before updating it again.",
         ),
         _ => ApiError(
             StatusCode::SERVICE_UNAVAILABLE,
-            "Docker could not scale this service. Refresh swarm to check its state before retrying.",
+            "Docker could not update this service. Refresh swarm to check its state before retrying.",
         ),
     }
 }
@@ -66,10 +100,25 @@ async fn scale_service(
     service_id: &str,
     input: ScaleRequest,
 ) -> Result<(), ApiError> {
+    change_service(
+        docker,
+        service_id,
+        input.version,
+        ServiceChange::Scale(input.replicas),
+    )
+    .await
+}
+
+async fn change_service(
+    docker: &Docker,
+    service_id: &str,
+    version: i32,
+    change: ServiceChange,
+) -> Result<(), ApiError> {
     let swarm = docker
         .info()
         .await
-        .map_err(scale_error)?
+        .map_err(service_update_error)?
         .swarm
         .unwrap_or_default();
     if swarm
@@ -81,17 +130,17 @@ async fn scale_service(
     {
         return Err(ApiError(
             StatusCode::CONFLICT,
-            "Scaling requires an active Swarm manager.",
+            "Updating services requires an active Swarm manager.",
         ));
     }
     let service = docker
         .inspect_service(service_id, None)
         .await
-        .map_err(scale_error)?;
-    if service.version.and_then(|version| version.index) != Some(input.version as u64) {
+        .map_err(service_update_error)?;
+    if service.version.and_then(|version| version.index) != Some(version as u64) {
         return Err(ApiError(
             StatusCode::CONFLICT,
-            "Service changed. Refresh swarm before scaling again.",
+            "Service changed. Refresh swarm before updating it again.",
         ));
     }
     let mut spec = service.spec.ok_or(ApiError(
@@ -100,31 +149,57 @@ async fn scale_service(
     ))?;
     let mode = spec.mode.as_mut().ok_or(ApiError(
         StatusCode::BAD_REQUEST,
-        "Only Replicated services can be scaled.",
+        "Service mode unavailable. Refresh swarm.",
     ))?;
-    if mode.global.is_some() || mode.global_job.is_some() || mode.replicated_job.is_some() {
+    if mode.global_job.is_some() || mode.replicated_job.is_some() {
         return Err(ApiError(
             StatusCode::BAD_REQUEST,
-            "Only Replicated services can be scaled. Global and job modes are not supported.",
+            "Job services cannot be scaled or restarted here.",
         ));
     }
-    let replicated = mode.replicated.as_mut().ok_or(ApiError(
-        StatusCode::BAD_REQUEST,
-        "Only Replicated services can be scaled.",
-    ))?;
-    replicated.replicas = Some(input.replicas);
+    match change {
+        ServiceChange::Scale(replicas) => {
+            let replicated = mode
+                .replicated
+                .as_mut()
+                .filter(|_| mode.global.is_none())
+                .ok_or(ApiError(
+                    StatusCode::BAD_REQUEST,
+                    "Only Replicated services can be scaled.",
+                ))?;
+            replicated.replicas = Some(replicas);
+        }
+        ServiceChange::Restart => {
+            if mode.replicated.is_none() && mode.global.is_none() {
+                return Err(ApiError(
+                    StatusCode::BAD_REQUEST,
+                    "Only Replicated and Global services can be restarted.",
+                ));
+            }
+            let task = spec.task_template.as_mut().ok_or(ApiError(
+                StatusCode::CONFLICT,
+                "Service task configuration unavailable. Refresh swarm.",
+            ))?;
+            task.force_update = Some(task.force_update.unwrap_or(0).checked_add(1).ok_or(
+                ApiError(
+                    StatusCode::CONFLICT,
+                    "Service restart counter is exhausted.",
+                ),
+            )?);
+        }
+    }
     docker
         .update_service(
             service_id,
             spec,
             bollard::query_parameters::UpdateServiceOptionsBuilder::default()
-                .version(input.version)
+                .version(version)
                 .registry_auth_from("spec")
                 .build(),
             None,
         )
         .await
-        .map_err(scale_error)?;
+        .map_err(service_update_error)?;
     Ok(())
 }
 
@@ -260,6 +335,52 @@ fn swarm_node(node: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn restart_replaces_tasks_without_changing_replicas_or_update_policy() {
+        for mode in ["replicated", "global", "job", "overflow"] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let app = axum::Router::new().fallback(move |request: axum::extract::Request| async move {
+                let uri = request.uri().clone();
+                let body = if uri.path().ends_with("/info") {
+                    json!({"Swarm":{"LocalNodeState":"active","ControlAvailable":true}})
+                } else if uri.path().ends_with("/update") {
+                    assert!(["replicated", "global"].contains(&mode));
+                    assert!(uri.query().unwrap_or_default().contains("version=12"));
+                    assert!(uri.query().unwrap_or_default().contains("registryAuthFrom=spec"));
+                    let bytes = axum::body::to_bytes(request.into_body(), 65536).await.unwrap();
+                    let actual: Value = serde_json::from_slice(&bytes).unwrap();
+                    assert_eq!(actual["TaskTemplate"]["ForceUpdate"], 8);
+                    assert_eq!(actual["TaskTemplate"]["ContainerSpec"]["Env"][0], "KEEP=private");
+                    assert_eq!(actual["UpdateConfig"]["Parallelism"], 1);
+                    if mode == "replicated" { assert_eq!(actual["Mode"]["Replicated"]["Replicas"], 2); }
+                    else { assert!(actual["Mode"].get("Global").is_some()); }
+                    json!({"Warnings":[]})
+                } else {
+                    json!({"ID":"aaaaaaaaaaaaaaaaaaaaaaaaa","Version":{"Index":12},"Spec":{"Name":"demo","Mode":match mode {"global"=>json!({"Global":{}}),"job"=>json!({"ReplicatedJob":{}}),_=>json!({"Replicated":{"Replicas":2}})},"UpdateConfig":{"Parallelism":1},"TaskTemplate":{"ForceUpdate":if mode == "overflow" {u64::MAX} else {7},"ContainerSpec":{"Image":"nginx:alpine","Env":["KEEP=private"]}}}})
+                };
+                Json(body)
+            });
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let docker =
+                Docker::connect_with_http(&endpoint, 3, bollard::API_DEFAULT_VERSION).unwrap();
+            let result = change_service(
+                &docker,
+                "aaaaaaaaaaaaaaaaaaaaaaaaa",
+                12,
+                ServiceChange::Restart,
+            )
+            .await;
+            let expected = match mode {
+                "job" => Some(StatusCode::BAD_REQUEST),
+                "overflow" => Some(StatusCode::CONFLICT),
+                _ => None,
+            };
+            assert_eq!(result.err().map(|error| error.0), expected, "{mode}");
+            server.abort();
+        }
+    }
 
     #[tokio::test]
     async fn scaling_preserves_spec_and_rejects_worker_modes_and_stale_versions() {

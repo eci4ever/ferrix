@@ -39,6 +39,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/monitoring", get(monitoring::get))
         .route("/api/v1/docker/{section}", get(docker_inventory::get))
         .route(
+            "/api/v1/docker/swarm/services/{id}/restart",
+            axum::routing::post(docker_inventory::restart),
+        )
+        .route(
             "/api/v1/docker/swarm/services/{id}/scale",
             axum::routing::post(docker_inventory::scale),
         )

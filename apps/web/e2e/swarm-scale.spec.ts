@@ -1,11 +1,18 @@
 import { expect, test } from '@playwright/test'
 
-test('scale confirmation validates replicas, handles conflicts and refreshes task counts', async ({ page }) => {
+test('scale and restart require confirmation, handle conflicts and retain replica counts', async ({ page }) => {
   let replicas = 2
   let updates = 0
   let conflict = false
+  let restarts = 0
   await page.route('**/api/v1/**', async route => {
     const path = new URL(route.request().url()).pathname
+    if (path.endsWith('/restart')) {
+      restarts++
+      expect(route.request().postDataJSON()).toEqual({version:12})
+      if (conflict) return route.fulfill({status:409,json:{error:'Service changed. Refresh swarm before updating it again.'}})
+      return route.fulfill({status:204})
+    }
     if (path.endsWith('/scale')) {
       updates++
       expect(route.request().postDataJSON()).toEqual({replicas:3,version:12})
@@ -53,4 +60,20 @@ test('scale confirmation validates replicas, handles conflicts and refreshes tas
   await expect(page.getByText(/Scale requested for demo: 3 replicas/)).toBeVisible()
   await expect(page.getByRole('tab',{name:'Services',exact:true})).toHaveAttribute('aria-selected','true')
   expect(updates).toBe(2)
+  await expect(page.getByRole('button',{name:'Restart backup',exact:true})).toHaveCount(0)
+  await expect(page.getByRole('button',{name:'Restart global-agent',exact:true})).toBeDisabled()
+  await page.getByRole('button',{name:'Restart demo',exact:true}).click()
+  await expect(page.getByRole('dialog')).toContainText('Connections may be interrupted')
+  await page.getByRole('button',{name:'Cancel',exact:true}).click()
+  expect(restarts).toBe(0)
+  await page.getByRole('button',{name:'Restart demo',exact:true}).click()
+  conflict = true
+  await page.getByRole('button',{name:'Restart service',exact:true}).click()
+  await expect(page.getByText('Service could not be restarted',{exact:true})).toBeVisible()
+  conflict = false
+  await page.getByRole('button',{name:'Restart service',exact:true}).click()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(page.getByText(/Restart requested for demo/)).toBeVisible()
+  await expect(page.getByRole('cell',{name:'3 / 3',exact:true})).toBeVisible()
+  expect(restarts).toBe(2)
 })
