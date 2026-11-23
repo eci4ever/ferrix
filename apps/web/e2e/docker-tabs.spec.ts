@@ -55,3 +55,50 @@ test('Docker tabs load on demand and recover from a failed request', async ({ pa
   expect(imageRequests).toBe(previousImageRequests)
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 })
+
+test('Swarm shows real node capacity, worker limits and inactive state without invented counts', async ({ page }) => {
+  let swarm: Record<string, unknown> = { state: 'inactive', manager: false, node_list: null }
+  let unavailable = false
+  await page.route('**/api/v1/**', route => {
+    const path = new URL(route.request().url()).pathname
+    if (path === '/api/v1/docker/swarm') return unavailable
+      ? route.fulfill({ status: 503, json: { error: 'Docker unavailable.' } })
+      : route.fulfill({ json: swarm })
+    const responses: Record<string, unknown> = {
+      '/api/v1/auth/session': { name: 'Admin', system_role: 'admin', organization_id: 'org', organization_name: 'Test', role: 'owner' },
+      '/api/v1/auth/organizations': [], '/api/v1/auth/setup': { setup_required: false },
+      '/api/v1/status': { database: true, docker: true, version: 'test' },
+      '/api/v1/server-time': { unix_ms: Date.now(), timezone: 'UTC', utc_offset: '+00:00' },
+      '/api/v1/containers': [],
+    }
+    return route.fulfill({ json: responses[path] ?? {} })
+  })
+  await page.goto('/containers')
+  await page.getByRole('tab', { name: 'Swarm', exact: true }).click()
+  await expect(page.getByText('Swarm is not active', { exact: true })).toBeVisible()
+  await page.getByRole('tab', { name: 'Nodes', exact: true }).click()
+  await expect(page.getByText('Node inventory is unavailable', { exact: false })).toBeVisible()
+  swarm = { state: 'active', manager: true, node_list: [
+    { id: 'node-one', hostname: 'vps', state: 'ready', role: 'manager', leader: true, reachability: 'reachable', availability: 'active', engine_version: '28.5.0', nano_cpus: 2000000000, memory_bytes: 4294967296, address: '192.168.0.252' },
+    { id: 'node-two', hostname: 'worker', state: 'down', role: 'worker', availability: 'drain' },
+  ] }
+  await page.getByRole('button', { name: 'Refresh swarm' }).click()
+  await expect(page.getByRole('heading', { name: 'vps', exact: true })).toBeVisible()
+  await expect(page.getByText('2 cores', { exact: true })).toBeVisible()
+  await expect(page.getByText('4 GiB', { exact: true })).toBeVisible()
+  await expect(page.getByText('Availability: drain', { exact: true })).toBeVisible()
+  await page.getByRole('tab', { name: 'Overview', exact: true }).click()
+  await expect(page.getByText('1 / 2', { exact: true })).toBeVisible()
+  await page.setViewportSize({ width: 390, height: 844 })
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  swarm = { state: 'active', manager: false, node_id: 'worker-id', node_list: null }
+  await page.getByRole('button', { name: 'Refresh swarm' }).click()
+  await expect(page.getByText('Manager access required', { exact: true })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'vps', exact: true })).toHaveCount(0)
+  unavailable = true
+  await page.getByRole('button', { name: 'Refresh swarm' }).click()
+  await expect(page.getByText('Swarm unavailable', { exact: true })).toBeVisible()
+  unavailable = false
+  await page.getByRole('button', { name: 'Refresh swarm' }).click()
+  await expect(page.getByText('Manager access required', { exact: true })).toBeVisible()
+})

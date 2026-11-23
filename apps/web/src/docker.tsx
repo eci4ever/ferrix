@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { request } from '@/lib/api'
+import { SwarmInventory } from '@/swarm'
 
 const sections = [
   { id: 'containers', label: 'Containers', description: 'Running and stopped containers on this Docker host.', columns: [['name', 'Name'], ['state', 'State'], ['status', 'Status'], ['image', 'Image']] },
@@ -101,7 +102,7 @@ export function DockerPage({ admin, refreshVersion }: { admin: boolean; refreshV
         </TabsList>
       </div>
       {sections.map(section => <TabsContent key={section.id} value={section.id} className="min-w-0">
-        <Inventory section={section} refreshVersion={refreshVersion} />
+        {section.id === 'swarm' ? <SwarmInventory refreshVersion={refreshVersion} /> : <Inventory section={section} refreshVersion={refreshVersion} />}
       </TabsContent>)}
     </Tabs>
   </section>
