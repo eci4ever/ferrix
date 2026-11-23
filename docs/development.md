@@ -141,6 +141,17 @@ The UI reports the request as accepted and refreshes inventory; refresh again
 until running/desired counts recover. A service with zero desired replicas stays
 at zero after restart. Refresh before retrying failed or timed-out requests.
 
+View logs opens a shadcn dialog with an on-demand snapshot from
+`GET /api/v1/docker/swarm/services/{id}/logs`. System-admin and active-manager
+checks apply to every read. Docker is asked for stdout/stderr with timestamps,
+200 tail lines per task and no follow stream. The read has a five-second timeout,
+a 1 MiB received-data budget and a 64 KiB display cap with a truncation notice.
+Logs stay plain text (ANSI styling is stripped in the UI); credentials logged by
+applications are not automatically redacted. Responses use `Cache-Control:
+no-store`. Missing services and empty logs have explicit displays; read errors
+include guidance about Docker connectivity and logging drivers. Refresh logs fetches a new snapshot;
+closing the dialog aborts the browser request. No tasks are restarted or scaled.
+
 ### Host monitoring
 
 System administrators can open **Monitoring** (`/monitoring`). `GET /api/v1/monitoring`

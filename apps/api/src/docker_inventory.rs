@@ -9,6 +9,116 @@ use futures_util::{StreamExt, TryStreamExt};
 use serde_json::{Value, json};
 use std::time::Duration;
 
+const SWARM_LOG_LIMIT: usize = 65536;
+
+pub(crate) async fn logs(
+    id: Identity,
+    State(state): State<AppState>,
+    Path(service_id): Path<String>,
+) -> Result<impl axum::response::IntoResponse, ApiError> {
+    id.admin()?;
+    if service_id.len() != 25
+        || !service_id
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    {
+        return Err(ApiError(
+            StatusCode::BAD_REQUEST,
+            "Use a valid Swarm service ID.",
+        ));
+    }
+    let data = tokio::time::timeout(
+        Duration::from_secs(5),
+        service_logs(&state.docker, &service_id),
+    )
+    .await
+    .map_err(|_| {
+        ApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Reading Swarm logs timed out. Refresh logs to retry.",
+        )
+    })??;
+    Ok(([(header::CACHE_CONTROL, "no-store")], Json(data)))
+}
+
+fn log_error(error: bollard::errors::Error) -> ApiError {
+    if matches!(
+        error,
+        bollard::errors::Error::DockerResponseServerError {
+            status_code: 404,
+            ..
+        }
+    ) {
+        ApiError(
+            StatusCode::NOT_FOUND,
+            "Swarm service no longer exists. Refresh swarm.",
+        )
+    } else {
+        ApiError(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Docker could not read Swarm logs. Check the Docker connection and whether the service logging driver supports reading logs, then refresh logs.",
+        )
+    }
+}
+
+async fn service_logs(docker: &Docker, service_id: &str) -> Result<Value, ApiError> {
+    let swarm = docker
+        .info()
+        .await
+        .map_err(log_error)?
+        .swarm
+        .unwrap_or_default();
+    if swarm
+        .local_node_state
+        .map(|state| state.to_string())
+        .as_deref()
+        != Some("active")
+        || swarm.control_available != Some(true)
+    {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "Reading service logs requires an active Swarm manager.",
+        ));
+    }
+    let options = bollard::query_parameters::LogsOptionsBuilder::default()
+        .stdout(true)
+        .stderr(true)
+        .follow(false)
+        .timestamps(true)
+        .tail("200")
+        .build();
+    let mut stream = docker.service_logs(service_id, Some(options));
+    let mut output = Vec::new();
+    let mut truncated = false;
+    let mut received = 0_usize;
+    while let Some(chunk) = stream.next().await {
+        let bytes = chunk.map_err(log_error)?.into_bytes();
+        received = received.saturating_add(bytes.len());
+        if output.len().saturating_add(bytes.len()) > SWARM_LOG_LIMIT {
+            truncated = true;
+            let discard = output
+                .len()
+                .saturating_add(bytes.len())
+                .saturating_sub(SWARM_LOG_LIMIT)
+                .min(output.len());
+            output.drain(..discard);
+        }
+        output.extend_from_slice(&bytes[bytes.len().saturating_sub(SWARM_LOG_LIMIT)..]);
+        if received >= 1048576 {
+            truncated = true;
+            break;
+        }
+    }
+    let text = String::from_utf8_lossy(&output);
+    let mut start = text.len().saturating_sub(SWARM_LOG_LIMIT);
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    Ok(
+        json!({"logs": &text[start..], "truncated": truncated || start > 0, "tail":200,"limit_bytes":SWARM_LOG_LIMIT,"checked_at":chrono::Utc::now(),"service_id":service_id}),
+    )
+}
+
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ScaleRequest {
@@ -335,6 +445,68 @@ fn swarm_node(node: &Value) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn log_snapshots_decode_streams_bound_output_and_reject_unavailable_access() {
+        use axum::response::IntoResponse;
+        for scenario in [
+            "logs", "empty", "large", "worker", "inactive", "deleted", "driver",
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let app = axum::Router::new().fallback(move |uri: axum::http::Uri| async move {
+                if uri.path().ends_with("/info") {
+                    return Json(json!({"Swarm":{"LocalNodeState":if scenario == "inactive" {"inactive"} else {"active"},"ControlAvailable":scenario != "worker"}})).into_response();
+                }
+                assert!(!["worker", "inactive"].contains(&scenario));
+                assert!(uri.path().ends_with("/logs"));
+                let query = uri.query().unwrap_or_default();
+                for option in ["stdout=true", "stderr=true", "follow=false", "timestamps=true", "tail=200"] { assert!(query.contains(option)); }
+                if ["deleted", "driver"].contains(&scenario) {
+                    return (if scenario == "deleted" {StatusCode::NOT_FOUND} else {StatusCode::INTERNAL_SERVER_ERROR}, Json(json!({"message":"private Docker detail"}))).into_response();
+                }
+                let messages = match scenario { "empty" => vec![], "large" => vec!["é".repeat(40000)], _ => vec!["2026-11-23T00:00:00Z stdout entry\n".into(), "2026-11-23T00:00:01Z stderr entry\n".into()] };
+                let mut framed = Vec::new();
+                for (index, message) in messages.iter().enumerate() {
+                    framed.extend_from_slice(&[if index == 0 {1} else {2},0,0,0]);
+                    framed.extend_from_slice(&(message.len() as u32).to_be_bytes());
+                    framed.extend_from_slice(message.as_bytes());
+                }
+                ([(header::CONTENT_TYPE,"application/vnd.docker.raw-stream")], framed).into_response()
+            });
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let docker =
+                Docker::connect_with_http(&endpoint, 3, bollard::API_DEFAULT_VERSION).unwrap();
+            let result = service_logs(&docker, "aaaaaaaaaaaaaaaaaaaaaaaaa").await;
+            match scenario {
+                "logs" => {
+                    let data = result.unwrap();
+                    assert!(data["logs"].as_str().unwrap().contains("stdout entry"));
+                    assert!(data["logs"].as_str().unwrap().contains("stderr entry"));
+                    assert_eq!(data["truncated"], false);
+                }
+                "empty" => assert_eq!(result.unwrap()["logs"], ""),
+                "large" => {
+                    let data = result.unwrap();
+                    assert_eq!(data["truncated"], true);
+                    assert!(data["logs"].as_str().unwrap().len() <= SWARM_LOG_LIMIT);
+                }
+                _ => {
+                    let error = result.err().unwrap();
+                    assert_eq!(
+                        error.0,
+                        match scenario {
+                            "worker" | "inactive" => StatusCode::CONFLICT,
+                            "deleted" => StatusCode::NOT_FOUND,
+                            _ => StatusCode::SERVICE_UNAVAILABLE,
+                        }
+                    );
+                    assert!(!error.1.contains("private"));
+                }
+            }
+            server.abort();
+        }
+    }
 
     #[tokio::test]
     async fn restart_replaces_tasks_without_changing_replicas_or_update_policy() {

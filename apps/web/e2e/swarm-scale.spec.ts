@@ -1,12 +1,19 @@
 import { expect, test } from '@playwright/test'
 
-test('scale and restart require confirmation, handle conflicts and retain replica counts', async ({ page }) => {
+test('service actions confirm mutations and display bounded log snapshots with recovery', async ({ page }) => {
   let replicas = 2
   let updates = 0
   let conflict = false
   let restarts = 0
+  let logMode = 'ok'
+  let logRequests = 0
   await page.route('**/api/v1/**', async route => {
     const path = new URL(route.request().url()).pathname
+    if (path.endsWith('/logs')) {
+      logRequests++
+      if (logMode === 'error') return route.fulfill({status:503,json:{error:'Docker logging driver unavailable.'}})
+      return route.fulfill({json:{logs:logMode === 'empty' ? '' : '\u001b[32m2026-11-23T00:00:00Z nginx GET /demo <img src=x onerror=alert(1)>\u001b[0m',truncated:logMode === 'truncated',checked_at:'2026-11-23T00:00:00Z'}})
+    }
     if (path.endsWith('/restart')) {
       restarts++
       expect(route.request().postDataJSON()).toEqual({version:12})
@@ -76,4 +83,23 @@ test('scale and restart require confirmation, handle conflicts and retain replic
   await expect(page.getByText(/Restart requested for demo/)).toBeVisible()
   await expect(page.getByRole('cell',{name:'3 / 3',exact:true})).toBeVisible()
   expect(restarts).toBe(2)
+  expect(logRequests).toBe(0)
+  await page.getByRole('button',{name:'View logs for demo',exact:true}).click()
+  await expect(page.getByLabel('Swarm service logs',{exact:true})).toContainText('nginx GET /demo <img src=x onerror=alert(1)>')
+  await expect(page.locator('pre img')).toHaveCount(0)
+  await expect(page.getByLabel('Swarm service logs',{exact:true})).not.toContainText('\u001b')
+  await page.setViewportSize({width:390,height:844})
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  logMode = 'empty'
+  await page.getByRole('button',{name:'Refresh logs',exact:true}).click()
+  await expect(page.getByText('No logs reported by Docker for this service.',{exact:true})).toBeVisible()
+  logMode = 'error'
+  await page.getByRole('button',{name:'Refresh logs',exact:true}).click()
+  await expect(page.getByText('Service logs unavailable',{exact:true})).toBeVisible()
+  logMode = 'truncated'
+  await page.getByRole('button',{name:'Refresh logs',exact:true}).click()
+  await expect(page.getByText('Log snapshot truncated',{exact:true})).toBeVisible()
+  await page.getByRole('button',{name:'Close logs',exact:true}).click()
+  await expect(page.getByRole('dialog')).toHaveCount(0)
+  await expect(page.getByRole('tab',{name:'Services',exact:true})).toHaveAttribute('aria-selected','true')
 })
