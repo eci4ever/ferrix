@@ -42,6 +42,7 @@ pub(super) async fn change(
             "Wait for the pending deployment to finish before changing runtime state.",
         ));
     }
+    let application = app.kind == "application";
     let containers: Vec<_> = app.active_container_id.into_iter().collect();
     if containers.is_empty() {
         return Err(ApiError(
@@ -58,6 +59,14 @@ pub(super) async fn change(
                     super::super::worker::inspect_owned(state, service, &container).await?;
                     let result = match input.operation {
                         Operation::Start => {
+                            if application {
+                                let info=super::super::worker::inspect_owned(state,service,&container).await?;
+                                if info.state.and_then(|s|s.running)!=Some(true) {
+                                    let cipher:Option<Vec<u8>>=sqlx::query_scalar("SELECT service_cipher FROM deployments WHERE id=(SELECT active_deployment_id FROM applications WHERE id=$1)").bind(service).fetch_one(&state.pool).await?;
+                                    let runtime=super::super::application_runtime::decode(state,service,cipher.as_deref())?;
+                                    super::super::application_runtime::ensure_single_writer(state,service,&runtime).await.map_err(|_|ApiError(StatusCode::CONFLICT,"Another container is using this service or its storage. Stop it before starting this instance."))?;
+                                }
+                            }
                             state
                                 .docker
                                 .start_container(

@@ -4,6 +4,7 @@ use std::collections::HashMap;
 mod control;
 pub(super) mod database;
 mod removal;
+pub(super) mod replacement;
 
 pub(super) fn routes(state: AppState) -> Router<AppState> {
     Router::new()

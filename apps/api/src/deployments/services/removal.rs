@@ -1,7 +1,7 @@
 use super::*;
 use bollard::query_parameters::{
     ListContainersOptionsBuilder, ListNetworksOptionsBuilder, ListVolumesOptionsBuilder,
-    RemoveContainerOptionsBuilder,
+    RemoveContainerOptionsBuilder, StopContainerOptionsBuilder,
 };
 use std::time::Duration;
 
@@ -96,6 +96,22 @@ async fn cleanup(state: &AppState, service: Uuid, remove_data: bool) -> Result<(
         let container = container.id.ok_or_else(failure)?;
         // Inspect again immediately before removal; never remove anonymous volumes implicitly.
         super::super::worker::inspect_owned(state, service, &container).await?;
+        // Give stateful processes time to flush data before retaining their volume.
+        match state
+            .docker
+            .stop_container(
+                &container,
+                Some(StopContainerOptionsBuilder::default().t(30).build()),
+            )
+            .await
+        {
+            Ok(())
+            | Err(bollard::errors::Error::DockerResponseServerError {
+                status_code: 304 | 404,
+                ..
+            }) => {}
+            Err(_) => return Err(failure()),
+        }
         tolerate_missing(
             state
                 .docker
