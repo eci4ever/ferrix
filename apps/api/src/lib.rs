@@ -7,6 +7,7 @@ pub mod housekeeping;
 mod monitoring;
 pub mod notifications;
 mod projects;
+mod releases;
 mod server_time;
 
 use axum::{
@@ -32,6 +33,7 @@ pub struct AppState {
 
 pub fn router(state: AppState) -> Router {
     let monitor = monitoring::start();
+    let release_cache = releases::start();
     let protected = Router::new()
         .merge(notifications::routes())
         .route("/api/v1/agent", get(auth::api_keys::agent))
@@ -69,6 +71,8 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/v1/projects/service-status", get(projects::statuses))
         .route("/api/v1/server-time", get(server_time::get))
+        .route("/api/v1/releases/latest", get(releases::get))
+        .layer(axum::Extension(release_cache))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth::sessions::identify,
