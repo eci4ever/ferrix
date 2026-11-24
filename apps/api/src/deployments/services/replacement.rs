@@ -60,6 +60,7 @@ pub(in crate::deployments) async fn restore_pending(
         .fetch_all(&mut *conn).await.map_err(|_|"Could not read service recovery information.")?;
     for (deployment, app, previous, active, was_running) in pending {
         if active.as_deref() == Some(&previous) {
+            let _lineage = super::super::application_runtime::lineage_guard(state, app).await?;
             let info = inspect_owned(state, app, &previous)
                 .await
                 .map_err(|_| "Could not verify the service container for recovery.")?;
@@ -70,8 +71,10 @@ pub(in crate::deployments) async fn restore_pending(
                     let runtime =
                         super::super::application_runtime::decode(state, app, Some(&cipher))
                             .map_err(|_| "Could not decrypt recovery settings.")?;
-                    super::super::application_runtime::ensure_single_writer(state, app, &runtime)
-                        .await?;
+                    super::super::application_runtime::ensure_single_writer(
+                        state, app, &runtime, conn,
+                    )
+                    .await?;
                 }
             }
             state

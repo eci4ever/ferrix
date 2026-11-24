@@ -165,6 +165,15 @@ pub struct ApiError(StatusCode, &'static str);
 
 impl From<sqlx::Error> for ApiError {
     fn from(error: sqlx::Error) -> Self {
+        if error
+            .as_database_error()
+            .is_some_and(|e| e.constraint() == Some("ferrix_project_maintenance"))
+        {
+            return Self(
+                StatusCode::CONFLICT,
+                "Project maintenance is active. Wait for coordinated backup/restore to finish.",
+            );
+        }
         tracing::error!(%error, "Database request failed");
         Self(
             StatusCode::SERVICE_UNAVAILABLE,

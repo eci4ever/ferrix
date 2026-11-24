@@ -1,14 +1,18 @@
 mod application_runtime;
 mod backups;
 mod github;
+pub(crate) mod project_bundles;
+mod quotas;
 #[cfg(test)]
 mod test_support;
+mod uploads;
 pub use github::webhook_routes;
 mod domains;
 pub(crate) mod observability;
 mod services;
 mod terminal;
 mod worker;
+pub use quotas::run_worker as run_quota_worker;
 pub use terminal::run_terminal_worker;
 pub use worker::run_worker;
 
@@ -48,6 +52,9 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .merge(domains::routes(state.clone()))
         .merge(backups::routes(state.clone()))
         .merge(github::routes(state.clone()))
+        .merge(uploads::routes(state.clone()))
+        .merge(quotas::routes(state.clone()))
+        .merge(project_bundles::routes(state.clone()))
         .merge(observability::routes(state.clone()))
         .merge(terminal::routes(state.clone()))
         .merge(
@@ -88,6 +95,15 @@ fn name(value: &str) -> Result<String, ApiError> {
 fn database_error(error: sqlx::Error) -> ApiError {
     if error
         .as_database_error()
+        .is_some_and(|e| e.constraint() == Some("ferrix_project_maintenance"))
+    {
+        return ApiError(
+            StatusCode::CONFLICT,
+            "Project maintenance is active. Wait for coordinated backup/restore to finish.",
+        );
+    }
+    if error
+        .as_database_error()
         .is_some_and(|e| e.is_unique_violation())
     {
         ApiError(
@@ -109,11 +125,16 @@ struct Environment {
 pub(crate) struct Application {
     #[sqlx(default)]
     automatic_url: Option<String>,
+    canonical_hostname: Option<String>,
+    canonical_kind: Option<String>,
     database_engine: Option<String>,
     source_type: String,
     source_repository: Option<String>,
     kind: String,
     worker_mode: bool,
+    restore_blocked: bool,
+    traffic_enabled: bool,
+    cutover_pending: bool,
     deployed: bool,
     active_deployment_id: Option<Uuid>,
     active_image: Option<String>,
@@ -144,6 +165,7 @@ struct Deployment {
     source_repository: Option<String>,
     source_branch: Option<String>,
     git_commit: Option<String>,
+    source_archive_sha256: Option<String>,
     trigger_kind: String,
     trigger_sender: Option<String>,
     requested_by: Option<Uuid>,
@@ -154,7 +176,7 @@ struct Deployment {
     started_at: Option<DateTime<Utc>>,
     finished_at: Option<DateTime<Utc>>,
 }
-const APP_COLUMNS: &str = "CASE WHEN a.service_kind='database' THEN CASE WHEN a.image LIKE 'mongo:%' THEN 'mongodb' WHEN a.image LIKE 'mariadb:%' THEN 'mariadb' WHEN a.image LIKE 'redis:%' THEN 'redis' ELSE 'postgres' END END AS database_engine,CASE WHEN EXISTS(SELECT 1 FROM application_git_sources s WHERE s.application_id=a.id AND s.enabled) THEN 'github' ELSE 'image' END AS source_type,(SELECT repository FROM application_git_sources s WHERE s.application_id=a.id AND s.enabled) AS source_repository,a.service_kind AS kind,a.worker_mode,(a.active_deployment_id IS NOT NULL) AS deployed,a.active_deployment_id,(SELECT image FROM deployments WHERE id=a.active_deployment_id) AS active_image,EXISTS(SELECT 1 FROM deployments d WHERE d.id=a.active_deployment_id AND ((CASE WHEN EXISTS(SELECT 1 FROM application_git_sources s WHERE s.application_id=a.id AND s.enabled) THEN (SELECT revision FROM application_git_sources WHERE application_id=a.id) IS DISTINCT FROM d.source_revision ELSE d.source_revision IS NOT NULL OR a.image IS DISTINCT FROM d.image END) OR a.container_port IS DISTINCT FROM d.container_port OR a.env_cipher IS DISTINCT FROM d.env_cipher OR a.service_cipher IS DISTINCT FROM d.service_cipher)) AS pending_changes,EXISTS(SELECT 1 FROM database_jobs j WHERE j.status IN ('queued','running') AND (j.application_id=a.id OR j.source_application_id=a.id)) AS database_operation_pending,a.id,a.environment_id,(SELECT project_id FROM environments WHERE id=a.environment_id) AS project_id,a.name,a.image,a.container_port,a.active_container_id,a.host_port,a.created_at,a.updated_at";
+const APP_COLUMNS: &str = "(SELECT hostname FROM application_domains WHERE application_id=a.id AND canonical AND verified_at IS NOT NULL AND dns_status='ready') AS canonical_hostname,(SELECT route_kind FROM application_domains WHERE application_id=a.id AND canonical AND verified_at IS NOT NULL AND dns_status='ready') AS canonical_kind,CASE WHEN a.service_kind='database' THEN CASE WHEN a.image LIKE 'mongo:%' THEN 'mongodb' WHEN a.image LIKE 'mariadb:%' THEN 'mariadb' WHEN a.image LIKE 'redis:%' THEN 'redis' ELSE 'postgres' END END AS database_engine,CASE WHEN EXISTS(SELECT 1 FROM application_git_sources s WHERE s.application_id=a.id AND s.enabled) THEN 'github' WHEN a.source_upload_id IS NOT NULL THEN 'upload' ELSE 'image' END AS source_type,(SELECT repository FROM application_git_sources s WHERE s.application_id=a.id AND s.enabled) AS source_repository,a.service_kind AS kind,a.worker_mode,a.restore_blocked,a.traffic_enabled,a.cutover_pending,(a.active_deployment_id IS NOT NULL) AS deployed,a.active_deployment_id,(SELECT image FROM deployments WHERE id=a.active_deployment_id) AS active_image,EXISTS(SELECT 1 FROM deployments d WHERE d.id=a.active_deployment_id AND ((CASE WHEN EXISTS(SELECT 1 FROM application_git_sources s WHERE s.application_id=a.id AND s.enabled) THEN (SELECT revision FROM application_git_sources WHERE application_id=a.id) IS DISTINCT FROM d.source_revision WHEN a.source_upload_id IS NOT NULL THEN a.source_upload_id IS DISTINCT FROM d.source_revision ELSE d.source_revision IS NOT NULL OR a.image IS DISTINCT FROM d.image END) OR a.container_port IS DISTINCT FROM d.container_port OR a.env_cipher IS DISTINCT FROM d.env_cipher OR a.service_cipher IS DISTINCT FROM d.service_cipher)) AS pending_changes,EXISTS(SELECT 1 FROM database_jobs j WHERE j.status IN ('queued','running') AND (j.application_id=a.id OR j.source_application_id=a.id)) AS database_operation_pending,a.id,a.environment_id,(SELECT project_id FROM environments WHERE id=a.environment_id) AS project_id,a.name,a.image,a.container_port,a.active_container_id,a.host_port,a.created_at,a.updated_at";
 async fn project_access(state: &AppState, id: &Identity, project: Uuid) -> Result<(), ApiError> {
     if !sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1 AND organization_id=$2)",
@@ -182,6 +204,19 @@ impl Application {
             self.automatic_url = state
                 .gateway
                 .url(crate::gateway::Resource::Application(self.id));
+            if let Some(host) = &self.canonical_hostname {
+                if self.canonical_kind.as_deref() == Some("tunnel") {
+                    self.automatic_url = Some(format!("https://{host}/"));
+                } else if let Some((_, port, secure, _)) = state.gateway.domain_target() {
+                    let scheme = if secure { "https" } else { "http" };
+                    let suffix = if port == if secure { 443 } else { 80 } {
+                        String::new()
+                    } else {
+                        format!(":{port}")
+                    };
+                    self.automatic_url = Some(format!("{scheme}://{host}{suffix}/"));
+                }
+            }
         }
         self
     }
@@ -363,8 +398,12 @@ async fn create_application(
     let values = input.validate()?;
     let app = Uuid::new_v4();
     let cipher = encrypt(&state, app, &values)?;
+    let mut tx = state.pool.begin().await?;
+    let reserved = quotas::reserve(&state, &mut tx).await?;
     sqlx::query("INSERT INTO applications(id,environment_id,name,image,container_port,env_cipher,service_cipher,worker_mode) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
-        .bind(app).bind(environment).bind(input.name).bind(input.image).bind(input.container_port).bind(cipher).bind(services::seal(&state,app,&input.runtime)?).bind(input.runtime.worker_mode).execute(&state.pool).await.map_err(database_error)?;
+        .bind(app).bind(environment).bind(input.name).bind(input.image).bind(input.container_port).bind(cipher).bind(services::seal(&state,app,&input.runtime)?).bind(input.runtime.worker_mode).execute(&mut *tx).await.map_err(database_error)?;
+    quotas::check(&state, &mut tx, reserved).await?;
+    tx.commit().await?;
     Ok((
         StatusCode::CREATED,
         Json(app_access(&state, &id, app).await?),
@@ -394,7 +433,7 @@ async fn configuration(
             .await?;
     let runtime = application_runtime::load(&state, app).await?;
     Ok(Json(
-        json!({"worker_mode":runtime.worker_mode,"command":runtime.command,"storage":runtime.storage,"storage_volume":runtime.storage.as_ref().map(|_|application_runtime::volume(app)),"name":row.name,"image":row.image,"container_port":row.container_port,"environment":decrypt(&state,app,cipher.as_deref())?.join("\n")}),
+        json!({"memory_mib":runtime.memory_mib,"cpus":runtime.cpus,"worker_mode":runtime.worker_mode,"command":runtime.command,"storage":runtime.storage,"storage_volume":runtime.storage.as_ref().map(|_|application_runtime::volume(app)),"name":row.name,"image":row.image,"container_port":row.container_port,"environment":decrypt(&state,app,cipher.as_deref())?.join("\n")}),
     ))
 }
 async fn save_configuration(
@@ -410,6 +449,7 @@ async fn save_configuration(
     let values = input.validate()?;
     let cipher = encrypt(&state, app, &values)?;
     let mut tx = state.pool.begin().await?;
+    let reserved = quotas::reserve(&state, &mut tx).await?;
     let previous: Option<Vec<u8>> =
         sqlx::query_scalar("SELECT service_cipher FROM applications WHERE id=$1 FOR UPDATE")
             .bind(app)
@@ -431,6 +471,10 @@ async fn save_configuration(
     }
     sqlx::query("UPDATE applications SET name=$1,image=$2,container_port=$3,env_cipher=$4,service_cipher=$6,worker_mode=$7,updated_at=now() WHERE id=$5")
         .bind(input.name).bind(input.image).bind(input.container_port).bind(cipher).bind(app).bind(services::seal(&state,app,&input.runtime)?).bind(input.runtime.worker_mode).execute(&mut *tx).await.map_err(database_error)?;
+    if input.runtime.storage.is_none() {
+        sqlx::query("UPDATE backup_policies SET enabled=false,next_run_at=NULL,last_message='Schedule paused: Application storage was removed.' WHERE application_id=$1").bind(app).execute(&mut *tx).await?;
+    }
+    quotas::check(&state, &mut tx, reserved).await?;
     tx.commit().await?;
     Ok(Json(app_access(&state, &id, app).await?))
 }
@@ -443,16 +487,19 @@ async fn deploy(
     id.manager()?;
     app_access(&state, &id, app).await?;
     let mut tx = state.pool.begin().await?;
+    let reserved = quotas::reserve(&state, &mut tx).await?;
     sqlx::query_scalar::<_, Uuid>("SELECT id FROM applications WHERE id=$1 FOR UPDATE")
         .bind(app)
         .fetch_optional(&mut *tx)
         .await?
         .ok_or_else(missing)?;
     backups::ensure_idle(&mut tx, app).await?;
+    backups::ensure_restored(&mut tx, app).await?;
     let deployment = Uuid::new_v4();
     sqlx::query("INSERT INTO deployments(id,application_id,requested_by,image,container_port,env_cipher,service_kind,worker_mode,service_cipher,requested_by_name,requested_by_key_id,requested_by_key_name) SELECT $1,id,$2,image,container_port,env_cipher,service_kind,worker_mode,service_cipher,$4,$5,$6 FROM applications WHERE id=$3")
         .bind(deployment).bind(id.user_id).bind(app).bind(&id.name).bind(key.as_ref().map(|key|key.id)).bind(key.as_ref().map(|key|key.name.as_str())).execute(&mut *tx).await.map_err(database_error)?;
     github::snapshot(&mut tx, app, deployment).await?;
+    quotas::check(&state, &mut tx, reserved).await?;
     tx.commit().await?;
     Ok((
         StatusCode::ACCEPTED,
@@ -475,6 +522,7 @@ async fn rollback(
         return Err(missing());
     }
     let mut tx = state.pool.begin().await?;
+    let reserved = quotas::reserve(&state, &mut tx).await?;
     sqlx::query_scalar::<_, Uuid>(
         "SELECT id FROM applications WHERE id=$1 AND service_kind='application' FOR UPDATE",
     )
@@ -482,6 +530,8 @@ async fn rollback(
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(missing)?;
+    backups::ensure_idle(&mut tx, app).await?;
+    backups::ensure_restored(&mut tx, app).await?;
     let deployment = Uuid::new_v4();
     let inserted = sqlx::query("INSERT INTO deployments(id,application_id,requested_by,image,container_port,env_cipher,service_kind,worker_mode,service_cipher,rollback_of,pinned_image_id,requested_by_name,requested_by_key_id,requested_by_key_name) SELECT $1,application_id,$2,image,container_port,env_cipher,service_kind,worker_mode,service_cipher,id,image_id,$5,$6,$7 FROM deployments WHERE id=$3 AND application_id=$4 AND status='succeeded' AND service_kind='application' AND image_id IS NOT NULL")
         .bind(deployment).bind(id.user_id).bind(input.deployment_id).bind(app).bind(&id.name).bind(key.as_ref().map(|key|key.id)).bind(key.as_ref().map(|key|key.name.as_str()))
@@ -491,7 +541,8 @@ async fn rollback(
             "Choose a successful deployment from this application with a recorded image ID.",
         ));
     }
-    sqlx::query("UPDATE deployments d SET source_repository=s.source_repository,source_branch=s.source_branch,git_commit=s.git_commit,source_revision=s.source_revision FROM deployments s WHERE d.id=$1 AND s.id=$2").bind(deployment).bind(input.deployment_id).execute(&mut *tx).await?;
+    sqlx::query("UPDATE deployments d SET source_repository=s.source_repository,source_branch=s.source_branch,git_commit=s.git_commit,source_archive_sha256=s.source_archive_sha256,source_revision=s.source_revision FROM deployments s WHERE d.id=$1 AND s.id=$2").bind(deployment).bind(input.deployment_id).execute(&mut *tx).await?;
+    quotas::check(&state, &mut tx, reserved).await?;
     tx.commit().await?;
     Ok((
         StatusCode::ACCEPTED,
@@ -504,7 +555,7 @@ async fn history(
     Path(app): Path<Uuid>,
 ) -> Result<Json<Vec<Deployment>>, ApiError> {
     app_access(&state, &id, app).await?;
-    Ok(Json(sqlx::query_as("SELECT id,application_id,image,container_port,status,logs,container_id,image_id,rollback_of,source_repository,source_branch,git_commit,trigger_kind,trigger_sender,requested_by,requested_by_name,requested_by_key_id,requested_by_key_name,created_at,started_at,finished_at FROM deployments WHERE application_id=$1 ORDER BY created_at DESC,id DESC LIMIT 30").bind(app).fetch_all(&state.pool).await?))
+    Ok(Json(sqlx::query_as("SELECT id,application_id,image,container_port,status,logs,container_id,image_id,rollback_of,source_repository,source_branch,git_commit,source_archive_sha256,trigger_kind,trigger_sender,requested_by,requested_by_name,requested_by_key_id,requested_by_key_name,created_at,started_at,finished_at FROM deployments WHERE application_id=$1 ORDER BY created_at DESC,id DESC LIMIT 30").bind(app).fetch_all(&state.pool).await?))
 }
 async fn runtime(
     State(state): State<AppState>,

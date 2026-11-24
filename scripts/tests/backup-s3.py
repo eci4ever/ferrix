@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise PostgreSQL/MariaDB S3 backup and restore using disposable RustFS."""
+"""Exercise PostgreSQL/MariaDB/Application S3 backup and restore using disposable RustFS."""
 import os
 from pathlib import Path
 import secrets
@@ -33,8 +33,9 @@ try:
             time.sleep(1)
     for target in ['s3_live','deployment']:
         subprocess.run(['cargo','test','--test',target,'--','--include-ignored'],env=env,cwd=root,check=True)
+    subprocess.run(['cargo','test','--lib','application_volume_s3_roundtrip_without_local_backup_storage','--','--include-ignored'],env=env,cwd=root,check=True)
 finally:
     owned=subprocess.run(['docker','inspect','--format','{{ index .Config.Labels "io.ferrix.test" }}',name],env=env,cwd=root,capture_output=True,text=True)
     if owned.returncode==0 and owned.stdout.strip()==identifier:
         subprocess.run(['docker','rm','-fv',name],env=env,cwd=root,check=True,stdout=subprocess.DEVNULL)
-print('PostgreSQL and MariaDB restored from S3 after local backup storage removal; disposable S3 removed.')
+print('PostgreSQL, MariaDB and Application volumes restored from S3 after local backup storage removal; disposable S3 removed.')

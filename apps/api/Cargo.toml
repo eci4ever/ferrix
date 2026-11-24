@@ -25,6 +25,7 @@ croner = "5"
 rust-s3 = { version = "0.38", default-features = false, features = ["tokio-rustls-tls-ring", "fail-on-err"] }
 tempfile = "3"
 tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 tokio-util = { version = "0.7", features = ["io"] }
 hickory-resolver = "0.25"
 x509-parser = "0.18"

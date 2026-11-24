@@ -57,6 +57,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.clone(),
         receiver.clone(),
     ));
+    let quotas = tokio::spawn(ferrix_api::deployments::run_quota_worker(
+        state.clone(),
+        receiver.clone(),
+    ));
     let notifications = tokio::spawn(ferrix_api::notifications::run_worker(
         state.clone(),
         receiver.clone(),
@@ -95,6 +99,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     worker.await?;
     housekeeping.await?;
     notifications.await?;
+    quotas.await?;
     terminals.await?;
     pool.close().await;
     Ok(())

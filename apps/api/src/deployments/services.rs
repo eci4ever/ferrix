@@ -97,7 +97,7 @@ pub(super) struct DatabaseConfig {
     pub password: String,
 }
 impl DatabaseConfig {
-    fn validate(&self) -> Result<(), ApiError> {
+    pub(super) fn validate(&self) -> Result<(), ApiError> {
         if self.engine == DatabaseEngine::Redis {
             if self.database_name != "0" || self.username != "default" {
                 return Err(invalid(
@@ -269,8 +269,12 @@ async fn create(
             )
         }
     };
+    let mut tx = state.pool.begin().await?;
+    let reserved = quotas::reserve(&state, &mut tx).await?;
     sqlx::query("INSERT INTO applications(id,environment_id,name,image,container_port,service_kind,service_cipher,env_cipher) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
-        .bind(service).bind(environment).bind(label).bind(image).bind(port).bind(kind).bind(cipher).bind(env).execute(&state.pool).await.map_err(database_error)?;
+        .bind(service).bind(environment).bind(label).bind(image).bind(port).bind(kind).bind(cipher).bind(env).execute(&mut *tx).await.map_err(database_error)?;
+    quotas::check(&state, &mut tx, reserved).await?;
+    tx.commit().await?;
     Ok((
         StatusCode::CREATED,
         Json(app_access(&state, &id, service).await?),

@@ -33,6 +33,8 @@ test('Service logs search and follow safely, and monitoring compares usage with 
       )
       return
     }
+    if(path==='/api/v1/services/service/history'){await route.fulfill({json:{samples:[{id:1,collected_at:now,container_id:'old-container',deployment_id:'previous-deploy',image_id:'sha256:old',marker:true,error:false,data:{cpu_percent_of_limit:25,memory_percent_of_limit:50,state:'running',restart_count:0,health:'healthy'}},{id:2,collected_at:now,container_id:'active-container',deployment_id:'current-deploy',image_id:'sha256:new',marker:true,error:false,data:{cpu_percent_of_limit:30,memory_percent_of_limit:60,state:'running',restart_count:1,health:'healthy'}}],sample_seconds:30,retention_days:3,downsample_after_minutes:360,downsample_seconds:300,truncated:false,gaps_note:'Gaps are unknown.',scope:'service'}});return}
+    if(path==='/api/v1/services/service/logs/history'){expect(url.searchParams.get('from')).toBeTruthy();await route.fulfill({json:{lines:[{id:1,deployment_id:'previous-deploy',container_id:'old-container',emitted_at:now,collected_at:now,message:'retained <script>bad</script> log',truncated:false}],next_before:null,collection_note:'Docker log time differs from collection time.'}});return}
     if (path === '/api/v1/services/service/metrics') {
       await route.fulfill(
         metricsError
@@ -195,6 +197,15 @@ test('Service logs search and follow safely, and monitoring compares usage with 
       exact: true,
     }),
   ).toBeVisible()
+  await page.getByRole('button',{name:'View history',exact:true}).click()
+  await expect(page.getByRole('img',{name:/Retained percent history/})).toBeVisible()
+  await expect(page.getByText('previous-deploy',{exact:true})).toBeVisible()
+  await expect(page.getByText('retained <script>bad</script> log',{exact:true})).toBeVisible()
+  await page.getByLabel('Search retained logs',{exact:true}).fill('retained')
+  await page.getByRole('button',{name:'Search logs',exact:true}).click()
+  await expect(page.locator('script').filter({hasText:'bad'})).toHaveCount(0)
+  await page.setViewportSize({width:390,height:844})
+  await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)
   metricsError = 401
   await page.clock.fastForward(5100)
   await expect(page.getByRole('meter')).toHaveCount(0)

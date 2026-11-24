@@ -14,6 +14,7 @@ pub(super) fn routes(state: AppState) -> Router<AppState> {
 #[derive(sqlx::FromRow)]
 pub(super) struct Policy {
     pub enabled: bool,
+    pub application_offline: bool,
     pub cron: String,
     pub timezone: String,
     pub keep_last: i32,
@@ -27,6 +28,8 @@ pub(super) struct Policy {
 #[serde(deny_unknown_fields)]
 struct Edit {
     enabled: bool,
+    #[serde(default)]
+    application_offline: bool,
     cron: String,
     timezone: String,
     keep_last: i32,
@@ -63,11 +66,11 @@ async fn get_policy(
             .map(|cipher| remote::open(&state, service, cipher).map(|s3| s3.redacted()))
             .transpose()?;
         Ok(Json(
-            json!({"enabled":policy.enabled,"cron":policy.cron,"timezone":policy.timezone,"keep_last":policy.keep_last,"s3":s3,"next_run_at":policy.next_run_at,"last_run_at":policy.last_run_at,"last_message":policy.last_message}),
+            json!({"application_offline":policy.application_offline,"enabled":policy.enabled,"cron":policy.cron,"timezone":policy.timezone,"keep_last":policy.keep_last,"s3":s3,"next_run_at":policy.next_run_at,"last_run_at":policy.last_run_at,"last_message":policy.last_message}),
         ))
     } else {
         Ok(Json(
-            json!({"enabled":false,"cron":"0 2 * * *","timezone":"UTC","keep_last":10,"s3":null,"next_run_at":null,"last_run_at":null,"last_message":null}),
+            json!({"application_offline":false,"enabled":false,"cron":"0 2 * * *","timezone":"UTC","keep_last":10,"s3":null,"next_run_at":null,"last_run_at":null,"last_message":null}),
         ))
     }
 }
@@ -78,7 +81,12 @@ async fn save(
     Json(edit): Json<Edit>,
 ) -> Result<StatusCode, ApiError> {
     id.manager()?;
-    access(&state, &id, service).await?;
+    let app = access(&state, &id, service).await?;
+    if app.kind == "application" && edit.enabled && !edit.application_offline {
+        return Err(invalid(
+            "Acknowledge offline downtime before enabling Application backup schedules.",
+        ));
+    }
     if !(1..=365).contains(&edit.keep_last) {
         return Err(invalid("Keep between 1 and 365 successful backups."));
     }
@@ -106,6 +114,11 @@ async fn save(
     };
     sqlx::query("INSERT INTO backup_policies(application_id,enabled,cron,timezone,keep_last,s3_cipher,configured_by,next_run_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(application_id) DO UPDATE SET enabled=EXCLUDED.enabled,cron=EXCLUDED.cron,timezone=EXCLUDED.timezone,keep_last=EXCLUDED.keep_last,s3_cipher=EXCLUDED.s3_cipher,configured_by=EXCLUDED.configured_by,next_run_at=EXCLUDED.next_run_at,updated_at=now(),last_message=NULL")
  .bind(service).bind(edit.enabled).bind(edit.cron.trim()).bind(edit.timezone.trim()).bind(edit.keep_last).bind(cipher).bind(id.user_id).bind(if edit.enabled{Some(next)}else{None}).execute(&mut *tx).await?;
+    sqlx::query("UPDATE backup_policies SET application_offline=$2 WHERE application_id=$1")
+        .bind(service)
+        .bind(edit.application_offline)
+        .execute(&mut *tx)
+        .await?;
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
@@ -163,7 +176,7 @@ pub(super) async fn schedule_due(state: &AppState, conn: &mut PgConnection) -> R
         .await
         .map_err(|_| "Could not start backup scheduler.")?;
     // Lock service rows first, matching configuration/deploy/restore lock order.
-    let services:Vec<Uuid>=sqlx::query_scalar("SELECT a.id FROM applications a JOIN backup_policies p ON p.application_id=a.id WHERE p.enabled AND p.next_run_at<=now() ORDER BY p.next_run_at LIMIT 32 FOR UPDATE OF a SKIP LOCKED").fetch_all(&mut *tx).await.map_err(|_|"Could not claim backup schedules.")?;
+    let services:Vec<Uuid>=sqlx::query_scalar("SELECT a.id FROM applications a JOIN backup_policies p ON p.application_id=a.id WHERE NOT EXISTS(SELECT 1 FROM project_maintenance m JOIN environments e ON e.project_id=m.project_id WHERE e.id=a.environment_id) AND p.enabled AND p.next_run_at<=now() ORDER BY p.next_run_at LIMIT 32 FOR UPDATE OF a SKIP LOCKED").fetch_all(&mut *tx).await.map_err(|_|"Could not claim backup schedules.")?;
     for service in services {
         let policy: Policy =
             sqlx::query_as("SELECT * FROM backup_policies WHERE application_id=$1 FOR UPDATE")
@@ -191,12 +204,15 @@ pub(super) async fn schedule_due(state: &AppState, conn: &mut PgConnection) -> R
                 .map(|c| remote::open(state, service, c).map(|d| d.key(service, job)))
                 .transpose()
                 .map_err(|_| "Could not read scheduled S3 destination.")?;
-            let count=sqlx::query("INSERT INTO database_jobs(id,application_id,requested_by,operation,engine,image,image_id,config_cipher,env_cipher,deployment_id,scheduled_for,s3_cipher,s3_key) SELECT $1,a.id,$2,'backup',CASE WHEN d.image LIKE 'mariadb:%' THEN 'mariadb' ELSE 'postgres' END,d.image,d.image_id,d.service_cipher,d.env_cipher,d.id,$4,$5,$6 FROM applications a JOIN deployments d ON d.id=a.active_deployment_id AND d.application_id=a.id WHERE a.id=$3 AND a.active_container_id IS NOT NULL AND d.image_id IS NOT NULL AND a.service_kind='database' AND (d.image LIKE 'postgres:%' OR d.image LIKE 'mariadb:%') ON CONFLICT DO NOTHING")
-   .bind(job).bind(policy.configured_by).bind(service).bind(policy.next_run_at).bind(policy.s3_cipher).bind(key).execute(&mut *tx).await.map_err(|_|"Could not queue scheduled backup.")?.rows_affected();
+            let count=sqlx::query("INSERT INTO database_jobs(id,application_id,requested_by,operation,engine,image,image_id,config_cipher,env_cipher,deployment_id,scheduled_for,s3_cipher,s3_key) SELECT $1,a.id,$2,'backup',CASE WHEN a.service_kind='application' THEN 'application' WHEN d.image LIKE 'mariadb:%' THEN 'mariadb' ELSE 'postgres' END,d.image,d.image_id,d.service_cipher,d.env_cipher,d.id,$4,$5,$6 FROM applications a JOIN deployments d ON d.id=a.active_deployment_id AND d.application_id=a.id WHERE a.id=$3 AND a.active_container_id IS NOT NULL AND d.image_id IS NOT NULL AND NOT a.restore_blocked AND ((a.service_kind='database' AND (d.image LIKE 'postgres:%' OR d.image LIKE 'mariadb:%')) OR (a.service_kind='application' AND $7)) ON CONFLICT DO NOTHING")
+   .bind(job).bind(policy.configured_by).bind(service).bind(policy.next_run_at).bind(policy.s3_cipher).bind(key).bind(policy.application_offline).execute(&mut *tx).await.map_err(|_|"Could not queue scheduled backup.")?.rows_affected();
+            if count == 1 {
+                sqlx::query("UPDATE database_jobs SET application_port=(SELECT container_port FROM deployments WHERE id=database_jobs.deployment_id) WHERE id=$1").bind(job).execute(&mut *tx).await.map_err(|_|"Could not snapshot Application port.")?;
+            }
             message = if count == 1 {
                 "Scheduled backup queued."
             } else {
-                "Skipped: database has no deployed version."
+                "Skipped: service has no eligible deployed version."
             };
         }
         sqlx::query("UPDATE backup_policies SET next_run_at=$2,last_run_at=now(),last_message=$3 WHERE application_id=$1").bind(service).bind(next).bind(message).execute(&mut *tx).await.map_err(|_|"Could not advance backup schedule.")?;

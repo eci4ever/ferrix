@@ -2,14 +2,35 @@ use super::*;
 use bollard::models::{ContainerCreateBody, Mount, MountTypeEnum, VolumeCreateRequest};
 use std::collections::HashMap;
 
-#[derive(Clone, Default, Serialize, Deserialize, PartialEq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub(super) struct RuntimeConfig {
+    #[serde(default = "default_memory_mib")]
+    pub memory_mib: i64,
+    #[serde(default = "default_cpus")]
+    pub cpus: f64,
     #[serde(default)]
     pub worker_mode: bool,
     #[serde(default)]
     pub command: Vec<String>,
     #[serde(default)]
     pub storage: Option<Storage>,
+}
+fn default_memory_mib() -> i64 {
+    512
+}
+fn default_cpus() -> f64 {
+    1.0
+}
+impl Default for RuntimeConfig {
+    fn default() -> Self {
+        Self {
+            memory_mib: default_memory_mib(),
+            cpus: default_cpus(),
+            worker_mode: false,
+            command: Vec::new(),
+            storage: None,
+        }
+    }
 }
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 pub(super) struct Storage {
@@ -19,6 +40,19 @@ pub(super) struct Storage {
 }
 impl RuntimeConfig {
     pub(super) fn validate(&self) -> Result<(), ApiError> {
+        if !(6..=1_048_576).contains(&self.memory_mib) {
+            return Err(invalid(
+                "Memory limit must be a whole number from 6 to 1048576 MiB. Unlimited memory is not supported.",
+            ));
+        }
+        if !self.cpus.is_finite()
+            || !(0.01..=1024.0).contains(&self.cpus)
+            || (self.cpus * 100.0 - (self.cpus * 100.0).round()).abs() > 1e-8
+        {
+            return Err(invalid(
+                "CPU limit must be from 0.01 to 1024 cores in steps of 0.01. Unlimited CPU is not supported.",
+            ));
+        }
         if self.command.len() > 128
             || self.command.iter().map(String::len).sum::<usize>() > 16384
             || self.command.iter().any(|arg| arg.contains('\0'))
@@ -84,6 +118,12 @@ pub(super) async fn configure(
     let runtime = decode(state, job.application_id, job.service_cipher.as_deref())
         .map_err(|_| "Could not decrypt Application runtime settings.")?;
     runtime.validate().map_err(|e| e.1.to_owned())?;
+    let host = config
+        .host_config
+        .as_mut()
+        .ok_or("Missing host configuration.")?;
+    host.memory = Some(runtime.memory_mib * 1024 * 1024);
+    host.nano_cpus = Some((runtime.cpus * 1_000_000_000.0).round() as i64);
     if !runtime.command.is_empty() {
         config.cmd = Some(runtime.command.clone());
     }
@@ -156,6 +196,10 @@ pub(super) async fn configure(
             source: Some(name),
             target: Some(storage.target.clone()),
             read_only: Some(storage.read_only),
+            volume_options: Some(bollard::models::MountVolumeOptions {
+                no_copy: Some(job.start_stopped),
+                ..Default::default()
+            }),
             ..Default::default()
         }]);
     }
@@ -164,6 +208,50 @@ pub(super) async fn configure(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn legacy_defaults_and_resource_validation() {
+        let legacy: RuntimeConfig = serde_json::from_value(
+            json!({"worker_mode":true,"command":["gateway","run"],"storage":null}),
+        )
+        .unwrap();
+        assert_eq!(legacy.memory_mib, 512);
+        assert_eq!(legacy.cpus, 1.0);
+        assert_eq!(RuntimeConfig::default().memory_mib, 512);
+        assert_eq!(RuntimeConfig::default().cpus, 1.0);
+        for memory_mib in [-1, 0, 5, 1_048_577, i64::MAX] {
+            assert!(
+                RuntimeConfig {
+                    memory_mib,
+                    ..Default::default()
+                }
+                .validate()
+                .is_err()
+            );
+        }
+        for cpus in [f64::NAN, f64::INFINITY, -1.0, 0.0, 0.001, 0.755, 1024.01] {
+            assert!(
+                RuntimeConfig {
+                    cpus,
+                    ..Default::default()
+                }
+                .validate()
+                .is_err()
+            );
+        }
+        for cpus in [0.01, 0.29, 0.75, 1.0, 1024.0] {
+            assert!(
+                RuntimeConfig {
+                    memory_mib: 768,
+                    cpus,
+                    ..Default::default()
+                }
+                .validate()
+                .is_ok()
+            );
+        }
+        assert!(serde_json::from_value::<RuntimeConfig>(json!({"memory_mib":768.5})).is_err());
+        assert!(serde_json::from_value::<RuntimeConfig>(json!({"cpus":null})).is_err());
+    }
     #[test]
     fn validate_runtime_paths_and_literal_arguments() {
         for path in [
@@ -196,7 +284,8 @@ mod tests {
                 storage: Some(Storage {
                     target: "/opt/data".into(),
                     read_only: false
-                })
+                }),
+                ..Default::default()
             }
             .validate()
             .is_ok()
@@ -212,14 +301,52 @@ mod tests {
     }
 }
 
+pub(super) async fn lock_lineage(
+    conn: &mut sqlx::PgConnection,
+    app: Uuid,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended(current_database() || ':' || current_schema() || ':ferrix-lineage:' || COALESCE(data_origin_id,id)::text,0)) FROM applications WHERE id=$1").bind(app).execute(conn).await?;
+    Ok(())
+}
+pub(super) async fn lineage_guard(
+    state: &AppState,
+    app: Uuid,
+) -> Result<sqlx::Transaction<'static, sqlx::Postgres>, String> {
+    let mut guard = state
+        .pool
+        .begin()
+        .await
+        .map_err(|_| "Could not begin lineage lock.")?;
+    lock_lineage(&mut guard, app)
+        .await
+        .map_err(|_| "Could not serialize restored service operations.")?;
+    Ok(guard)
+}
 pub(super) async fn ensure_single_writer(
     state: &AppState,
     app: Uuid,
     runtime: &RuntimeConfig,
+    conn: &mut sqlx::PgConnection,
 ) -> Result<(), String> {
     use bollard::query_parameters::ListContainersOptionsBuilder;
     if !runtime.exclusive() {
         return Ok(());
+    }
+    // Restored clones share a lineage even though each owns a different volume.
+    // Do not start a second poller while a sibling runs or is paused for backup.
+    let peers:Vec<(Uuid,Option<String>,bool)>=sqlx::query_as("SELECT a.id,a.active_container_id,(EXISTS(SELECT 1 FROM database_jobs j WHERE j.application_id=a.id AND j.resume_needed) OR EXISTS(SELECT 1 FROM project_bundle_members bm JOIN project_bundle_jobs bj ON bj.id=bm.job_id WHERE bm.source_service_id=a.id AND bm.resume_needed AND NOT(bj.status='cutting_over' AND bj.id::text=coalesce(current_setting('ferrix.bundle_context',true),''))) OR EXISTS(SELECT 1 FROM deployments d WHERE d.application_id=a.id AND d.restore_container_id IS NOT NULL)) FROM applications a WHERE a.id<>$1 AND a.service_kind='application' AND COALESCE(a.data_origin_id,a.id)=(SELECT COALESCE(data_origin_id,id) FROM applications WHERE id=$1)").bind(app).fetch_all(&mut *conn).await.map_err(|_|"Could not verify restored service lineage.")?;
+    for (peer, container, resuming) in peers {
+        if resuming {
+            return Err("A related service is paused for backup and may resume. Wait before starting this restored service.".into());
+        }
+        if let Some(container) = container {
+            let info = worker::inspect_owned(state, peer, &container)
+                .await
+                .map_err(|_| "Could not verify a related restored service.")?;
+            if info.state.and_then(|s| s.running) == Some(true) {
+                return Err("Stop the source or related restored service before starting this service. Only one restored instance may run.".into());
+            }
+        }
     }
     let mut filters = HashMap::new();
     if runtime.storage.is_some() {

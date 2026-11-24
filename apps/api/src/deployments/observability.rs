@@ -1,3 +1,4 @@
+pub(crate) mod history;
 use super::*;
 use axum::Extension;
 use bollard::{
@@ -15,6 +16,7 @@ use tokio::sync::Mutex;
 pub(super) fn routes(state: AppState) -> Router<AppState> {
     Router::new()
         .route("/services/{id}/metrics", get(metrics))
+        .merge(history::routes(state.clone()))
         .layer(Extension(MetricsCache::default()))
         .route_layer(axum::middleware::from_fn_with_state(
             state,
@@ -95,6 +97,10 @@ pub(crate) struct Metrics {
     cpu_cores_used: Option<f64>,
     cpu_limit_cores: Option<f64>,
     pub(crate) cpu_percent_of_limit: Option<f64>,
+    network_rx_bytes: Option<u64>,
+    network_tx_bytes: Option<u64>,
+    disk_read_bytes: Option<u64>,
+    disk_write_bytes: Option<u64>,
     memory_used_bytes: Option<u64>,
     memory_raw_bytes: Option<u64>,
     memory_limit_bytes: Option<u64>,
@@ -183,6 +189,34 @@ pub(crate) async fn sample(
         let mut sample = empty(Some(container.clone()), "running", host);
         let cores = cpu_cores(&stats);
         let (raw, used) = memory_usage(&stats);
+        sample.network_rx_bytes = stats
+            .networks
+            .as_ref()
+            .map(|n| n.values().filter_map(|n| n.rx_bytes).sum());
+        sample.network_tx_bytes = stats
+            .networks
+            .as_ref()
+            .map(|n| n.values().filter_map(|n| n.tx_bytes).sum());
+        if let Some(entries) = stats
+            .blkio_stats
+            .as_ref()
+            .and_then(|s| s.io_service_bytes_recursive.as_ref())
+        {
+            sample.disk_read_bytes = Some(
+                entries
+                    .iter()
+                    .filter(|e| e.op.as_deref() == Some("Read"))
+                    .filter_map(|e| e.value)
+                    .sum(),
+            );
+            sample.disk_write_bytes = Some(
+                entries
+                    .iter()
+                    .filter(|e| e.op.as_deref() == Some("Write"))
+                    .filter_map(|e| e.value)
+                    .sum(),
+            );
+        }
         sample.cpu_cores_used = cores;
         sample.cpu_percent_of_limit = cores
             .zip(sample.cpu_limit_cores)
@@ -204,6 +238,10 @@ fn empty(container_id: Option<String>, state: &str, host: Option<&HostConfig>) -
         container_id,
         state: state.into(),
         checked_at: Utc::now(),
+        network_rx_bytes: None,
+        network_tx_bytes: None,
+        disk_read_bytes: None,
+        disk_write_bytes: None,
         cpu_cores_used: None,
         cpu_limit_cores: host.and_then(cpu_limit),
         cpu_percent_of_limit: None,

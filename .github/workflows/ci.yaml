@@ -75,6 +75,8 @@ jobs:
         run: cargo +stable fmt --all --check
       - name: Clippy
         run: cargo +stable clippy --locked --workspace --all-targets -- -D warnings
+      - name: Application archive safety tests
+        run: python3 -m unittest discover -s scripts/tests -p test_application_archive.py -v
       - name: Rust tests including PostgreSQL integration
         run: cargo +stable test --locked --workspace -- --include-ignored
       - name: Agent client credential transport checks

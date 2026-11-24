@@ -21,6 +21,7 @@ pub struct GatewayConfig {
     local: bool,
     https: bool,
     network: Option<String>,
+    private_ip: Option<IpAddr>,
 }
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Resource {
@@ -43,6 +44,19 @@ impl GatewayConfig {
             return Ok(Self::default());
         }
         let local = mode == "localhost";
+        let private_ip = if mode == "private" {
+            Some(
+                std::env::var("FERRIX_INGRESS_IP")
+                    .map_err(|_| "Set FERRIX_INGRESS_IP to the private Caddy address.")?
+                    .parse::<IpAddr>()
+                    .map_err(|_| "Invalid FERRIX_INGRESS_IP.")?,
+            )
+        } else {
+            None
+        };
+        if private_ip.is_some_and(|ip| ip.is_unspecified() || ip.is_multicast()) {
+            return Err("Set a unicast ingress address.".into());
+        }
         let suffix = if local {
             "localhost".to_owned()
         } else if mode == "sslip.io" {
@@ -59,8 +73,25 @@ impl GatewayConfig {
                 return Err("FERRIX_PUBLIC_IP must be a public unicast IPv4 address.".into());
             }
             format!("{}.sslip.io", ip.to_string().replace('.', "-"))
+        } else if mode == "private" {
+            let suffix = std::env::var("FERRIX_DOMAIN_SUFFIX")
+                .unwrap_or_else(|_| "home.arpa".into())
+                .to_ascii_lowercase();
+            if suffix.len() > 200
+                || !suffix.contains('.')
+                || suffix.split('.').any(|s| {
+                    s.is_empty()
+                        || s.len() > 63
+                        || s.starts_with('-')
+                        || s.ends_with('-')
+                        || !s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                })
+            {
+                return Err("Invalid FERRIX_DOMAIN_SUFFIX.".into());
+            }
+            suffix
         } else {
-            return Err("FERRIX_AUTO_DOMAIN must be localhost, sslip.io or off.".into());
+            return Err("FERRIX_AUTO_DOMAIN must be localhost, sslip.io, private or off.".into());
         };
         let network = std::env::var("FERRIX_INGRESS_NETWORK")
             .map_err(|_| "Set FERRIX_INGRESS_NETWORK for automatic domains.")?;
@@ -72,7 +103,8 @@ impl GatewayConfig {
         {
             return Err("Invalid FERRIX_INGRESS_NETWORK.".into());
         }
-        let https = local && std::env::var("FERRIX_WEBSITE_HTTPS").as_deref() == Ok("true");
+        let https = (local || private_ip.is_some())
+            && std::env::var("FERRIX_WEBSITE_HTTPS").as_deref() == Ok("true");
         let port_key = if https {
             "FERRIX_WEBSITE_HTTPS_PORT"
         } else {
@@ -91,23 +123,28 @@ impl GatewayConfig {
             local,
             https,
             network: Some(network),
+            private_ip,
         })
     }
     pub(crate) fn url(&self, resource: Resource) -> Option<String> {
         let host = self.hostname(resource)?;
-        let secure = !self.local || self.https;
+        let secure = (!self.local && self.private_ip.is_none()) || self.https;
         let scheme = if secure { "https" } else { "http" };
         let standard_port = if secure { 443 } else { 80 };
-        Some(if self.local && self.port != standard_port {
-            format!("{scheme}://{host}:{}/", self.port)
-        } else {
-            format!("{scheme}://{host}/")
-        })
+        Some(
+            if (self.local || self.private_ip.is_some()) && self.port != standard_port {
+                format!("{scheme}://{host}:{}/", self.port)
+            } else {
+                format!("{scheme}://{host}/")
+            },
+        )
     }
 
     pub(crate) fn domain_target(&self) -> Option<(IpAddr, u16, bool, bool)> {
         let suffix = self.suffix.as_ref()?;
-        let ip = if self.local {
+        let ip = if let Some(ip) = self.private_ip {
+            ip
+        } else if self.local {
             IpAddr::V4(Ipv4Addr::LOCALHOST)
         } else {
             suffix
@@ -118,14 +155,33 @@ impl GatewayConfig {
         };
         Some((
             ip,
-            if self.local { self.port } else { 443 },
-            !self.local || self.https,
+            if self.local || self.private_ip.is_some() {
+                self.port
+            } else {
+                443
+            },
+            (!self.local && self.private_ip.is_none()) || self.https,
             self.local,
         ))
+    }
+    #[cfg(test)]
+    pub(crate) fn private_fixture() -> Self {
+        Self {
+            suffix: Some("home.arpa".into()),
+            port: 8443,
+            local: false,
+            https: true,
+            network: None,
+            private_ip: Some("192.168.20.2".parse().unwrap()),
+        }
+    }
+    pub(crate) fn private_mode(&self) -> bool {
+        self.private_ip.is_some()
     }
     pub(crate) fn reserved_domain(&self, name: &str) -> bool {
         self.resource(name).is_some()
             || (!self.local
+                && !self.private_mode()
                 && self
                     .suffix
                     .as_ref()
@@ -199,7 +255,7 @@ async fn tls_ask(
     let Some(Resource::Application(id)) = resolve_resource(&state, name).await? else {
         return Err(missing());
     };
-    let allowed: bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM applications WHERE id=$1 AND service_kind='application' AND active_container_id IS NOT NULL AND host_port IS NOT NULL)").bind(id).fetch_one(&state.pool).await?;
+    let allowed: bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM applications WHERE id=$1 AND service_kind='application' AND traffic_enabled AND active_container_id IS NOT NULL AND host_port IS NOT NULL)").bind(id).fetch_one(&state.pool).await?;
     if !allowed {
         return Err(missing());
     }
@@ -209,7 +265,7 @@ async fn route(State(state): State<AppState>, headers: HeaderMap) -> Result<Resp
     let host = host(&headers).ok_or_else(missing)?;
     let upstream;
     let kind = if let Some(Resource::Application(id)) = resolve_resource(&state, &host).await? {
-        let row:Option<(String,i32)>=sqlx::query_as("SELECT a.active_container_id,d.container_port FROM applications a JOIN deployments d ON d.id=a.active_deployment_id AND d.application_id=a.id WHERE a.id=$1 AND a.service_kind='application' AND a.active_container_id IS NOT NULL AND NOT d.worker_mode").bind(id).fetch_optional(&state.pool).await?;
+        let row:Option<(String,i32)>=sqlx::query_as("SELECT a.active_container_id,d.container_port FROM applications a JOIN deployments d ON d.id=a.active_deployment_id AND d.application_id=a.id WHERE a.id=$1 AND a.service_kind='application' AND a.traffic_enabled AND a.active_container_id IS NOT NULL AND NOT d.worker_mode").bind(id).fetch_optional(&state.pool).await?;
         let (container, port) = row.ok_or_else(missing)?;
         let info = crate::deployments::inspect_gateway_container(&state, id, &container).await?;
         if info.state.and_then(|s| s.running) != Some(true) {
@@ -285,6 +341,7 @@ mod tests {
             local: true,
             https: false,
             network: None,
+            private_ip: None,
         };
         let id = Uuid::new_v4();
         let host = c.hostname(Resource::Application(id)).unwrap();

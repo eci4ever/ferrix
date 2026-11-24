@@ -241,7 +241,11 @@ async fn transfer(
     let volume = storage(state, source, write).await?;
     let name = transfer_name(job.id);
     let config = ContainerCreateBody {
-        image: Some(job.image_id.clone()),
+        image: Some(if job.engine == "application" {
+            applications::helper_image(state).await?
+        } else {
+            job.image_id.clone()
+        }),
         user: Some("0:0".into()),
         entrypoint: Some(vec!["sh".into(), "-c".into()]),
         cmd: Some(vec!["exec sleep 1200".into()]),
@@ -556,6 +560,97 @@ pub(super) async fn remove_local(state: &AppState, job: &Job) -> Result<(), Stri
         return Err("Could not remove expired local backup.".into());
     }
     Ok(())
+}
+
+pub(super) async fn bundle_read(state: &AppState, job: &Job) -> Result<Vec<u8>, String> {
+    let (size, checksum): (i64, String) = sqlx::query_as(
+        "SELECT size_bytes,sha256 FROM database_jobs WHERE id=$1 AND status='succeeded'",
+    )
+    .bind(job.id)
+    .fetch_one(&state.pool)
+    .await
+    .map_err(|_| "Backup is not complete.")?;
+    if !(0..=64 * 1024 * 1024).contains(&size) {
+        return Err("Project export supports at most 64 MiB of backup data.".into());
+    }
+    let result = async {
+        let helper = transfer(state, job, job.application_id, false).await?;
+        let (exec, mut stream) = exec(
+            state,
+            &helper,
+            vec!["cat".into(), format!("/backups/{}.dump", job.id.simple())],
+        )
+        .await?;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|_| "Could not read bundle backup.")?;
+            if !matches!(chunk, bollard::container::LogOutput::StdOut { .. }) {
+                return Err("Bundle backup transfer failed.".into());
+            }
+            let chunk = chunk.into_bytes();
+            if bytes.len() + chunk.len() > size as usize {
+                return Err("Backup size mismatch.".into());
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        if bytes.len() != size as usize
+            || hex::encode(Sha256::digest(&bytes)) != checksum
+            || state
+                .docker
+                .inspect_exec(&exec)
+                .await
+                .map_err(|_| "Could not inspect bundle transfer.")?
+                .exit_code
+                != Some(0)
+        {
+            return Err("Backup checksum verification failed.".into());
+        }
+        Ok(bytes)
+    }
+    .await;
+    cleanup_helper(state, job).await?;
+    result
+}
+pub(super) async fn bundle_write(
+    state: &AppState,
+    job: &Job,
+    bytes: Vec<u8>,
+) -> Result<(), String> {
+    let result = async {
+        let helper = transfer(state, job, job.application_id, true).await?;
+        let mut builder = tar::Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o600);
+        header.set_cksum();
+        builder
+            .append_data(
+                &mut header,
+                format!("{}.dump", job.id.simple()),
+                bytes.as_slice(),
+            )
+            .map_err(|_| "Could not prepare imported backup.")?;
+        let body = builder
+            .into_inner()
+            .map_err(|_| "Could not finish imported backup.")?;
+        state
+            .docker
+            .upload_to_container(
+                &helper,
+                Some(
+                    bollard::query_parameters::UploadToContainerOptionsBuilder::default()
+                        .path("/backups")
+                        .build(),
+                ),
+                bollard::body_full(body.into()),
+            )
+            .await
+            .map_err(|_| "Could not write imported backup.")?;
+        Ok(())
+    }
+    .await;
+    cleanup_helper(state, job).await?;
+    result
 }
 
 #[cfg(test)]

@@ -9,17 +9,18 @@ import { Button } from '@/components/ui/button'
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert'
 import { Skeleton } from '@/components/ui/skeleton'
 type Destination = { endpoint:string;region:string;bucket:string;prefix:string;path_style:boolean;credentials_saved:boolean }
-type Policy = { enabled:boolean;cron:string;timezone:string;keep_last:number;s3:Destination|null;next_run_at:string|null;last_run_at:string|null;last_message:string|null }
-export function BackupPolicy({serviceId}:{serviceId:string}) {
+type Policy = { application_offline?:boolean;enabled:boolean;cron:string;timezone:string;keep_last:number;s3:Destination|null;next_run_at:string|null;last_run_at:string|null;last_message:string|null }
+export function BackupPolicy({serviceId,application=false}:{serviceId:string;application?:boolean}) {
  const [policy,setPolicy]=useState<Policy|null>(null)
  const [error,setError]=useState('')
  const [version,setVersion]=useState(0)
  useEffect(()=>{const abort=new AbortController();setError('');setPolicy(null);request<Policy>(`/services/${serviceId}/backup-policy`,{signal:abort.signal}).then(p=>{if(!abort.signal.aborted)setPolicy(p)}).catch(e=>{if(!abort.signal.aborted)setError(e.message)});return()=>abort.abort()},[serviceId,version])
- return <Card><CardHeader><CardTitle><h2>Schedule and storage</h2></CardTitle><CardDescription>Automatic PostgreSQL and MariaDB backups with optional S3-compatible storage.</CardDescription></CardHeader><CardContent>{error ? <div className="flex flex-col gap-3"><Alert variant="destructive"><AlertTitle>Could not load backup settings</AlertTitle><AlertDescription>{error}</AlertDescription></Alert><Button variant="outline" onClick={()=>setVersion(v=>v+1)}>Retry settings</Button></div> : policy ? <PolicyForm key={`${serviceId}-${version}`} serviceId={serviceId} initial={policy} /> : <Skeleton className="h-48" />}</CardContent></Card>
+ return <Card><CardHeader><CardTitle><h2>Schedule and storage</h2></CardTitle><CardDescription>{application ? 'Scheduled offline Application backups with optional S3-compatible storage. Each run may cause downtime.' : 'Automatic PostgreSQL and MariaDB backups with optional S3-compatible storage.'}</CardDescription></CardHeader><CardContent>{error ? <div className="flex flex-col gap-3"><Alert variant="destructive"><AlertTitle>Could not load backup settings</AlertTitle><AlertDescription>{error}</AlertDescription></Alert><Button variant="outline" onClick={()=>setVersion(v=>v+1)}>Retry settings</Button></div> : policy ? <PolicyForm key={`${serviceId}-${version}`} serviceId={serviceId} initial={policy} application={application} /> : <Skeleton className="h-48" />}</CardContent></Card>
 }
-function PolicyForm({serviceId,initial}:{serviceId:string;initial:Policy}) {
+function PolicyForm({serviceId,initial,application}:{serviceId:string;initial:Policy;application:boolean}) {
  const [policy,setPolicy]=useState(initial)
  const [enabled,setEnabled]=useState(initial.enabled)
+ const [offline,setOffline]=useState(initial.application_offline??false)
  const [storage,setStorage]=useState(initial.s3?'s3':'local')
  const [replace,setReplace]=useState(false)
  const [pathStyle,setPathStyle]=useState(initial.s3?.path_style??true)
@@ -34,13 +35,14 @@ function PolicyForm({serviceId,initial}:{serviceId:string;initial:Policy}) {
  return <form ref={form} className="flex flex-col gap-4" onInput={()=>setDirty(true)} onSubmit={async event=>{
   event.preventDefault();const data=new FormData(event.currentTarget);setBusy(true);setMessage('');setError('')
   const s3=storage==='s3'?{endpoint:data.get('endpoint'),region:data.get('region'),bucket:data.get('bucket'),prefix:data.get('prefix'),path_style:pathStyle,credentials:credentialsNeeded?{access_key:data.get('access_key'),secret_key:data.get('secret_key'),session_token:data.get('session_token')||null}:null}:null
-  try{await request(base,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled,cron:data.get('cron'),timezone:data.get('timezone'),keep_last:Number(data.get('keep_last')),s3})});setPolicy(await request<Policy>(base));setDirty(false);setReplace(false);for(const name of ['access_key','secret_key','session_token']){const input=form.current?.elements.namedItem(name);if(input instanceof HTMLInputElement)input.value=''}setMessage('Backup schedule and storage saved.')}
+  try{await request(base,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({application_offline:offline,enabled,cron:data.get('cron'),timezone:data.get('timezone'),keep_last:Number(data.get('keep_last')),s3})});setPolicy(await request<Policy>(base));setDirty(false);setReplace(false);for(const name of ['access_key','secret_key','session_token']){const input=form.current?.elements.namedItem(name);if(input instanceof HTMLInputElement)input.value=''}setMessage('Backup schedule and storage saved.')}
   catch(e){setError(e instanceof Error?e.message:'Could not save backup settings.')}finally{setBusy(false)}
  }}>
  {error ? <Alert variant="destructive"><AlertTitle>Unable to continue</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}
  {message ? <p role="status" className="text-sm">{message}</p> : null}
  <fieldset disabled={busy}><FieldGroup>
   <Field orientation="horizontal"><Checkbox id={`schedule-${serviceId}`} checked={enabled} onCheckedChange={value=>{setEnabled(value===true);setDirty(true)}} /><FieldLabel htmlFor={`schedule-${serviceId}`}>Enable scheduled backups</FieldLabel></Field>
+  {application ? <Field orientation="horizontal"><Checkbox id={`offline-${serviceId}`} checked={offline} onCheckedChange={v=>{setOffline(v===true);setDirty(true)}} required={enabled} /><FieldLabel htmlFor={`offline-${serviceId}`}>I understand scheduled backups stop this service temporarily and restore its previous runtime state.</FieldLabel></Field> : null}
   <div className="grid gap-4 md:grid-cols-2"><Field><FieldLabel htmlFor={`cron-${serviceId}`}>Cron expression</FieldLabel><Input id={`cron-${serviceId}`} name="cron" defaultValue={initial.cron} required maxLength={128} placeholder="0 2 * * *" /><FieldDescription>Five fields: minute, hour, day, month, weekday. For example, 0 2 * * * runs daily at 02:00.</FieldDescription></Field><Field><FieldLabel htmlFor={`timezone-${serviceId}`}>Timezone</FieldLabel><Input id={`timezone-${serviceId}`} name="timezone" defaultValue={initial.timezone} required placeholder="Asia/Kuala_Lumpur" /><FieldDescription>Use an IANA timezone. Missed runs are combined into one backup after restart.</FieldDescription></Field></div>
   <div className="grid gap-4 md:grid-cols-2"><Field><FieldLabel htmlFor={`storage-${serviceId}`}>Backup storage</FieldLabel><NativeSelect id={`storage-${serviceId}`} value={storage} onChange={e=>{setStorage(e.target.value);setDirty(true)}}><NativeSelectOption value="local">Docker server only</NativeSelectOption><NativeSelectOption value="s3">Docker server and S3</NativeSelectOption></NativeSelect><FieldDescription>Backup now uses this destination even when the schedule is disabled.</FieldDescription></Field><Field><FieldLabel htmlFor={`keep-${serviceId}`}>Successful backups to keep</FieldLabel><Input id={`keep-${serviceId}`} name="keep_last" type="number" min={1} max={365} required defaultValue={initial.keep_last} /><FieldDescription>After a new backup succeeds, older backups are removed from local storage and their original S3 destination. Backups being restored are protected.</FieldDescription></Field></div>
   {storage==='s3'?<>
