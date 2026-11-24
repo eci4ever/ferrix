@@ -79,6 +79,8 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts/tests -p test_application_archive.py -v
           python3 -m unittest discover -s scripts/tests -p test_self_update.py -v
+      - name: Command updater smoke tests
+        run: docker run --rm --entrypoint /bin/bash -e FERRIX_COMMAND_UPDATE_TEST=1 -v "$PWD:/src:ro" -v /var/run/docker.sock:/var/run/docker.sock:ro debian:bookworm-slim /src/scripts/tests/update-command.sh
       - name: Rust tests including PostgreSQL integration
         run: cargo +stable test --locked --workspace -- --include-ignored
       - name: Agent client credential transport checks

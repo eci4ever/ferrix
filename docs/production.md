@@ -46,7 +46,26 @@ sudo docker compose ps
 sudo docker compose logs --tail=100 ferrix proxy
 ```
 
-Before updates, make a backup:
+For an existing stock installation, review the target release notes and finish all deployment, backup, recovery and terminal activity. Run one command to update to the latest stable release and enable UI updates:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/eci4ever/ferrix/main/scripts/update.sh | sudo bash
+```
+
+To select v0.2.4 explicitly:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/eci4ever/ferrix/main/scripts/update.sh | sudo env FERRIX_VERSION=0.2.4 bash
+```
+
+The bootstrap script comes from `main`; the image and Compose file come from the same resolved release tag. It supports targets from v0.2.4 onward, keeps Caddy/configuration secrets and the existing Compose project identity, and pins the image to an immutable digest. It never sources `.env`, and ignores invoking-shell runtime overrides. Stock Compose files are verified against the source/target releases before replacement. Customized files, infrastructure changes and downgrades require manual migration; the command fails before replacing configuration in these cases.
+
+The command updater reserves the same Docker updater name as UI updates. It downloads the image, checks pending work, stops Ferrix for the bootstrap backup, verifies a PostgreSQL dump and saves configuration under `/opt/ferrix/updates/<job-id>/`, then replaces only Ferrix. PostgreSQL, Caddy and deployed service containers are preserved. The Ferrix UI and gateway-routed sites can be unavailable during the backup/restart. Copy backups off-host and retain separate service-volume backups.
+
+Failed downloads leave the running installation unchanged. Backup failure attempts to restart the original container. Failed replacement attempts recovery to the original Compose and immutable image only when schemas match (or no target startup was attempted); it never automatically restores a changed database. In that case, recover using the matching saved dump and configuration as below. The script reports its backup path and returns a nonzero exit status on failure. A killed command or host outage can require manual recovery; do not remove an active updater container to start a second update.
+
+For manual upgrades, create a backup first:
+
 
 ```sh
 sudo bash -c 'umask 077; cd /opt/ferrix; docker compose exec -T postgres pg_dump -U ferrix -d ferrix -Fc > ferrix.dump; tar -czf ferrix-backup.tar.gz .env compose.yaml Caddyfile ferrix.dump; rm ferrix.dump'
@@ -74,7 +93,7 @@ For recovery on a fresh installation with the original `.env` and Compose config
 
 Ferrix v0.2.4 and later support administrator-triggered updates for standard Linux amd64 installations at `/opt/ferrix`, using the local system Docker socket and the production Compose file. The Ferrix container must carry `io.ferrix.self-update=true`, and `FERRIX_SELF_UPDATE=true` must be set (both are included in the updated production Compose file). Development, remote Docker daemons, custom paths and altered service layouts use the manual upgrade procedure.
 
-For an existing installation, first perform one manual image upgrade to a release containing this feature and review/install that release's `compose.production.yaml` as `/opt/ferrix/compose.yaml`. Back up the existing file and preserve `.env`, the auth key, credentials, project identity and volumes. Recreate only Ferrix after reviewing configuration changes. Older production Compose files do not enable UI updates just by pulling a new image. Set `FERRIX_SELF_UPDATE=false` to disable the feature.
+For an existing stock installation, use the one-command updater above to install the matching image and Compose file and enable UI updates. For manual upgrades, review/install the release's `compose.production.yaml` as `/opt/ferrix/compose.yaml` alongside the new image. Back up the existing file and preserve `.env`, the auth key, credentials, project identity and volumes. Recreate only Ferrix after reviewing configuration changes. Older production Compose files do not enable UI updates just by pulling a new image. Set `FERRIX_SELF_UPDATE=false` to disable the feature.
 
 When a newer stable release is confirmed, open **Update available** in the sidebar. Review its notes, enter your password and authenticator/recovery code if required, acknowledge the backup policy, then type `UPDATE FERRIX`. This action requires a platform-admin browser session; API keys cannot start self-updates. Finish deployments, backups, project recovery operations and terminal sessions first. Ferrix drains managed lifecycle work and temporarily rejects new mutations while updating. Avoid deployments and GitHub pushes during this window; retry failed API requests and redeliver failed GitHub webhooks after the update.
 
