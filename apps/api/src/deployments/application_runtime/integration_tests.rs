@@ -54,7 +54,11 @@ async fn storage_workers_redeploy_failure_rollback_and_deletion() {
                 ))
                 .await
                 .unwrap();
-            max = max.max(rows.len());
+            max = max.max(
+                rows.iter()
+                    .filter(|c| c.state.as_ref().is_some_and(|s| s.to_string() == "running"))
+                    .count(),
+            );
             tokio::select! {_=tokio::time::sleep(Duration::from_millis(40))=>{},_=observe_rx.changed()=>break}
         }
         max

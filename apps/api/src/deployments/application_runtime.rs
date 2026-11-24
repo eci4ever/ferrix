@@ -240,8 +240,18 @@ pub(super) async fn ensure_single_writer(
         ))
         .await
         .map_err(|_| "Could not verify exclusive storage/runtime access.")?;
-    if !running.is_empty() {
-        return Err("Another running container is using this service or its data. Stop it before deployment; Ferrix will not start a second writer.".into());
+    // Filtered inventory can include created/stopped entries across Docker versions
+    // and transitions. Inspect live state instead of treating every match as a writer.
+    for container in running {
+        let id = container
+            .id
+            .ok_or("Docker did not identify a storage container.")?;
+        match state.docker.inspect_container(&id,None).await {
+            Ok(info) if info.state.as_ref().and_then(|s|s.running)==Some(true)=>return Err("Another running container is using this service or its data. Stop it before deployment; Ferrix will not start a second writer.".into()),
+            Ok(_)=>{},
+            Err(bollard::errors::Error::DockerResponseServerError{status_code:404,..})=>{},
+            Err(_)=>return Err("Could not verify exclusive storage/runtime access.".into()),
+        }
     }
     Ok(())
 }
