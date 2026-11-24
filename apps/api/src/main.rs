@@ -5,6 +5,19 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!();
+    match std::env::args().nth(1).as_deref() {
+        Some("--version") => {
+            println!("{}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        Some("--schema-version") => {
+            println!("{}", MIGRATOR.iter().map(|m| m.version).max().unwrap_or(0));
+            return Ok(());
+        }
+        Some(_) => return Err("Unknown argument".into()),
+        None => {}
+    }
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -21,7 +34,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .acquire_timeout(Duration::from_secs(3))
         .connect(&std::env::var("DATABASE_URL")?)
         .await?;
-    sqlx::migrate!().run(&pool).await?;
+    MIGRATOR.run(&pool).await?;
     let docker = bollard::Docker::connect_with_defaults()?;
     let listener = tokio::net::TcpListener::bind(bind).await?;
     tracing::info!(address = %listener.local_addr()?, "Ferrix API ready");
@@ -31,6 +44,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         docker,
         auth,
     };
+    ferrix_api::self_update::initialize(&state).await;
     let mut app = router(state.clone());
     if let Ok(directory) = std::env::var("FERRIX_STATIC_DIR") {
         let index = std::path::Path::new(&directory).join("index.html");
@@ -53,6 +67,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let (worker_shutdown, receiver) = tokio::sync::watch::channel(false);
     let state_shutdown = receiver.clone();
+    let updater = tokio::spawn(ferrix_api::self_update::run_worker(
+        state.clone(),
+        receiver.clone(),
+    ));
     let terminals = tokio::spawn(ferrix_api::deployments::run_terminal_worker(
         state.clone(),
         receiver.clone(),
@@ -101,6 +119,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     notifications.await?;
     quotas.await?;
     terminals.await?;
+    updater.await?;
     pool.close().await;
     Ok(())
 }

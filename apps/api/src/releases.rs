@@ -14,13 +14,13 @@ const BODY_LIMIT: usize = 256 * 1024;
 
 #[derive(Clone, Default, Serialize)]
 pub(crate) struct ReleaseStatus {
-    current_version: &'static str,
-    latest_version: Option<String>,
-    update_available: bool,
+    pub(crate) current_version: &'static str,
+    pub(crate) latest_version: Option<String>,
+    pub(crate) update_available: bool,
     release_notes_url: Option<String>,
     upgrade_guide_url: String,
-    checked_at: Option<DateTime<Utc>>,
-    check_failed: bool,
+    pub(crate) checked_at: Option<DateTime<Utc>>,
+    pub(crate) check_failed: bool,
 }
 
 impl ReleaseStatus {

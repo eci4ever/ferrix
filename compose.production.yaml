@@ -19,6 +19,7 @@ services:
     restart: unless-stopped
     init: true
     environment:
+      FERRIX_SELF_UPDATE: ${FERRIX_SELF_UPDATE:-true}
       FERRIX_WEBSITE_BIND: 0.0.0.0:8081
       FERRIX_AUTO_DOMAIN: ${FERRIX_AUTO_DOMAIN:-}
       FERRIX_PUBLIC_IP: ${FERRIX_PUBLIC_IP:-}
@@ -36,6 +37,8 @@ services:
       FERRIX_AUTH_KEY: ${FERRIX_AUTH_KEY:?Missing FERRIX_AUTH_KEY}
       DOCKER_HOST: unix:///var/run/docker.sock
       TZ: ${TZ:-UTC}
+    labels:
+      io.ferrix.self-update: "true"
     group_add:
       - ${DOCKER_GID:?Missing DOCKER_GID}
     volumes:

@@ -8,6 +8,7 @@ mod monitoring;
 pub mod notifications;
 mod projects;
 mod releases;
+pub mod self_update;
 mod server_time;
 
 use axum::{
@@ -72,6 +73,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/v1/projects/service-status", get(projects::statuses))
         .route("/api/v1/server-time", get(server_time::get))
         .route("/api/v1/releases/latest", get(releases::get))
+        .route(
+            "/api/v1/releases/update",
+            get(self_update::status).post(self_update::start),
+        )
         .layer(axum::Extension(release_cache))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -91,6 +96,7 @@ pub fn router(state: AppState) -> Router {
             "/health",
             get(|| async { Json(serde_json::json!({"service":"ferrix", "status":"ok"})) }),
         )
+        .layer(axum::middleware::from_fn(self_update::guard))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
