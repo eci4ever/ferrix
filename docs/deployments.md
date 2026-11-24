@@ -198,6 +198,6 @@ GitHub repositories can be configured in the Application Source tab for Dockerfi
 
 Application persistent storage, commands, workers and offline backup/import: [Application storage guide](application-storage.md).
 
-Source builds after v0.2.1 support managed offline Application-volume backup schedules, local/S3 retention and restore into a new stopped Application. See [Application storage](application-storage.md#managed-offline-backups-source-builds-after-v021).
+Ferrix v0.2.2 and later support managed offline Application-volume backup schedules, local/S3 retention and restore into a new stopped Application. See [Application storage](application-storage.md#managed-offline-backups-v022).
 
 Applications can also [build uploaded ZIP/tar source archives](source-uploads.md) using a Dockerfile.

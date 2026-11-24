@@ -18,7 +18,7 @@ For Hermes, use its supported image (preferably a pinned digest), command `["gat
 
 ## CPU and memory limits
 
-Configurable limits require a source build after v0.2.1. The v0.2.1 image retains the fixed Application defaults.
+Configurable limits are available from v0.2.2. The v0.2.1 image retains the fixed Application defaults.
 
 Application Configuration includes **Memory limit (MiB)** and **CPU limit (cores)** for web applications and workers. Defaults remain **512 MiB and 1 CPU**, including older configurations/deployment snapshots without these fields. Database service limits are unchanged.
 
@@ -73,7 +73,7 @@ docker run --rm --network none --mount "type=volume,src=$volume,dst=/data,readon
   debian:bookworm-slim tar --numeric-owner -czpf - -C /data . > application-data.tar.gz
 ```
 
-Check the command succeeded and validate the archive before restarting. Store an encrypted copy off-host. The v0.2.1 image uses this administrator workflow. Source builds after v0.2.1 also provide managed offline Application backups, schedules and S3 copies as described below.
+Check the command succeeded and validate the archive before restarting. Store an encrypted copy off-host. The v0.2.1 image uses this administrator workflow. From v0.2.2, Ferrix also provides managed offline Application backups, schedules and S3 copies as described below.
 
 After import, start only the target service. Verify its identity, sessions, data permissions and connectivity without regenerating the Telegram token or pairing state. Retain the original backup until restart and redeploy have been verified.
 
@@ -81,7 +81,7 @@ After import, start only the target service. Verify its identity, sessions, data
 
 Service deletion keeps its named volume by default. **Permanently delete data** requires the exact service name confirmation and deletes only volumes carrying that service's ownership labels, without force. Retained volumes are not automatically attached to newly created services; use the offline export/import workflow for recovery. Keep the volume name with your backups.
 
-## Managed offline backups (source builds after v0.2.1)
+## Managed offline backups (v0.2.2+)
 
 Open an Application's **Backups** tab after configuring persistent storage and deploying it. **Backup now** requires explicit downtime confirmation. For schedules, acknowledge the offline policy, choose a five-field cron expression and IANA timezone, set successful-backup retention, then save. Manual backups use the saved destination even if scheduling is disabled. PostgreSQL/MariaDB retain their existing database-specific backup behavior.
 
