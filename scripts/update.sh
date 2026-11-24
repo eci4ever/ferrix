@@ -133,10 +133,10 @@ phase preparing
 # Unique Docker names prevent a simultaneous UI updater from starting.
 docker create --name "$helper" --log-driver json-file --log-opt max-size=64k --log-opt max-file=1 --network none --read-only --cap-drop ALL --security-opt no-new-privileges --memory 16m --pids-limit 16 --user 0:0 \
   --label "io.ferrix.updater=$project" --label "io.ferrix.update-id=$job" --label "io.ferrix.target-version=$version" --label io.ferrix.command-update=true \
-  --mount "type=bind,src=$backup,dst=/progress,readonly" --entrypoint /bin/sh "$source_image" -c '
+  --mount "type=bind,src=$backup/phase,dst=/progress-phase,readonly" --entrypoint /bin/sh "$source_image" -c '
     last=
     while :; do
-      stage=$(cat /progress/phase)
+      stage=$(cat /progress-phase)
       if [ "$stage" != "$last" ]; then printf "FERRIX_UPDATE_STAGE=%s\n" "$stage"; last=$stage; fi
       case "$stage" in succeeded) exit 0;; failed|rolled_back) exit 1;; esac
       sleep 1
