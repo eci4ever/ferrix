@@ -54,6 +54,8 @@ jobs:
         run: docker build -t ferrix:production-test .
       - name: Installer smoke test
         run: docker run --rm --entrypoint /bin/bash -e FERRIX_INSTALL_TEST=1 -v "$PWD:/src:ro" -v /var/run/docker.sock:/var/run/docker.sock:ro debian:bookworm-slim /src/scripts/tests/install.sh
+      - name: Command updater smoke test
+        run: docker run --rm --entrypoint /bin/bash -e FERRIX_COMMAND_UPDATE_TEST=1 -v "$PWD:/src:ro" -v /var/run/docker.sock:/var/run/docker.sock:ro debian:bookworm-slim /src/scripts/tests/update-command.sh
       - name: Production HTTPS and authentication smoke test
         run: python3 scripts/tests/production.py ferrix:production-test
   image:

@@ -40,7 +40,13 @@ docker compose ps
 docker compose logs --tail=100 ferrix proxy
 ```
 
-Before upgrading, back up the database and `.env`, review the [release notes](https://github.com/eci4ever/ferrix/releases/latest), then follow the [upgrade guide](docs/production.md#operate-and-update). Preserve `FERRIX_AUTH_KEY` to decrypt saved configuration. Database migrations run on startup; rolling back an image does not reverse schema changes. Existing installations are not updated automatically.
+Review the [release notes](https://github.com/eci4ever/ferrix/releases/latest), finish deployments/backups and close terminals, then upgrade a standard installation with:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/eci4ever/ferrix/main/scripts/update.sh | sudo bash
+```
+
+This selects the latest stable release, backs up PostgreSQL/configuration, updates the stock Compose file, preserves secrets and project identity, and enables administrator updates from the UI. It replaces only Ferrix. Customized Compose files or infrastructure changes require the [manual upgrade guide](docs/production.md#operate-and-update). Keep off-host backups of configuration and service data. Database migrations run on startup; image recovery is attempted only when the schema version is unchanged. Updates are never installed on a schedule.
 
 ## Stack
 
