@@ -54,6 +54,10 @@ sudo bash -c 'umask 077; cd /opt/ferrix; docker compose exec -T postgres pg_dump
 
 Keep backups off-host. The `.env` auth key is required to decrypt existing MFA secrets and saved service configuration. Do not regenerate the PostgreSQL password against an existing volume. Compose `down` preserves named volumes; `down -v` destroys them.
 
+Ferrix checks the public GitHub latest stable release at startup and every six hours. Platform administrators see an **Update available** sidebar item when that release is newer than the running API version. Open it for release notes, upgrade instructions and the last successful check time. Organization owners/admins without the platform-admin role do not see this notice. The browser reads the cached result every 15 minutes while visible and when returning to the tab; it never queries GitHub directly.
+
+Checks use outbound HTTPS to `api.github.com` without credentials. Drafts, prereleases and invalid version tags are excluded. A failed check retains the last confirmed release and marks it as stale; it does not interrupt Ferrix or trigger rapid retries. The cache is in memory, so restarting Ferrix performs a new check. This feature is available from v0.2.3; older installed images must first be upgraded to a version containing it. Ferrix never installs updates automatically.
+
 To update, first inspect the target release's migration/compatibility notes. Edit only `FERRIX_IMAGE` in `/opt/ferrix/.env` to a published version (or immutable image digest), then:
 
 ```sh

@@ -85,6 +85,10 @@ async fn liveness_and_unauthenticated_access() {
         .unwrap());
     assert_eq!(get(&app, "/health", "").await.0, StatusCode::OK);
     assert_eq!(
+        get(&app, "/api/v1/releases/latest", "").await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
         get(
             &app,
             "/api/v1/docker/swarm/services/aaaaaaaaaaaaaaaaaaaaaaaaa/logs",
