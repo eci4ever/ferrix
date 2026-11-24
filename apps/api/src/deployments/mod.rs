@@ -1,5 +1,8 @@
+mod application_runtime;
 mod backups;
 mod github;
+#[cfg(test)]
+mod test_support;
 pub use github::webhook_routes;
 mod domains;
 pub(crate) mod observability;
@@ -110,6 +113,7 @@ pub(crate) struct Application {
     source_type: String,
     source_repository: Option<String>,
     kind: String,
+    worker_mode: bool,
     deployed: bool,
     active_deployment_id: Option<Uuid>,
     active_image: Option<String>,
@@ -150,7 +154,7 @@ struct Deployment {
     started_at: Option<DateTime<Utc>>,
     finished_at: Option<DateTime<Utc>>,
 }
-const APP_COLUMNS: &str = "CASE WHEN a.service_kind='database' THEN CASE WHEN a.image LIKE 'mongo:%' THEN 'mongodb' WHEN a.image LIKE 'mariadb:%' THEN 'mariadb' WHEN a.image LIKE 'redis:%' THEN 'redis' ELSE 'postgres' END END AS database_engine,CASE WHEN EXISTS(SELECT 1 FROM application_git_sources s WHERE s.application_id=a.id AND s.enabled) THEN 'github' ELSE 'image' END AS source_type,(SELECT repository FROM application_git_sources s WHERE s.application_id=a.id AND s.enabled) AS source_repository,a.service_kind AS kind,(a.active_deployment_id IS NOT NULL) AS deployed,a.active_deployment_id,(SELECT image FROM deployments WHERE id=a.active_deployment_id) AS active_image,EXISTS(SELECT 1 FROM deployments d WHERE d.id=a.active_deployment_id AND ((CASE WHEN EXISTS(SELECT 1 FROM application_git_sources s WHERE s.application_id=a.id AND s.enabled) THEN (SELECT revision FROM application_git_sources WHERE application_id=a.id) IS DISTINCT FROM d.source_revision ELSE d.source_revision IS NOT NULL OR a.image IS DISTINCT FROM d.image END) OR a.container_port IS DISTINCT FROM d.container_port OR a.env_cipher IS DISTINCT FROM d.env_cipher OR a.service_cipher IS DISTINCT FROM d.service_cipher)) AS pending_changes,EXISTS(SELECT 1 FROM database_jobs j WHERE j.status IN ('queued','running') AND (j.application_id=a.id OR j.source_application_id=a.id)) AS database_operation_pending,a.id,a.environment_id,(SELECT project_id FROM environments WHERE id=a.environment_id) AS project_id,a.name,a.image,a.container_port,a.active_container_id,a.host_port,a.created_at,a.updated_at";
+const APP_COLUMNS: &str = "CASE WHEN a.service_kind='database' THEN CASE WHEN a.image LIKE 'mongo:%' THEN 'mongodb' WHEN a.image LIKE 'mariadb:%' THEN 'mariadb' WHEN a.image LIKE 'redis:%' THEN 'redis' ELSE 'postgres' END END AS database_engine,CASE WHEN EXISTS(SELECT 1 FROM application_git_sources s WHERE s.application_id=a.id AND s.enabled) THEN 'github' ELSE 'image' END AS source_type,(SELECT repository FROM application_git_sources s WHERE s.application_id=a.id AND s.enabled) AS source_repository,a.service_kind AS kind,a.worker_mode,(a.active_deployment_id IS NOT NULL) AS deployed,a.active_deployment_id,(SELECT image FROM deployments WHERE id=a.active_deployment_id) AS active_image,EXISTS(SELECT 1 FROM deployments d WHERE d.id=a.active_deployment_id AND ((CASE WHEN EXISTS(SELECT 1 FROM application_git_sources s WHERE s.application_id=a.id AND s.enabled) THEN (SELECT revision FROM application_git_sources WHERE application_id=a.id) IS DISTINCT FROM d.source_revision ELSE d.source_revision IS NOT NULL OR a.image IS DISTINCT FROM d.image END) OR a.container_port IS DISTINCT FROM d.container_port OR a.env_cipher IS DISTINCT FROM d.env_cipher OR a.service_cipher IS DISTINCT FROM d.service_cipher)) AS pending_changes,EXISTS(SELECT 1 FROM database_jobs j WHERE j.status IN ('queued','running') AND (j.application_id=a.id OR j.source_application_id=a.id)) AS database_operation_pending,a.id,a.environment_id,(SELECT project_id FROM environments WHERE id=a.environment_id) AS project_id,a.name,a.image,a.container_port,a.active_container_id,a.host_port,a.created_at,a.updated_at";
 async fn project_access(state: &AppState, id: &Identity, project: Uuid) -> Result<(), ApiError> {
     if !sqlx::query_scalar::<_, bool>(
         "SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1 AND organization_id=$2)",
@@ -174,7 +178,7 @@ async fn environment_access(
 }
 impl Application {
     fn with_gateway(mut self, state: &AppState) -> Self {
-        if self.kind == "application" {
+        if self.kind == "application" && !self.worker_mode {
             self.automatic_url = state
                 .gateway
                 .url(crate::gateway::Resource::Application(self.id));
@@ -240,13 +244,19 @@ async fn applications(
     environment_access(&state, &id, environment).await?;
     Ok(Json(sqlx::query_as(&format!("SELECT {APP_COLUMNS} FROM applications a WHERE environment_id=$1 AND service_kind='application' ORDER BY created_at,id")).bind(environment).fetch_all(&state.pool).await?))
 }
+fn default_application_port() -> i32 {
+    80
+}
 #[derive(Deserialize)]
 struct Configuration {
     name: String,
     image: String,
+    #[serde(default = "default_application_port")]
     container_port: i32,
     #[serde(default)]
     environment: String,
+    #[serde(flatten)]
+    runtime: application_runtime::RuntimeConfig,
 }
 impl Configuration {
     fn validate(&mut self) -> Result<Vec<String>, ApiError> {
@@ -268,6 +278,7 @@ impl Configuration {
         if !(1..=65535).contains(&self.container_port) {
             return Err(invalid("Container port must be between 1 and 65535."));
         }
+        self.runtime.validate()?;
         parse_environment(&self.environment)
     }
 }
@@ -352,8 +363,8 @@ async fn create_application(
     let values = input.validate()?;
     let app = Uuid::new_v4();
     let cipher = encrypt(&state, app, &values)?;
-    sqlx::query("INSERT INTO applications(id,environment_id,name,image,container_port,env_cipher) VALUES($1,$2,$3,$4,$5,$6)")
-        .bind(app).bind(environment).bind(input.name).bind(input.image).bind(input.container_port).bind(cipher).execute(&state.pool).await.map_err(database_error)?;
+    sqlx::query("INSERT INTO applications(id,environment_id,name,image,container_port,env_cipher,service_cipher,worker_mode) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
+        .bind(app).bind(environment).bind(input.name).bind(input.image).bind(input.container_port).bind(cipher).bind(services::seal(&state,app,&input.runtime)?).bind(input.runtime.worker_mode).execute(&state.pool).await.map_err(database_error)?;
     Ok((
         StatusCode::CREATED,
         Json(app_access(&state, &id, app).await?),
@@ -381,8 +392,9 @@ async fn configuration(
             .bind(app)
             .fetch_one(&state.pool)
             .await?;
+    let runtime = application_runtime::load(&state, app).await?;
     Ok(Json(
-        json!({"name":row.name,"image":row.image,"container_port":row.container_port,"environment":decrypt(&state,app,cipher.as_deref())?.join("\n")}),
+        json!({"worker_mode":runtime.worker_mode,"command":runtime.command,"storage":runtime.storage,"storage_volume":runtime.storage.as_ref().map(|_|application_runtime::volume(app)),"name":row.name,"image":row.image,"container_port":row.container_port,"environment":decrypt(&state,app,cipher.as_deref())?.join("\n")}),
     ))
 }
 async fn save_configuration(
@@ -397,8 +409,29 @@ async fn save_configuration(
     }
     let values = input.validate()?;
     let cipher = encrypt(&state, app, &values)?;
-    sqlx::query("UPDATE applications SET name=$1,image=$2,container_port=$3,env_cipher=$4,updated_at=now() WHERE id=$5")
-        .bind(input.name).bind(input.image).bind(input.container_port).bind(cipher).bind(app).execute(&state.pool).await.map_err(database_error)?;
+    let mut tx = state.pool.begin().await?;
+    let previous: Option<Vec<u8>> =
+        sqlx::query_scalar("SELECT service_cipher FROM applications WHERE id=$1 FOR UPDATE")
+            .bind(app)
+            .fetch_one(&mut *tx)
+            .await?;
+    let old = application_runtime::decode(&state, app, previous.as_deref())?;
+    let deployed: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM deployments WHERE application_id=$1)")
+            .bind(app)
+            .fetch_one(&mut *tx)
+            .await?;
+    if deployed
+        && old.storage.as_ref().map(|s| &s.target)
+            != input.runtime.storage.as_ref().map(|s| &s.target)
+    {
+        return Err(invalid(
+            "Storage cannot be attached, detached or moved after a deployment is queued. Create a new Application and import its data instead.",
+        ));
+    }
+    sqlx::query("UPDATE applications SET name=$1,image=$2,container_port=$3,env_cipher=$4,service_cipher=$6,worker_mode=$7,updated_at=now() WHERE id=$5")
+        .bind(input.name).bind(input.image).bind(input.container_port).bind(cipher).bind(app).bind(services::seal(&state,app,&input.runtime)?).bind(input.runtime.worker_mode).execute(&mut *tx).await.map_err(database_error)?;
+    tx.commit().await?;
     Ok(Json(app_access(&state, &id, app).await?))
 }
 async fn deploy(
@@ -417,7 +450,7 @@ async fn deploy(
         .ok_or_else(missing)?;
     backups::ensure_idle(&mut tx, app).await?;
     let deployment = Uuid::new_v4();
-    sqlx::query("INSERT INTO deployments(id,application_id,requested_by,image,container_port,env_cipher,service_kind,service_cipher,requested_by_name,requested_by_key_id,requested_by_key_name) SELECT $1,id,$2,image,container_port,env_cipher,service_kind,service_cipher,$4,$5,$6 FROM applications WHERE id=$3")
+    sqlx::query("INSERT INTO deployments(id,application_id,requested_by,image,container_port,env_cipher,service_kind,worker_mode,service_cipher,requested_by_name,requested_by_key_id,requested_by_key_name) SELECT $1,id,$2,image,container_port,env_cipher,service_kind,worker_mode,service_cipher,$4,$5,$6 FROM applications WHERE id=$3")
         .bind(deployment).bind(id.user_id).bind(app).bind(&id.name).bind(key.as_ref().map(|key|key.id)).bind(key.as_ref().map(|key|key.name.as_str())).execute(&mut *tx).await.map_err(database_error)?;
     github::snapshot(&mut tx, app, deployment).await?;
     tx.commit().await?;
@@ -450,7 +483,7 @@ async fn rollback(
     .await?
     .ok_or_else(missing)?;
     let deployment = Uuid::new_v4();
-    let inserted = sqlx::query("INSERT INTO deployments(id,application_id,requested_by,image,container_port,env_cipher,service_kind,service_cipher,rollback_of,pinned_image_id,requested_by_name,requested_by_key_id,requested_by_key_name) SELECT $1,application_id,$2,image,container_port,env_cipher,service_kind,service_cipher,id,image_id,$5,$6,$7 FROM deployments WHERE id=$3 AND application_id=$4 AND status='succeeded' AND service_kind='application' AND image_id IS NOT NULL")
+    let inserted = sqlx::query("INSERT INTO deployments(id,application_id,requested_by,image,container_port,env_cipher,service_kind,worker_mode,service_cipher,rollback_of,pinned_image_id,requested_by_name,requested_by_key_id,requested_by_key_name) SELECT $1,application_id,$2,image,container_port,env_cipher,service_kind,worker_mode,service_cipher,id,image_id,$5,$6,$7 FROM deployments WHERE id=$3 AND application_id=$4 AND status='succeeded' AND service_kind='application' AND image_id IS NOT NULL")
         .bind(deployment).bind(id.user_id).bind(input.deployment_id).bind(app).bind(&id.name).bind(key.as_ref().map(|key|key.id)).bind(key.as_ref().map(|key|key.name.as_str()))
         .execute(&mut *tx).await.map_err(database_error)?;
     if inserted.rows_affected() != 1 {

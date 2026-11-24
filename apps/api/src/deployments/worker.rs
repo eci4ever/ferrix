@@ -145,31 +145,17 @@ pub(super) async fn execute(
             .await
             .map_err(|_| "Could not inspect the pulled image.")?
     };
-    if job.service_kind == "application"
-        && image
-            .config
-            .as_ref()
-            .and_then(|c| c.volumes.as_ref())
-            .is_some_and(|volumes| !volumes.is_empty())
-    {
-        return Err(
-            "This image declares persistent volumes. This MVP supports stateless images only."
-                .into(),
-        );
-    }
-    let image_id = image.id.ok_or("Pulled image has no immutable ID.")?;
+    let image_id = image
+        .id
+        .clone()
+        .ok_or("Pulled image has no immutable ID.")?;
     sqlx::query("UPDATE deployments SET image_id=$1 WHERE id=$2 AND status='running'")
         .bind(&image_id)
         .bind(job.id)
         .execute(&mut *conn)
         .await
         .map_err(|_| "Could not persist image ID.")?;
-    phase(
-        conn,
-        job.id,
-        "Creating an isolated container with an automatic loopback port…",
-    )
-    .await?;
+    phase(conn, job.id, "Creating an isolated container…").await?;
     let env = decrypt(state, job.application_id, job.env_cipher.as_deref())
         .map_err(|_| "Could not decrypt environment variables. Check the Ferrix auth key.")?;
     let port_key = format!("{}/tcp", job.container_port);
@@ -223,12 +209,28 @@ pub(super) async fn execute(
         ..Default::default()
     };
     super::services::database::attach_network(state, job, &mut config).await?;
-    if job.service_kind == "application" {
+    let runtime = if job.service_kind == "application" {
+        super::application_runtime::configure(state, job, &mut config, &image).await?
+    } else {
+        super::application_runtime::RuntimeConfig::default()
+    };
+    if job.service_kind == "application" && !runtime.worker_mode {
         crate::gateway::attach(state, &mut config).await?;
     }
     if job.service_kind == "database" {
         super::services::database::configure(state, job, &mut config).await?;
     }
+    let previous_exclusive:bool=sqlx::query_scalar("SELECT COALESCE((SELECT d.worker_mode FROM applications a JOIN deployments d ON d.id=a.active_deployment_id WHERE a.id=$1),false)").bind(job.application_id).fetch_one(&mut *conn).await.map_err(|_|"Could not inspect previous runtime mode.")?;
+    if job.service_kind == "database" || runtime.exclusive() || previous_exclusive {
+        phase(
+            conn,
+            job.id,
+            "Stopping the previous instance before starting its replacement…",
+        )
+        .await?;
+        super::services::replacement::stop_previous(state, conn, job).await?;
+    }
+    super::application_runtime::ensure_single_writer(state, job.application_id, &runtime).await?;
     let name = format!("ferrix-{}-{}", job.application_id.simple(), job.id.simple());
     let created = state
         .docker
@@ -246,15 +248,7 @@ pub(super) async fn execute(
         .execute(&mut *conn)
         .await
         .map_err(|_| "Could not persist container ID.")?;
-    if job.service_kind == "database" {
-        phase(
-            conn,
-            job.id,
-            "Stopping the previous database before opening its persistent volume…",
-        )
-        .await?;
-        super::services::database::stop_previous(state, conn, job).await?;
-    }
+    super::application_runtime::ensure_single_writer(state, job.application_id, &runtime).await?;
     phase(conn, job.id, "Starting container…").await?;
     state
         .docker
@@ -273,7 +267,10 @@ pub(super) async fn execute(
         let status = info
             .state
             .ok_or("Docker did not return a container state.")?;
-        if status.running != Some(true) {
+        if status.running != Some(true)
+            || status.restarting == Some(true)
+            || info.restart_count.unwrap_or(0) > 0
+        {
             return Err(
                 "Container exited during startup. Check its image configuration and runtime logs."
                     .into(),
@@ -289,7 +286,7 @@ pub(super) async fn execute(
             ready = 0;
         }
         if ready >= 2 {
-            if job.service_kind == "database" {
+            if job.service_kind == "database" || runtime.worker_mode {
                 break None;
             }
             let port = info
@@ -399,7 +396,7 @@ async fn cycle(
     sqlx::query("UPDATE deployments SET status='failed',finished_at=now(),logs=logs || E'Deployment interrupted by worker restart. Redeploy to try again.\\n' WHERE status='running'")
         .execute(&mut *conn).await.map_err(|_|"Could not recover interrupted deployments.")?;
     cleanup(state, conn).await?;
-    super::services::database::restore_pending(state, conn).await?;
+    super::services::replacement::restore_pending(state, conn).await?;
     if super::backups::cycle(state, conn, shutdown).await? {
         return Ok(true);
     }
@@ -422,7 +419,7 @@ async fn cycle(
                 .bind(error).bind(job.id).execute(&mut *conn).await.map_err(|_|"Could not record deployment failure.")?;
         }
         cleanup(state, conn).await?;
-        super::services::database::restore_pending(state, conn).await?;
+        super::services::replacement::restore_pending(state, conn).await?;
         Ok(true)
     } else {
         cleanup(state, conn).await?;

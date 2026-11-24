@@ -1,18 +1,29 @@
+import { useState } from 'react'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Field, FieldGroup, FieldLabel, FieldDescription } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 
-type Configuration = { name: string; image: string; container_port: number; environment: string }
+type Configuration = { storage_volume?: string | null; worker_mode?: boolean; command?: string[]; storage?: { target: string; read_only: boolean } | null; name: string; image: string; container_port: number; environment: string }
 
 export function ConfigurationFields({ initial, disabled, source }: { initial?: Configuration; disabled: boolean; source?: string }) {
+  const [worker, setWorker] = useState(initial?.worker_mode ?? false)
+  const [storage, setStorage] = useState(Boolean(initial?.storage))
   return <FieldGroup>
     <Field><FieldLabel htmlFor="application-name">Application name</FieldLabel><Input id="application-name" name="name" required maxLength={80} autoFocus defaultValue={initial?.name ?? ''} placeholder="e.g. nginx" disabled={disabled} /></Field>
     {source === 'github' ? <Input type="hidden" name="image" value={initial?.image ?? 'nginx:alpine'} /> : <Field><FieldLabel htmlFor="application-image">Docker image</FieldLabel><Input id="application-image" name="image" required maxLength={255} defaultValue={initial?.image ?? 'nginx:alpine'} spellCheck={false} disabled={disabled} /><FieldDescription>Use a public registry image, for example nginx:alpine. GitHub sources are configured in the Source tab after creating the application.</FieldDescription></Field>}
-    <Field><FieldLabel htmlFor="application-port">Container port</FieldLabel><Input id="application-port" name="container_port" type="number" min={1} max={65535} required defaultValue={initial?.container_port ?? 80} disabled={disabled} /><FieldDescription>Ferrix allocates a free port on the server's loopback address.</FieldDescription></Field>
+    <Field><FieldLabel htmlFor="application-worker"><Checkbox id="application-worker" name="worker_mode" checked={worker} onCheckedChange={value => setWorker(value === true)} disabled={disabled} />Background worker</FieldLabel><FieldDescription>Runs without a published port or website domain. The process must stay running; image healthchecks still apply.</FieldDescription></Field>
+    <Field><FieldLabel htmlFor="application-port">Container port</FieldLabel><Input id="application-port" name="container_port" type="number" min={1} max={65535} required defaultValue={initial?.container_port ?? 80} disabled={disabled || worker} /><FieldDescription>Ignored for workers. For web applications, Ferrix allocates a free port on the server's loopback address.</FieldDescription></Field>
+    <Field><FieldLabel htmlFor="application-command">Command arguments</FieldLabel><Textarea id="application-command" name="command" defaultValue={JSON.stringify(initial?.command ?? [])} rows={3} disabled={disabled} spellCheck={false} /><FieldDescription>JSON array, for example ["gateway", "run"]. Replaces the image CMD and preserves its entrypoint. Use [] for the image default. Arguments are encrypted and passed literally; put credentials in Environment.</FieldDescription></Field>
+    <Field><FieldLabel htmlFor="application-storage"><Checkbox id="application-storage" name="storage_enabled" checked={storage} onCheckedChange={value => setStorage(value === true)} disabled={disabled} />Persistent storage</FieldLabel><FieldDescription>A service-owned named volume survives restart, redeploy and rollback. Storage must be chosen before the first deploy; its mount path cannot change afterwards.</FieldDescription></Field>
+    {storage ? <>{initial?.storage_volume ? <Field><FieldLabel htmlFor="application-volume">Volume name</FieldLabel><Input id="application-volume" value={initial.storage_volume} readOnly /><FieldDescription>Use this service-owned volume for offline backup/import. It is retained by default when the service is deleted.</FieldDescription></Field> : null}<Field><FieldLabel htmlFor="application-mount">Data directory</FieldLabel><Input id="application-mount" name="storage_target" defaultValue={initial?.storage?.target ?? '/opt/data'} required maxLength={255} disabled={disabled} /><FieldDescription>Container path only. Host paths and existing volume names cannot be selected.</FieldDescription></Field><Field><FieldLabel htmlFor="application-read-only"><Checkbox id="application-read-only" name="storage_read_only" defaultChecked={initial?.storage?.read_only ?? false} disabled={disabled} />Read-only storage</FieldLabel><FieldDescription>Stateful services and workers stop the old instance before starting a replacement. Failed deployments restore the previous instance after candidate cleanup. Rollback does not restore data.</FieldDescription></Field></> : null}
     <Field><FieldLabel htmlFor="application-environment">Environment variables</FieldLabel><Textarea id="application-environment" name="environment" rows={5} maxLength={16384} defaultValue={initial?.environment ?? ''} placeholder={'KEY=value\nANOTHER_KEY=value'} spellCheck={false} disabled={disabled} /><FieldDescription>One KEY=value per line. Values are stored encrypted and passed literally; shell expressions are not expanded.</FieldDescription></Field>
   </FieldGroup>
 }
 export function configurationFrom(form: HTMLFormElement): Configuration {
   const data = new FormData(form)
-  return { name: String(data.get('name') ?? ''), image: String(data.get('image') ?? ''), container_port: Number(data.get('container_port')), environment: String(data.get('environment') ?? '') }
+  let command: unknown
+  try { command = JSON.parse(String(data.get('command') ?? '[]')) } catch { throw new Error('Command arguments must be a JSON array of strings.') }
+  if (!Array.isArray(command) || command.some(value => typeof value !== 'string')) throw new Error('Command arguments must be a JSON array of strings.')
+  return { worker_mode: data.get('worker_mode') === 'on', command, storage: data.get('storage_enabled') === 'on' ? { target: String(data.get('storage_target') ?? ''), read_only: data.get('storage_read_only') === 'on' } : null, name: String(data.get('name') ?? ''), image: String(data.get('image') ?? ''), container_port: Number(data.get('container_port') ?? 80), environment: String(data.get('environment') ?? '') }
 }

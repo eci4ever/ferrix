@@ -111,7 +111,11 @@ async fn create(
     Json(input): Json<NewDomain>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
     id.manager()?;
-    access(&state, &id, app).await?;
+    if access(&state, &id, app).await?.worker_mode {
+        return Err(invalid(
+            "Background workers do not publish website domains.",
+        ));
+    }
     let (_, _, _, local) = configured(&state)?;
     let hostname = hostname(&input.hostname, local)?;
     let dashboard = url::Url::parse(&state.auth.origin).ok();

@@ -199,7 +199,7 @@ async fn tls_ask(
     let Some(Resource::Application(id)) = resolve_resource(&state, name).await? else {
         return Err(missing());
     };
-    let allowed: bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM applications WHERE id=$1 AND service_kind='application' AND active_container_id IS NOT NULL)").bind(id).fetch_one(&state.pool).await?;
+    let allowed: bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM applications WHERE id=$1 AND service_kind='application' AND active_container_id IS NOT NULL AND host_port IS NOT NULL)").bind(id).fetch_one(&state.pool).await?;
     if !allowed {
         return Err(missing());
     }
@@ -209,7 +209,7 @@ async fn route(State(state): State<AppState>, headers: HeaderMap) -> Result<Resp
     let host = host(&headers).ok_or_else(missing)?;
     let upstream;
     let kind = if let Some(Resource::Application(id)) = resolve_resource(&state, &host).await? {
-        let row:Option<(String,i32)>=sqlx::query_as("SELECT a.active_container_id,d.container_port FROM applications a JOIN deployments d ON d.id=a.active_deployment_id AND d.application_id=a.id WHERE a.id=$1 AND a.service_kind='application' AND a.active_container_id IS NOT NULL").bind(id).fetch_optional(&state.pool).await?;
+        let row:Option<(String,i32)>=sqlx::query_as("SELECT a.active_container_id,d.container_port FROM applications a JOIN deployments d ON d.id=a.active_deployment_id AND d.application_id=a.id WHERE a.id=$1 AND a.service_kind='application' AND a.active_container_id IS NOT NULL AND NOT d.worker_mode").bind(id).fetch_optional(&state.pool).await?;
         let (container, port) = row.ok_or_else(missing)?;
         let info = crate::deployments::inspect_gateway_container(&state, id, &container).await?;
         if info.state.and_then(|s| s.running) != Some(true) {

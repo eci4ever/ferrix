@@ -1,4 +1,5 @@
 use super::*;
+use axum::http::HeaderMap;
 use axum::{
     body::{Body, to_bytes},
     http::Request,
@@ -170,6 +171,21 @@ impl Fixture {
         .await
     }
     pub(super) async fn finish(self) {
+        let environments: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM environments")
+            .fetch_all(&self.state.pool)
+            .await
+            .unwrap_or_default();
+        for env in environments {
+            let name = services::database::network(env);
+            if let Ok(info) = self.state.docker.inspect_network(&name, None).await
+                && info.labels.as_ref().is_some_and(|l| {
+                    l.get("io.ferrix.environment") == Some(&env.to_string())
+                        && l.get("io.ferrix.managed").map(String::as_str) == Some("true")
+                })
+            {
+                let _ = self.state.docker.remove_network(&name).await;
+            }
+        }
         self.state.pool.close().await;
         self.admin
             .execute(format!("DROP SCHEMA {} CASCADE", self.schema).as_str())

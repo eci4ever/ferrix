@@ -7,6 +7,7 @@ A self-hosted deployment platform for managing Docker applications and databases
 - Organize Application and Database services into projects and environments.
 - Deploy Docker images or public/private GitHub repositories using Dockerfiles, with push-triggered deployments through webhooks.
 - Track deployment progress, commits and initiators; roll back to a successful version.
+- Attach persistent Application storage, override command arguments and run background workers with single-writer replacement.
 - Use automatic domains or custom domains with Caddy HTTPS.
 - Run PostgreSQL, MariaDB, MongoDB and Redis. Back up and restore PostgreSQL and MariaDB, with schedules and S3-compatible storage.
 - Search live logs, monitor CPU/RAM, open service terminals and receive notifications.
@@ -56,6 +57,7 @@ Before upgrading, back up the database and `.env`, review the [release notes](ht
 - [VPS installation, operation and upgrades](docs/production.md)
 - [Development setup and per-user ports](docs/development.md)
 - [Services and deployments](docs/deployments.md)
+- [Application storage and background workers](docs/application-storage.md)
 - [GitHub, Dockerfiles and webhooks](docs/github-deployments.md)
 - [Authentication and security](docs/auth.md)
 - [API keys for agents](docs/api-keys.md)

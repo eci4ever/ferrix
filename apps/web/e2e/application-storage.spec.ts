@@ -1,0 +1,33 @@
+import {test,expect} from '@playwright/test'
+import {signInAdmin} from './helpers/session'
+
+test('Configure encrypted worker commands and persistent storage without an HTTP domain',async({page})=>{
+ if(process.env.FERRIX_E2E_DISPOSABLE!=='1')throw new Error('Use the disposable browser runner.')
+ await signInAdmin(page)
+ const headers={Origin:process.env.FERRIX_E2E_URL!}
+ const project=await(await page.request.post('/api/v1/projects',{headers,data:{name:'Storage UI project'}})).json()
+ const env=(await(await page.request.get(`/api/v1/projects/${project.id}/environments`)).json()).environments[0]
+ const app=await(await page.request.post(`/api/v1/environments/${env.id}/services`,{headers,data:{kind:'application',name:'Hermes worker',image:'alpine:3.22',container_port:80,environment:''}})).json()
+ await page.goto(`/projects/${project.id}/services/${app.id}`)
+ await page.getByRole('button',{name:'Configuration',exact:true}).click()
+ await page.getByRole('checkbox',{name:'Background worker',exact:true}).check()
+ await expect(page.getByLabel('Container port',{exact:true})).toBeDisabled()
+ await page.getByRole('checkbox',{name:'Persistent storage',exact:true}).check()
+ await page.getByLabel('Data directory',{exact:true}).fill('/opt/data')
+ await page.getByLabel('Command arguments',{exact:true}).fill('not json')
+ await page.getByRole('button',{name:'Save configuration',exact:true}).click()
+ await expect(page.getByText('Command arguments must be a JSON array of strings.',{exact:true})).toBeVisible()
+ await page.getByLabel('Command arguments',{exact:true}).fill('["gateway","run"]')
+ await page.getByRole('button',{name:'Save configuration',exact:true}).click()
+ await expect(page.getByText('Configuration saved. Deploy to apply it.',{exact:true})).toBeVisible()
+ await expect(page.getByRole('tab',{name:'Domains',exact:true})).toHaveCount(0)
+ const config=await(await page.request.get(`/api/v1/services/${app.id}/configuration`)).json()
+ expect(config.worker_mode).toBe(true);expect(config.command).toEqual(['gateway','run']);expect(config.storage).toEqual({target:'/opt/data',read_only:false})
+ expect(config.storage_volume).toBe(`ferrix-app-${app.id.replaceAll('-','')}`)
+ await page.getByRole('button',{name:'Configuration',exact:true}).click()
+ await expect(page.getByRole('checkbox',{name:'Background worker',exact:true})).toBeChecked()
+ await expect(page.getByLabel('Data directory',{exact:true})).toHaveValue('/opt/data')
+ await page.setViewportSize({width:390,height:844})
+ await expect.poll(()=>page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true)
+ await page.screenshot({path:'/private/tmp/ferrix-worker-storage-mobile.png',fullPage:true})
+})
