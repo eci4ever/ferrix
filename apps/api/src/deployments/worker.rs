@@ -485,6 +485,10 @@ pub async fn run_worker(state: AppState, mut shutdown: watch::Receiver<bool>) {
         if *shutdown.borrow() {
             return;
         }
+        let Some(activity) = crate::self_update::activity().await else {
+            tokio::select! {_=tokio::time::sleep(Duration::from_secs(2))=>{},_=shutdown.changed()=>{return;}}
+            continue;
+        };
         let result=async {
             let mut conn=state.pool.acquire().await.map_err(|_|"Deployment worker could not connect to PostgreSQL.")?;
             // Schema-specific key also isolates integration tests from development workers.
@@ -498,6 +502,7 @@ pub async fn run_worker(state: AppState, mut shutdown: watch::Receiver<bool>) {
             }
             result
         }.await;
+        drop(activity);
         if let Err(error) = &result {
             tracing::warn!(%error,"Deployment worker retrying");
         }

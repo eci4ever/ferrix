@@ -208,7 +208,7 @@ pub struct Reauthentication {
     #[serde(default)]
     pub code: String,
 }
-pub(super) async fn check(
+pub(crate) async fn check(
     state: &AppState,
     id: &Identity,
     input: Reauthentication,

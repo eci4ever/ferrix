@@ -70,6 +70,20 @@ Migrations run on API startup. Rolling back an image does not roll back schema c
 
 For recovery on a fresh installation with the original `.env` and Compose configuration, start only PostgreSQL, restore the dump with `pg_restore -U ferrix -d ferrix --clean --if-exists` through `docker compose exec -T postgres`, then start Ferrix and Caddy. Keep the original image version until the restore has been verified.
 
+## Update from the UI
+
+Ferrix v0.2.4 and later support administrator-triggered updates for standard Linux amd64 installations at `/opt/ferrix`, using the local system Docker socket and the production Compose file. The Ferrix container must carry `io.ferrix.self-update=true`, and `FERRIX_SELF_UPDATE=true` must be set (both are included in the updated production Compose file). Development, remote Docker daemons, custom paths and altered service layouts use the manual upgrade procedure.
+
+For an existing installation, first perform one manual image upgrade to a release containing this feature and review/install that release's `compose.production.yaml` as `/opt/ferrix/compose.yaml`. Back up the existing file and preserve `.env`, the auth key, credentials, project identity and volumes. Recreate only Ferrix after reviewing configuration changes. Older production Compose files do not enable UI updates just by pulling a new image. Set `FERRIX_SELF_UPDATE=false` to disable the feature.
+
+When a newer stable release is confirmed, open **Update available** in the sidebar. Review its notes, enter your password and authenticator/recovery code if required, acknowledge the backup policy, then type `UPDATE FERRIX`. This action requires a platform-admin browser session; API keys cannot start self-updates. Finish deployments, backups, project recovery operations and terminal sessions first. Ferrix drains managed lifecycle work and temporarily rejects new mutations while updating. Avoid deployments and GitHub pushes during this window; retry failed API requests and redeliver failed GitHub webhooks after the update.
+
+An independent, digest-pinned official Docker CLI helper survives the Ferrix restart. It downloads the exact official release image, verifies version/architecture and migration compatibility, creates a consistent online PostgreSQL custom-format dump plus copies of `.env`, Compose and Caddy configuration under `/opt/ferrix/updates/<job-id>/`. It then stops Ferrix, pins `FERRIX_IMAGE` to the release's immutable registry digest and recreates only the `ferrix` service. PostgreSQL, Caddy and deployed service containers are not replaced. Website requests using the Ferrix gateway may fail briefly during the Ferrix restart. Service data volumes require their own backups. Keep an off-host copy of the update backups; local backups do not protect against host disk failure.
+
+Progress is retained in the helper container and the UI reconnects while Ferrix restarts. After success, select **Reload Ferrix** to load the new UI. Backups and the root-only `update.log` are retained; administrators manage their retention and free disk space. Raw logs and backup contents are never returned by the update API.
+
+If download or backup fails, Ferrix stays running and the old configuration is kept. If stopping Ferrix fails before configuration changes, the helper attempts to restart it. If the new image fails health checks and its migration version is unchanged, the helper attempts recovery to the old immutable image. When migrations differ, it does **not** roll back the image or restore PostgreSQL automatically. Use the saved configuration and matching dump with the recovery procedure above. A failed update, Docker outage, helper termination or failed recovery may require SSH access; inspect `/opt/ferrix/updates/<job-id>/update.log`. UI updates do not download new Compose/Caddy configuration or update infrastructure images; apply release-required configuration changes manually.
+
 ## Local image verification
 
 ```sh
