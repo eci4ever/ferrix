@@ -73,6 +73,18 @@ fn rates(
 }
 
 pub(crate) fn start() -> Monitor {
+    static SHARED: std::sync::OnceLock<Monitor> = std::sync::OnceLock::new();
+    SHARED.get_or_init(start_collector).clone()
+}
+pub(crate) fn latest() -> Option<serde_json::Value> {
+    start()
+        .read()
+        .ok()?
+        .samples
+        .back()
+        .and_then(|s| serde_json::to_value(s).ok())
+}
+fn start_collector() -> Monitor {
     let cache = Arc::new(RwLock::new(Snapshot {
         host: System::host_name().unwrap_or_else(|| "Unknown host".into()),
         os: System::name().unwrap_or_else(|| "Unknown OS".into()),
@@ -260,6 +272,26 @@ impl DockerProbe {
         }
         Ok(value)
     }
+}
+
+pub(crate) async fn volume_inventory() -> Result<Vec<serde_json::Value>, &'static str> {
+    let value = DockerProbe::new(std::env::var("DOCKER_HOST").ok().as_deref())?
+        .collect()
+        .await?;
+    if let Some(v) = value.get("Volumes") {
+        return if v.is_null() {
+            Ok(Vec::new())
+        } else {
+            v.as_array().cloned().ok_or("Invalid volume inventory")
+        };
+    }
+    if let Some(v) = value["VolumesDiskUsage"]["Items"].as_array() {
+        return Ok(v.clone());
+    }
+    if value["VolumesDiskUsage"]["TotalCount"].as_i64() == Some(0) {
+        return Ok(Vec::new());
+    }
+    Err("Volume usage data unavailable")
 }
 
 fn nonnegative(value: &serde_json::Value) -> Option<u64> {

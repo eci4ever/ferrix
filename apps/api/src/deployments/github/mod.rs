@@ -1,5 +1,5 @@
 //! GitHub credentials stay server-side; jobs snapshot their source and build immutable commits.
-mod build;
+pub(super) mod build;
 use super::*;
 use axum::{
     body::Bytes,
@@ -37,6 +37,8 @@ struct Saved {
 #[serde(deny_unknown_fields)]
 struct Edit {
     mode: String,
+    #[serde(default)]
+    upload_id: Option<Uuid>,
     #[serde(default)]
     repository: String,
     #[serde(default = "default_branch")]
@@ -124,7 +126,7 @@ fn repository(input: &str) -> Result<String, ApiError> {
     }
     Ok(name.to_ascii_lowercase())
 }
-fn path(input: &str, root: bool) -> Result<String, ApiError> {
+pub(super) fn path(input: &str, root: bool) -> Result<String, ApiError> {
     let value = input.trim().trim_end_matches('/');
     if root && matches!(value, "" | ".") {
         return Ok(".".into());
@@ -220,6 +222,9 @@ async fn get_source(
             .fetch_optional(&state.pool)
             .await?;
     let url = format!("{}/api/v1/webhooks/github/{app}", state.auth.origin);
+    if let Some(upload) = uploads::current(&state, app).await? {
+        return Ok(Json(upload));
+    }
     if let Some(row) = row {
         let source: Source = open(&state, app, "source", &row.config_cipher)?;
         Ok(Json(
@@ -238,7 +243,7 @@ async fn save(
     Json(edit): Json<Edit>,
 ) -> Result<StatusCode, ApiError> {
     access(&state, &id, app).await?;
-    if !matches!(edit.mode.as_str(), "image" | "github") {
+    if !matches!(edit.mode.as_str(), "image" | "github" | "upload") {
         return Err(invalid("Choose Docker image or GitHub source."));
     }
     let mut tx = state.pool.begin().await?;
@@ -246,7 +251,27 @@ async fn save(
         .bind(app)
         .execute(&mut *tx)
         .await?;
-    if edit.mode == "image" {
+    if edit.mode != "upload" {
+        sqlx::query("UPDATE applications SET source_upload_id=NULL WHERE id=$1")
+            .bind(app)
+            .execute(&mut *tx)
+            .await?;
+    }
+    if edit.mode == "upload" {
+        let revision = edit
+            .upload_id
+            .ok_or_else(|| invalid("Preview an archive first."))?;
+        let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM application_source_uploads WHERE id=$1 AND application_id=$2)").bind(revision).bind(app).fetch_one(&mut *tx).await?;
+        if !valid {
+            return Err(invalid("This uploaded revision is unavailable."));
+        }
+        sqlx::query("UPDATE applications SET source_upload_id=$2,updated_at=now() WHERE id=$1")
+            .bind(app)
+            .bind(revision)
+            .execute(&mut *tx)
+            .await?;
+    }
+    if edit.mode != "github" {
         sqlx::query("UPDATE application_git_sources SET enabled=false,auto_deploy=false,pending_delivery=NULL,pending_sha=NULL,pending_sender=NULL,updated_at=now() WHERE application_id=$1").bind(app).execute(&mut *tx).await?;
         tx.commit().await?;
         return Ok(StatusCode::NO_CONTENT);
@@ -470,6 +495,7 @@ pub(super) async fn snapshot(
     deployment: Uuid,
 ) -> Result<(), ApiError> {
     sqlx::query("UPDATE deployments d SET source_cipher=s.config_cipher,source_revision=s.revision,source_repository=s.repository,source_branch=s.branch FROM application_git_sources s WHERE d.id=$1 AND s.application_id=$2 AND s.enabled").bind(deployment).bind(app).execute(&mut **tx).await?;
+    sqlx::query("UPDATE deployments d SET source_upload_id=a.source_upload_id,source_revision=a.source_upload_id,source_archive_sha256=(SELECT sha256 FROM application_source_uploads WHERE id=a.source_upload_id) FROM applications a WHERE d.id=$1 AND a.id=$2 AND a.source_upload_id IS NOT NULL").bind(deployment).bind(app).execute(&mut **tx).await?;
     Ok(())
 }
 pub(super) async fn dispatch(
@@ -481,7 +507,12 @@ pub(super) async fn dispatch(
         .begin()
         .await
         .map_err(|_| "Could not start GitHub deployment queue.")?;
-    let apps:Vec<Uuid>=sqlx::query_scalar("SELECT a.id FROM applications a JOIN application_git_sources s ON s.application_id=a.id WHERE s.enabled AND s.auto_deploy AND s.pending_delivery IS NOT NULL AND NOT EXISTS(SELECT 1 FROM deployments d WHERE d.application_id=a.id AND d.status IN ('queued','running')) ORDER BY s.last_received_at LIMIT 16 FOR UPDATE OF a SKIP LOCKED").fetch_all(&mut *tx).await.map_err(|_|"Could not claim pending GitHub push.")?;
+    let mut reserved = Some(
+        quotas::reserve(state, &mut tx)
+            .await
+            .map_err(|_| "Could not reserve quota capacity.")?,
+    );
+    let apps:Vec<Uuid>=sqlx::query_scalar("SELECT a.id FROM applications a JOIN application_git_sources s ON s.application_id=a.id WHERE NOT EXISTS(SELECT 1 FROM project_maintenance m JOIN environments e ON e.project_id=m.project_id WHERE e.id=a.environment_id) AND NOT a.cutover_pending AND NOT a.restore_blocked AND s.enabled AND s.auto_deploy AND s.pending_delivery IS NOT NULL AND NOT EXISTS(SELECT 1 FROM database_jobs j WHERE j.status IN ('queued','running') AND (j.application_id=a.id OR j.source_application_id=a.id)) AND NOT EXISTS(SELECT 1 FROM deployments d WHERE d.application_id=a.id AND d.status IN ('queued','running')) ORDER BY s.last_received_at LIMIT 1 FOR UPDATE OF a SKIP LOCKED").fetch_all(&mut *tx).await.map_err(|_|"Could not claim pending GitHub push.")?;
     for app in apps {
         let row: Saved = sqlx::query_as(
             "SELECT * FROM application_git_sources WHERE application_id=$1 FOR UPDATE",
@@ -497,6 +528,22 @@ pub(super) async fn dispatch(
         let message = if let Some(ref name) = name {
             let deployment = Uuid::new_v4();
             sqlx::query("INSERT INTO deployments(id,application_id,requested_by,requested_by_name,image,container_port,env_cipher,service_kind,worker_mode,service_cipher,source_cipher,source_revision,source_repository,source_branch,trigger_kind,trigger_sender) SELECT $1,id,$2,$3,image,container_port,env_cipher,service_kind,worker_mode,service_cipher,$4,$5,$6,$7,'webhook',$8 FROM applications WHERE id=$9 AND service_kind='application'").bind(deployment).bind(row.configured_by).bind(name).bind(row.config_cipher).bind(row.revision).bind(row.repository).bind(row.branch).bind(row.pending_sender).bind(app).execute(&mut *tx).await.map_err(|_|"Could not queue GitHub deployment.")?;
+            if let Err(error) = quotas::check(
+                state,
+                &mut tx,
+                reserved.take().ok_or("Missing quota reservation.")?,
+            )
+            .await
+            {
+                tx.rollback()
+                    .await
+                    .map_err(|_| "Could not release quota reservation.")?;
+                if error.0 != StatusCode::CONFLICT {
+                    return Err("Could not check deployment quota.".into());
+                }
+                sqlx::query("UPDATE application_git_sources SET last_message='Auto-deploy waiting for available project/organization quota.' WHERE application_id=$1").bind(app).execute(&mut *conn).await.map_err(|_|"Could not report quota wait.")?;
+                return Ok(());
+            }
             "GitHub deployment queued."
         } else {
             "Auto-deploy paused: the configuring user no longer has permission."

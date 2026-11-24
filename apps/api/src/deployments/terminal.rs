@@ -61,6 +61,12 @@ async fn open(
         })?;
     let connection = Uuid::new_v4();
     let mut tx = state.pool.begin().await?;
+    // Match lifecycle lock order: service first, project second.
+    sqlx::query("SELECT id FROM applications WHERE id=$1 FOR KEY SHARE")
+        .bind(service)
+        .execute(&mut *tx)
+        .await?;
+    project_bundles::lock_app(&mut tx, service, id.organization_id).await?;
     sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1,0))")
         .bind(format!("terminal:{}", id.user_id))
         .execute(&mut *tx)

@@ -195,6 +195,7 @@ fn scope(method: &str, route: &str) -> Option<&'static str> {
             | "/status"
             | "/server-time"
             | "/projects/{id}/environments"
+            | "/projects/{id}/quota"
             | "/environments/{id}/applications"
             | "/environments/{id}/services"
             | "/environments/{id}/service-status"
@@ -205,6 +206,8 @@ fn scope(method: &str, route: &str) -> Option<&'static str> {
             | "/services/{id}"
             | "/services/{id}/runtime"
             | "/services/{id}/metrics"
+            | "/services/{id}/history"
+            | "/services/{id}/logs/history"
             | "/services/{id}/logs"
             | "/services/{id}/deployments"
             | "/services/{id}/domains"
@@ -214,7 +217,9 @@ fn scope(method: &str, route: &str) -> Option<&'static str> {
             "GET",
             "/applications/{id}/configuration"
             | "/services/{id}/configuration"
-            | "/services/{id}/environment",
+            | "/services/{id}/environment"
+            | "/services/{id}/source"
+            | "/services/{id}/domains/{domain_id}/tunnel-config",
         ) => Some("secrets:read"),
         (
             "POST",
@@ -226,7 +231,10 @@ fn scope(method: &str, route: &str) -> Option<&'static str> {
             | "/services/{id}/configuration"
             | "/services/{id}/environment"
             | "/services/{id}/domains"
-            | "/services/{id}/domains/{domain_id}/check",
+            | "/services/{id}/domains/{domain_id}/check"
+            | "/services/{id}/domains/{domain_id}/preferred"
+            | "/services/{id}/source"
+            | "/services/{id}/source/upload",
         ) => Some("manage"),
         (
             "POST",
@@ -333,7 +341,7 @@ async fn project_access(
     let route = route.strip_prefix("/api/v1").unwrap_or("");
     match (method, route) {
         ("GET", "/agent" | "/agent/docs" | "/projects" | "/projects/service-status" | "/home-summary" | "/status" | "/server-time") => Ok(true),
-        (_, "/projects/{id}" | "/projects/{id}/environments") => Ok(resource == Some(project)),
+        (_, "/projects/{id}" | "/projects/{id}/environments" | "/projects/{id}/quota") => Ok(resource == Some(project)),
         (_, "/environments/{id}/applications" | "/environments/{id}/services" | "/environments/{id}/service-status") => {
             Ok(sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM environments WHERE id=$1 AND project_id=$2)").bind(resource).bind(project).fetch_one(&state.pool).await?)
         },

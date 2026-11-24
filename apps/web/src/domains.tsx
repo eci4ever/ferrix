@@ -27,12 +27,18 @@ import {
   FieldGroup,
   FieldLabel,
 } from '@/components/ui/field'
+import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 
 type Domain = {
   id: string
   hostname: string
+  route_kind: 'direct'|'lan'|'tunnel'
+  canonical: boolean
+  http_status: string
+  tunnel_status: string
   verification_token: string
   verified_at: string | null
   dns_status: 'pending' | 'ready' | 'mismatch' | 'unavailable'
@@ -42,6 +48,9 @@ type Domain = {
   message: string | null
 }
 type Domains = {
+  private?:boolean
+  diagnostic_url?:string|null
+  dashboard_origin?:string
   domains: Domain[]
   automatic_url: string | null
   target_ip: string | null
@@ -72,6 +81,8 @@ export function ServiceDomains({
   const [data, setData] = useState<Domains | null>(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [config,setConfig]=useState('')
+  const [canonical,setCanonical]=useState(false)
   const [busy, setBusy] = useState(false)
   const [removing, setRemoving] = useState<Domain | null>(null)
   const base = `/services/${serviceId}/domains`
@@ -101,12 +112,14 @@ export function ServiceDomains({
   async function add(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const form = event.currentTarget
-    const hostname = String(new FormData(form).get('hostname') ?? '')
+    const fields=new FormData(form)
+    const hostname = String(fields.get('hostname') ?? '')
+    const route_kind=String(fields.get('route_kind')??'direct')
     await action(async () => {
       await request(base, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ hostname }),
+        body: JSON.stringify({ hostname, route_kind, canonical }),
       })
       form.reset()
       setNotice(
@@ -116,6 +129,8 @@ export function ServiceDomains({
   }
   return (
     <div className="flex flex-col gap-4">
+      <Dialog open={!!config} onOpenChange={open=>{if(!open)setConfig('')}}><DialogContent><DialogHeader><DialogTitle>Cloudflare Tunnel rule</DialogTitle><DialogDescription>Merge this single rule before the existing catch-all. Preserve other routes. Supply credentials to cloudflared directly and mount only Caddy’s public CA certificate. Keep origin TLS verification enabled.</DialogDescription></DialogHeader><pre className="max-h-80 overflow-auto rounded-md bg-muted p-3 text-xs">{config}</pre></DialogContent></Dialog>
+      {data?.diagnostic_url?<p className="break-all text-xs text-muted-foreground">Loopback diagnostic only: {data.diagnostic_url}. This address works on the Ferrix server; use a domain URL from other devices.</p>:null}
       {error ? (
         <Alert variant="destructive">
           <AlertTitle>Unable to continue</AlertTitle>
@@ -209,6 +224,8 @@ export function ServiceDomains({
                         application.
                       </FieldDescription>
                     </Field>
+                  {data.private?<Field><FieldLabel htmlFor="domain-route-kind">Route</FieldLabel><NativeSelect name="route_kind" id="domain-route-kind" defaultValue="tunnel"><NativeSelectOption value="tunnel">Cloudflare Tunnel · public HTTPS</NativeSelectOption><NativeSelectOption value="lan">LAN · split DNS</NativeSelectOption></NativeSelect></Field>:null}
+                  <Field orientation="horizontal"><Checkbox id="canonical-domain" checked={canonical} onCheckedChange={v=>setCanonical(v===true)}/><FieldLabel htmlFor="canonical-domain">Preferred website URL after verification</FieldLabel></Field>
                   </FieldGroup>
                   <Button disabled={busy || data.domains.length >= 10}>
                     Add domain
@@ -222,9 +239,9 @@ export function ServiceDomains({
             </CardContent>
           </Card>
           {data.domains.map((domain) => {
-            const scheme = data.https_enabled ? 'https' : 'http'
+            const scheme = domain.route_kind==='tunnel'||data.https_enabled ? 'https' : 'http'
             const port =
-              data.port && data.port !== (data.https_enabled ? 443 : 80)
+              domain.route_kind!=='tunnel' && data.port && data.port !== (data.https_enabled ? 443 : 80)
                 ? `:${data.port}`
                 : ''
             const url = `${scheme}://${domain.hostname}${port}/`
@@ -270,7 +287,7 @@ export function ServiceDomains({
                   ) : null}
                 </CardHeader>
                 <CardContent className="flex flex-col gap-4">
-                  {data.local ? (
+                  {domain.route_kind==='tunnel'?<><p className="text-sm text-muted-foreground">Configure a Cloudflare published hostname for this application, then publish the TXT ownership record below. Public DNS can remain proxied; no public server IPv4 or inbound port is required.</p><p className="break-all text-xs">TXT: _ferrix-challenge.{domain.hostname} → {domain.verification_token}</p>{canManage?<Button variant="outline" onClick={()=>void action(async()=>{const result=await request<{ingress_rule:unknown}>(`${base}/${domain.id}/tunnel-config`);setConfig(JSON.stringify(result.ingress_rule,null,2))})}>Review tunnel rule</Button>:null}</>:data.local ? (
                     <p className="text-sm text-muted-foreground">
                       This hostname resolves locally. Select Check DNS & HTTPS
                       to activate it. Local HTTPS requires trusting the Caddy
@@ -280,7 +297,7 @@ export function ServiceDomains({
                     <>
                       <p className="text-sm text-muted-foreground">
                         Add these records at your DNS provider. Use DNS-only
-                        mode while verifying. Remove conflicting A and AAAA
+                        mode for direct routing. LAN mappings use your internal DNS resolver. Remove conflicting A and AAAA
                         records.
                       </p>
                       <dl className="grid gap-3 text-sm sm:grid-cols-[auto_1fr]">
@@ -299,6 +316,7 @@ export function ServiceDomains({
                       </dl>
                     </>
                   )}
+                  {domain.route_kind!=='direct'?<div className="flex flex-wrap gap-2"><Badge variant="outline">{domain.route_kind==='tunnel'?'Tunnel connector: not queried':'LAN route'}</Badge><Badge variant="outline">HTTP: {domain.http_status}</Badge>{domain.canonical?<Badge variant="secondary">Preferred URL</Badge>:null}</div>:null}
                   {domain.message ? (
                     <p className="text-sm" role="status">
                       {domain.message}
@@ -322,6 +340,7 @@ export function ServiceDomains({
                     </p>
                   ) : null}
                   <div className="flex flex-wrap gap-2">
+                    {canManage&&domain.verified_at&&domain.dns_status==='ready'&&!domain.canonical?<Button variant="outline" disabled={busy} onClick={()=>void action(async()=>{await request(`${base}/${domain.id}/preferred`,{method:'POST'});setNotice('Preferred website URL updated.')})}>Use as preferred URL</Button>:null}
                     {canManage ? (
                       <Button
                         variant="outline"

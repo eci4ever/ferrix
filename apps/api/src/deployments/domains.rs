@@ -1,3 +1,4 @@
+mod private;
 use super::*;
 use hickory_resolver::TokioResolver;
 use std::{
@@ -8,6 +9,10 @@ use std::{
 pub(super) fn routes(state: AppState) -> Router<AppState> {
     Router::new()
         .route("/services/{id}/domains", get(list))
+        .route(
+            "/services/{id}/domains/{domain_id}/tunnel-config",
+            get(private::config),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::auth::sessions::identify,
@@ -16,6 +21,10 @@ pub(super) fn routes(state: AppState) -> Router<AppState> {
             Router::new()
                 .route("/services/{id}/domains", post(create))
                 .route("/services/{id}/domains/{domain_id}/check", post(check))
+                .route(
+                    "/services/{id}/domains/{domain_id}/preferred",
+                    post(preferred),
+                )
                 .route(
                     "/services/{id}/domains/{domain_id}",
                     axum::routing::delete(remove),
@@ -31,6 +40,10 @@ pub(super) fn routes(state: AppState) -> Router<AppState> {
 struct Domain {
     id: Uuid,
     hostname: String,
+    route_kind: String,
+    canonical: bool,
+    http_status: String,
+    tunnel_status: String,
     verification_token: String,
     verified_at: Option<DateTime<Utc>>,
     dns_status: String,
@@ -39,7 +52,7 @@ struct Domain {
     message: Option<String>,
     checked_at: Option<DateTime<Utc>>,
 }
-const COLUMNS: &str = "id,hostname,verification_token,verified_at,dns_status,CASE WHEN tls_status='active' AND certificate_expires_at <= now() THEN 'unavailable' ELSE tls_status END AS tls_status,certificate_expires_at,message,checked_at";
+const COLUMNS: &str = "id,hostname,route_kind,canonical,http_status,tunnel_status,verification_token,verified_at,dns_status,CASE WHEN tls_status='active' AND certificate_expires_at <= now() THEN 'unavailable' ELSE tls_status END AS tls_status,certificate_expires_at,message,checked_at";
 
 async fn access(state: &AppState, id: &Identity, app: Uuid) -> Result<Application, ApiError> {
     let row = app_access(state, id, app).await?;
@@ -69,8 +82,38 @@ async fn list(
     Ok(Json(
         json!({"domains":rows,"automatic_url":application.automatic_url,
         "target_ip":target.map(|t| t.0.to_string()),"https_enabled":target.is_some_and(|t| t.2),
-        "local":target.is_some_and(|t| t.3),"port":target.map(|t| t.1)}),
+        "private":state.gateway.private_mode(),"local":target.is_some_and(|t| t.3),"port":target.map(|t| t.1),"dashboard_origin":state.auth.origin,"diagnostic_url":application.host_port.map(|p|format!("http://127.0.0.1:{p}/"))}),
     ))
+}
+async fn preferred(
+    State(state): State<AppState>,
+    id: Identity,
+    Path((app, domain)): Path<(Uuid, Uuid)>,
+) -> Result<StatusCode, ApiError> {
+    id.manager()?;
+    access(&state, &id, app).await?;
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT id FROM applications WHERE id=$1 FOR UPDATE")
+        .bind(app)
+        .execute(&mut *tx)
+        .await?;
+    let valid:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM application_domains WHERE id=$1 AND application_id=$2 AND verified_at IS NOT NULL AND dns_status='ready')").bind(domain).bind(app).fetch_one(&mut *tx).await?;
+    if !valid {
+        return Err(invalid(
+            "Verify domain ownership and DNS before choosing the preferred URL.",
+        ));
+    }
+    sqlx::query("UPDATE application_domains SET canonical=false WHERE application_id=$1")
+        .bind(app)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("UPDATE application_domains SET canonical=true WHERE id=$1 AND application_id=$2")
+        .bind(domain)
+        .bind(app)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 fn hostname(value: &str, local: bool) -> Result<String, ApiError> {
     let value = value.trim().to_ascii_lowercase();
@@ -103,6 +146,13 @@ fn hostname(value: &str, local: bool) -> Result<String, ApiError> {
 #[derive(Deserialize)]
 struct NewDomain {
     hostname: String,
+    #[serde(default = "direct_kind")]
+    route_kind: String,
+    #[serde(default)]
+    canonical: bool,
+}
+fn direct_kind() -> String {
+    "direct".into()
 }
 async fn create(
     State(state): State<AppState>,
@@ -117,6 +167,14 @@ async fn create(
         ));
     }
     let (_, _, _, local) = configured(&state)?;
+    if !matches!(input.route_kind.as_str(), "direct" | "lan" | "tunnel") {
+        return Err(invalid("Choose direct, LAN or Cloudflare Tunnel routing."));
+    }
+    if input.route_kind != "direct" && !state.gateway.private_mode() {
+        return Err(invalid(
+            "Enable private ingress mode before adding LAN/tunnel mappings.",
+        ));
+    }
     let hostname = hostname(&input.hostname, local)?;
     let dashboard = url::Url::parse(&state.auth.origin).ok();
     if state.gateway.reserved_domain(&hostname)
@@ -143,8 +201,14 @@ async fn create(
     let domain = Uuid::new_v4();
     let mut bytes = [0u8; 24];
     rand::thread_rng().fill_bytes(&mut bytes);
-    sqlx::query("INSERT INTO application_domains(id,application_id,hostname,verification_token) VALUES($1,$2,$3,$4)")
-        .bind(domain).bind(app).bind(hostname).bind(hex::encode(bytes)).execute(&mut *tx).await.map_err(domain_error)?;
+    if input.canonical {
+        sqlx::query("UPDATE application_domains SET canonical=false WHERE application_id=$1")
+            .bind(app)
+            .execute(&mut *tx)
+            .await?;
+    }
+    sqlx::query("INSERT INTO application_domains(id,application_id,hostname,verification_token,route_kind,canonical,tunnel_status) VALUES($1,$2,$3,$4,$5,$6,CASE WHEN $5='tunnel' THEN 'configuration_required' ELSE 'not_applicable' END)")
+        .bind(domain).bind(app).bind(hostname).bind(hex::encode(bytes)).bind(input.route_kind).bind(input.canonical).execute(&mut *tx).await.map_err(domain_error)?;
     tx.commit().await?;
     Ok((StatusCode::CREATED, Json(json!({"id":domain}))))
 }
@@ -221,12 +285,29 @@ async fn dns_lookup(
 fn addresses_match(addresses: &[IpAddr], expected: IpAddr) -> bool {
     !addresses.is_empty() && addresses.iter().all(|ip| *ip == expected)
 }
+fn probe_client() -> Result<reqwest::ClientBuilder, &'static str> {
+    let mut builder = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none());
+    if let Ok(path) = std::env::var("FERRIX_INGRESS_CA_CERT")
+        && !path.is_empty()
+    {
+        let metadata = std::fs::metadata(&path)
+            .map_err(|_| "Could not read the configured public ingress CA certificate.")?;
+        if !metadata.is_file() || metadata.len() > 65536 {
+            return Err("Invalid ingress CA certificate file.");
+        }
+        let bytes = std::fs::read(path).map_err(|_| "Could not read ingress CA certificate.")?;
+        let certificate = reqwest::Certificate::from_pem(&bytes)
+            .map_err(|_| "Invalid public ingress CA certificate.")?;
+        builder = builder.add_root_certificate(certificate);
+    }
+    Ok(builder)
+}
 async fn certificate(host: &str, target: IpAddr, port: u16) -> Result<DateTime<Utc>, &'static str> {
     // Connect only to the operator-configured ingress address. Never follow redirects
     // or use a hostname's DNS result as an outbound probe destination.
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
+    let client = probe_client()?
         .timeout(Duration::from_secs(25))
         .tls_info(true)
         .resolve(host, SocketAddr::new(target, port))
@@ -253,6 +334,9 @@ async fn check(
     let (target, port, https, local) = configured(&state)?;
     let row: Domain = sqlx::query_as(&format!("UPDATE application_domains SET checked_at=now() WHERE id=$1 AND application_id=$2 AND (checked_at IS NULL OR checked_at < now()-interval '60 seconds') RETURNING {COLUMNS}"))
         .bind(domain).bind(app).fetch_optional(&state.pool).await?.ok_or(ApiError(StatusCode::CONFLICT, "Domain not found or checked recently. Wait 60 seconds before checking again."))?;
+    if row.route_kind != "direct" {
+        return private::check(&state, app, row, target, port, https).await;
+    }
     let checked = tokio::time::timeout(
         Duration::from_secs(8),
         dns(&row.hostname, &row.verification_token, target, local),

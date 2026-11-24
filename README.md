@@ -59,6 +59,11 @@ Before upgrading, back up the database and `.env`, review the [release notes](ht
 - [Services and deployments](docs/deployments.md)
 - [Application storage and background workers](docs/application-storage.md)
 - [GitHub, Dockerfiles and webhooks](docs/github-deployments.md)
+- [Uploaded ZIP/tar source](docs/source-uploads.md)
+- [Private ingress, LAN and Cloudflare Tunnel](docs/private-ingress.md)
+- [Resource quotas and headroom](docs/resource-quotas.md)
+- [Encrypted project backup and restore](docs/project-backups.md)
+- [Retained monitoring and logs](docs/monitoring-history.md)
 - [Authentication and security](docs/auth.md)
 - [API keys for agents](docs/api-keys.md)
 

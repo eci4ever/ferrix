@@ -20,7 +20,11 @@ pub(super) struct Job {
     pub(super) application_id: Uuid,
     pub(super) image: String,
     pub(super) pinned_image_id: Option<String>,
+    #[sqlx(default)]
+    pub(super) source_upload_id: Option<Uuid>,
     pub(super) source_cipher: Option<Vec<u8>>,
+    #[sqlx(default)]
+    pub(super) start_stopped: bool,
     pub(super) container_port: i32,
     pub(super) env_cipher: Option<Vec<u8>>,
     pub(super) service_kind: String,
@@ -121,6 +125,8 @@ pub(super) async fn execute(
         )
         .await?;
         state.docker.inspect_image(image_id).await.map_err(|_| "The original image is no longer available on this Docker server. Rollback cannot continue." )?
+    } else if job.source_upload_id.is_some() {
+        super::uploads::build_image(state, conn, job).await?
     } else if job.source_cipher.is_some() {
         super::github::build_image(state, conn, job).await?
     } else {
@@ -208,6 +214,16 @@ pub(super) async fn execute(
         }),
         ..Default::default()
     };
+    if job.start_stopped {
+        config
+            .host_config
+            .as_mut()
+            .ok_or("Missing host configuration.")?
+            .restart_policy = Some(RestartPolicy {
+            name: Some(RestartPolicyNameEnum::NO),
+            maximum_retry_count: None,
+        });
+    }
     super::services::database::attach_network(state, job, &mut config).await?;
     let runtime = if job.service_kind == "application" {
         super::application_runtime::configure(state, job, &mut config, &image).await?
@@ -220,6 +236,12 @@ pub(super) async fn execute(
     if job.service_kind == "database" {
         super::services::database::configure(state, job, &mut config).await?;
     }
+    let _lineage = if job.service_kind == "application" && !job.start_stopped && runtime.exclusive()
+    {
+        Some(super::application_runtime::lineage_guard(state, job.application_id).await?)
+    } else {
+        None
+    };
     let previous_exclusive:bool=sqlx::query_scalar("SELECT COALESCE((SELECT d.worker_mode FROM applications a JOIN deployments d ON d.id=a.active_deployment_id WHERE a.id=$1),false)").bind(job.application_id).fetch_one(&mut *conn).await.map_err(|_|"Could not inspect previous runtime mode.")?;
     if job.service_kind == "database" || runtime.exclusive() || previous_exclusive {
         phase(
@@ -230,7 +252,10 @@ pub(super) async fn execute(
         .await?;
         super::services::replacement::stop_previous(state, conn, job).await?;
     }
-    super::application_runtime::ensure_single_writer(state, job.application_id, &runtime).await?;
+    if !job.start_stopped {
+        super::application_runtime::ensure_single_writer(state, job.application_id, &runtime, conn)
+            .await?;
+    }
     let name = format!("ferrix-{}-{}", job.application_id.simple(), job.id.simple());
     let created = state
         .docker
@@ -248,60 +273,78 @@ pub(super) async fn execute(
         .execute(&mut *conn)
         .await
         .map_err(|_| "Could not persist container ID.")?;
-    super::application_runtime::ensure_single_writer(state, job.application_id, &runtime).await?;
-    phase(conn, job.id, "Starting container…").await?;
-    state
+    if !job.start_stopped {
+        super::application_runtime::ensure_single_writer(state, job.application_id, &runtime, conn)
+            .await?;
+    }
+    if !job.start_stopped {
+        phase(conn, job.id, "Starting container…").await?;
+        state
         .docker
         .start_container(&created.id, None)
         .await
         .map_err(
             |_| "Could not start the container. Inspect the image entrypoint and Docker resources.",
         )?;
+    }
     // A running state is required twice. Image-defined healthchecks must also become healthy.
     let mut ready = 0;
-    let host_port = loop {
-        tokio::time::sleep(Duration::from_secs(1)).await;
-        let info = inspect_owned(state, job.application_id, &created.id)
-            .await
-            .map_err(|_| "Could not verify container ownership and state.")?;
-        let status = info
-            .state
-            .ok_or("Docker did not return a container state.")?;
-        if status.running != Some(true)
-            || status.restarting == Some(true)
-            || info.restart_count.unwrap_or(0) > 0
-        {
-            return Err(
+    let host_port = if job.start_stopped {
+        None
+    } else {
+        loop {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            let info = inspect_owned(state, job.application_id, &created.id)
+                .await
+                .map_err(|_| "Could not verify container ownership and state.")?;
+            let status = info
+                .state
+                .ok_or("Docker did not return a container state.")?;
+            if status.running != Some(true)
+                || status.restarting == Some(true)
+                || info.restart_count.unwrap_or(0) > 0
+            {
+                return Err(
                 "Container exited during startup. Check its image configuration and runtime logs."
                     .into(),
             );
-        }
-        let healthy = status.health.and_then(|h| h.status).map(|s| s.to_string());
-        if healthy.as_deref() == Some("unhealthy") {
-            return Err("Container healthcheck failed.".into());
-        }
-        if healthy.is_none() || healthy.as_deref() == Some("healthy") {
-            ready += 1;
-        } else {
-            ready = 0;
-        }
-        if ready >= 2 {
-            if job.service_kind == "database" || runtime.worker_mode {
-                break None;
             }
-            let port = info
-                .network_settings
-                .and_then(|n| n.ports)
-                .and_then(|mut p| p.remove(&port_key))
-                .flatten()
-                .and_then(|p| p.into_iter().next())
-                .and_then(|p| p.host_port)
-                .and_then(|p| p.parse::<i32>().ok())
-                .ok_or("Docker did not allocate a host port.")?;
-            break Some(port);
+            let healthy = status.health.and_then(|h| h.status).map(|s| s.to_string());
+            if healthy.as_deref() == Some("unhealthy") {
+                return Err("Container healthcheck failed.".into());
+            }
+            if healthy.is_none() || healthy.as_deref() == Some("healthy") {
+                ready += 1;
+            } else {
+                ready = 0;
+            }
+            if ready >= 2 {
+                if job.service_kind == "database" || runtime.worker_mode {
+                    break None;
+                }
+                let port = info
+                    .network_settings
+                    .and_then(|n| n.ports)
+                    .and_then(|mut p| p.remove(&port_key))
+                    .flatten()
+                    .and_then(|p| p.into_iter().next())
+                    .and_then(|p| p.host_port)
+                    .and_then(|p| p.parse::<i32>().ok())
+                    .ok_or("Docker did not allocate a host port.")?;
+                break Some(port);
+            }
         }
     };
-    phase(conn, job.id, "Container is running. Activating deployment…").await?;
+    phase(
+        conn,
+        job.id,
+        if job.start_stopped {
+            "Container prepared and kept stopped for restore."
+        } else {
+            "Container is running. Activating deployment…"
+        },
+    )
+    .await?;
     // Commit the active pointer and success together. Cleanup only happens after this transaction.
     let mut tx = conn
         .begin()
@@ -359,6 +402,14 @@ async fn cleanup(state: &AppState, conn: &mut PgConnection) -> Result<(), String
         let removable:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM deployments d JOIN applications a ON a.id=d.application_id WHERE d.id=$1 AND a.id=$2 AND a.service_kind IN ('application','database') AND d.status IN ('succeeded','failed') AND a.active_container_id IS DISTINCT FROM $3)")
             .bind(deployment).bind(app).bind(&container_id).fetch_one(&mut *conn).await.map_err(|_|"Could not verify cleanup ownership.")?;
         if removable && labels_match(Some(&labels), app) {
+            // Capture the final bounded log tail before a previous deployment's container disappears.
+            let _ = super::observability::history::capture_retired_logs(
+                state,
+                app,
+                Some(deployment),
+                &container_id,
+            )
+            .await;
             let removed = tokio::time::timeout(
                 Duration::from_secs(10),
                 state.docker.remove_container(
@@ -395,20 +446,23 @@ async fn cycle(
     // The exclusive session lock guarantees that no other live worker owns these running jobs.
     sqlx::query("UPDATE deployments SET status='failed',finished_at=now(),logs=logs || E'Deployment interrupted by worker restart. Redeploy to try again.\\n' WHERE status='running'")
         .execute(&mut *conn).await.map_err(|_|"Could not recover interrupted deployments.")?;
+    if super::project_bundles::cycle(state, conn, shutdown).await? {
+        return Ok(true);
+    }
     cleanup(state, conn).await?;
     super::services::replacement::restore_pending(state, conn).await?;
     if super::backups::cycle(state, conn, shutdown).await? {
         return Ok(true);
     }
     super::github::dispatch(state, conn).await?;
-    let job=sqlx::query_as::<_,Job>("WITH next AS (SELECT id FROM deployments WHERE status='queued' ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1), claimed AS (UPDATE deployments d SET status='running',started_at=now() FROM next WHERE d.id=next.id RETURNING d.*) SELECT d.id,d.application_id,d.image,d.pinned_image_id,d.source_cipher,d.container_port,d.env_cipher,d.service_kind,d.service_cipher,p.organization_id,p.id AS project_id,e.id AS environment_id FROM claimed d JOIN applications a ON a.id=d.application_id JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id")
+    let job=sqlx::query_as::<_,Job>("WITH next AS (SELECT id FROM deployments WHERE status='queued' ORDER BY created_at,id FOR UPDATE SKIP LOCKED LIMIT 1), claimed AS (UPDATE deployments d SET status='running',started_at=now() FROM next WHERE d.id=next.id RETURNING d.*) SELECT d.id,d.application_id,d.image,d.pinned_image_id,d.source_cipher,d.source_upload_id,d.start_stopped,d.container_port,d.env_cipher,d.service_kind,d.service_cipher,p.organization_id,p.id AS project_id,e.id AS environment_id FROM claimed d JOIN applications a ON a.id=d.application_id JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id")
         .fetch_optional(&mut *conn).await.map_err(|_|"Could not claim queued deployment.")?;
     if let Some(job) = job {
         let authorized:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM deployments d LEFT JOIN auth_users u ON u.id=d.requested_by LEFT JOIN auth_members m ON m.user_id=u.id AND m.organization_id=$2 WHERE d.id=$1 AND (d.requested_by IS NULL OR (NOT auth_user_banned(u.banned,u.ban_expires_at) AND m.role IN ('owner','admin') AND d.service_kind IN ('application','database'))))")
             .bind(job.id).bind(job.organization_id).fetch_one(&mut *conn).await.map_err(|_|"Could not verify deployment authorization.")?;
         let result = if authorized {
             tokio::select! {
-                result=tokio::time::timeout(Duration::from_secs(if job.source_cipher.is_some() && job.pinned_image_id.is_none(){1200}else{300}),execute(state,conn,&job))=>result.unwrap_or_else(|_|Err("Deployment timed out. GitHub builds have a twenty-minute limit; image deploys have five minutes. The previous deployment is preserved.".into())),
+                result=tokio::time::timeout(Duration::from_secs(if (job.source_cipher.is_some() || job.source_upload_id.is_some()) && job.pinned_image_id.is_none(){1200}else{300}),execute(state,conn,&job))=>result.unwrap_or_else(|_|Err("Deployment timed out. GitHub builds have a twenty-minute limit; image deploys have five minutes. The previous deployment is preserved.".into())),
                 _=shutdown.changed()=>Err("Deployment interrupted during server shutdown. Redeploy to try again.".into()),
             }
         } else {
@@ -439,7 +493,7 @@ pub async fn run_worker(state: AppState, mut shutdown: watch::Receiver<bool>) {
             if !locked {return Ok::<_,String>(false);}
             let result=cycle(&state,&mut conn,&mut shutdown).await;
             // Never return a locked session to the pool if unlock fails.
-            if sqlx::query("SELECT pg_advisory_unlock(hashtextextended(current_database() || ':' || current_schema() || ':ferrix-deploy',0))").execute(&mut *conn).await.is_err() {
+            if sqlx::query("SELECT pg_advisory_unlock(hashtextextended(current_database() || ':' || current_schema() || ':ferrix-deploy',0))").execute(&mut *conn).await.is_err() || result.is_err() {
                 let _=conn.close().await;
             }
             result

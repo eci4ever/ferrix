@@ -1,0 +1,16 @@
+ALTER TABLE database_jobs DROP CONSTRAINT database_jobs_engine_check;
+ALTER TABLE database_jobs ADD CONSTRAINT database_jobs_engine_check CHECK(engine IN ('postgres','mariadb','application'));
+ALTER TABLE database_jobs ADD COLUMN resume_container_id text;
+ALTER TABLE database_jobs ADD COLUMN resume_was_running boolean;
+ALTER TABLE database_jobs ADD COLUMN resume_needed boolean NOT NULL DEFAULT false;
+ALTER TABLE backup_policies ADD COLUMN application_offline boolean NOT NULL DEFAULT false;
+ALTER TABLE deployments ADD COLUMN start_stopped boolean NOT NULL DEFAULT false;
+ALTER TABLE applications ADD COLUMN restore_blocked boolean NOT NULL DEFAULT false;
+ALTER TABLE applications ADD COLUMN data_origin_id uuid;
+CREATE INDEX applications_data_origin_idx ON applications((COALESCE(data_origin_id,id))) WHERE service_kind='application';
+ALTER TABLE database_jobs ADD COLUMN application_port integer NOT NULL DEFAULT 80;
+ALTER TABLE database_jobs ADD COLUMN resume_restart_policy text;
+ALTER TABLE database_jobs ADD CONSTRAINT application_backup_recovery_complete CHECK(NOT resume_needed OR (engine='application' AND operation='backup' AND resume_container_id IS NOT NULL AND resume_was_running IS NOT NULL AND resume_restart_policy IS NOT NULL));
+ALTER TABLE database_jobs ADD CONSTRAINT backup_application_port_valid CHECK(application_port BETWEEN 1 AND 65535);
+ALTER TABLE deployments ADD CONSTRAINT prepared_restore_application_only CHECK(NOT start_stopped OR service_kind='application');
+ALTER TABLE database_jobs ADD COLUMN resume_stop_confirmed boolean NOT NULL DEFAULT false;

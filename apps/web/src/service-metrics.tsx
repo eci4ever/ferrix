@@ -1,3 +1,4 @@
+import { TelemetryHistory } from './telemetry-history'
 import { useEffect, useState } from 'react'
 import { ApiRequestError, request } from '@/lib/api'
 import { Meter, formatBytes } from './monitoring'
@@ -77,6 +78,7 @@ export function ServiceMetrics({ serviceId }: { serviceId: string }) {
   }, [serviceId, retry])
   return (
     <div className="flex flex-col gap-4">
+      <TelemetryHistory serviceId={serviceId}/>
       <Card>
         <CardHeader>
           <CardTitle>

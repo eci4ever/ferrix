@@ -1,3 +1,6 @@
+import { formatBytes as bytes } from '@/lib/format-bytes'
+import { TelemetryHistory } from './telemetry-history'
+import { TelemetrySettings } from './telemetry-settings'
 import { useEffect, useId, useState } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -11,12 +14,6 @@ type Storage = { at: number | null; images: number | null; containers: number | 
 type Snapshot = { host: string; os: string; scope: string; interval_seconds: number; samples: Sample[]; docker: Storage }
 type Series = { name: string; key: keyof Omit<Sample, 'at'>; color: string; dash?: string }
 const colors = ['var(--series-primary)', 'var(--series-secondary)', 'var(--series-neutral)']
-function bytes(n: number | null | undefined): string {
-  if (n == null) return 'Unavailable'
-  if (n === 0) return '0 B'
-  const i = Math.min(4, Math.max(0, Math.floor(Math.log(n) / Math.log(1024))))
-  return `${(n / 1024 ** i).toLocaleString(undefined, { maximumFractionDigits: 2 })} ${['B', 'KiB', 'MiB', 'GiB', 'TiB'][i]}`
-}
 const percent = (n: number | null | undefined) => n == null ? 'Unavailable' : `${n.toFixed(1)}%`
 const rate = (n: number | null | undefined) => n == null ? 'Unavailable' : `${bytes(n)}/s`
 const time = (n: number) => new Date(n).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
@@ -88,6 +85,7 @@ export function MonitoringPage({ admin }: { admin: boolean }) {
   const stale = !!latest && now - latest.at > 20_000
   const fraction = (a: number | null | undefined, b: number | null | undefined) => a != null && b ? a / b * 100 : null
   return <>
+    <TelemetryHistory/><TelemetrySettings/>
     <div className="flex flex-wrap items-start justify-between gap-3"><div><h1 className="text-2xl font-semibold tracking-tight">Monitoring</h1><p className="mt-1 text-sm text-muted-foreground">Watch your server’s CPU, memory, storage and I/O.</p></div><Badge variant="outline">Admin · host scope</Badge></div>
     {error ? <Alert variant="destructive"><AlertTitle>Monitoring refresh failed</AlertTitle><AlertDescription>{error} {data ? 'Previous readings remain visible.' : ''}<Button variant="outline" size="sm" onClick={() => setRetry(v => v + 1)}>Retry</Button></AlertDescription></Alert> : null}
     {data ? <><div className="text-sm text-muted-foreground"><p><span className="font-medium text-foreground">{data.host}</span> · {data.os} · {latest ? `Sampled ${time(latest.at)}` : 'Warming up…'} · every {data.interval_seconds}s</p><p className="mt-1">API host metrics. In containers, CPU and memory reflect the visible OS, not container limits. Docker storage comes from the connected daemon, which may run in a VM.</p>{stale ? <p role="status" className="mt-2 font-medium text-destructive">Host readings are stale. Collector has not updated for over 20 seconds.</p> : null}</div>

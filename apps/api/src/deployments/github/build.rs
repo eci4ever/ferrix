@@ -205,7 +205,7 @@ fn context_archive(
 }
 // Docker API clients must filter the context before upload. Match patterns
 // against the root-relative path and its parents; later ! rules re-include files.
-fn filtered_context(
+pub(in crate::deployments) fn filtered_context(
     tar: &mut tar::Builder<std::fs::File>,
     root: &std::path::Path,
     dockerfile: &str,
@@ -385,7 +385,7 @@ pub(super) async fn run(
         .map_err(|_| "Source preparation was interrupted.")??;
     build_prepared(state, conn, job, &source, &sha, archive).await
 }
-async fn build_prepared(
+pub(in crate::deployments) async fn build_prepared(
     state: &AppState,
     conn: &mut sqlx::PgConnection,
     job: &worker::Job,

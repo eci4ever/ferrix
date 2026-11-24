@@ -34,8 +34,12 @@ pub(super) async fn change(
     // Serialize lifecycle operations with deployment snapshots and deletion.
     let app = sqlx::query_as::<_,Application>(&format!("SELECT {APP_COLUMNS} FROM applications a JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id WHERE a.id=$1 AND p.organization_id=$2 AND a.service_kind IN ('application','database') FOR UPDATE OF a"))
         .bind(service).bind(id.organization_id).fetch_optional(&mut *tx).await?.ok_or_else(missing)?;
+    project_bundles::lock_app(&mut tx, service, id.organization_id).await?;
     super::super::backups::ensure_idle(&mut tx, service).await?;
-    let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM deployments WHERE application_id=$1 AND status IN ('queued','running'))").bind(service).fetch_one(&mut *tx).await?;
+    if !matches!(input.operation, Operation::Stop) {
+        super::super::backups::ensure_restored(&mut tx, service).await?;
+    }
+    let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM deployments WHERE application_id=$1 AND (status IN ('queued','running') OR restore_container_id IS NOT NULL))").bind(service).fetch_one(&mut *tx).await?;
     if pending {
         return Err(ApiError(
             StatusCode::CONFLICT,
@@ -50,6 +54,19 @@ pub(super) async fn change(
             "Deploy this service before using runtime controls.",
         ));
     }
+    if application {
+        super::super::application_runtime::lock_lineage(&mut tx, service).await?;
+        if matches!(input.operation, Operation::Start) {
+            let container = &containers[0];
+            let info = super::super::worker::inspect_owned(&state, service, container).await?;
+            if info.state.and_then(|s| s.running) != Some(true) {
+                let cipher:Option<Vec<u8>>=sqlx::query_scalar("SELECT service_cipher FROM deployments WHERE id=(SELECT active_deployment_id FROM applications WHERE id=$1)").bind(service).fetch_one(&mut *tx).await?;
+                let runtime =
+                    super::super::application_runtime::decode(&state, service, cipher.as_deref())?;
+                super::super::application_runtime::ensure_single_writer(&state,service,&runtime,&mut tx).await.map_err(|_|ApiError(StatusCode::CONFLICT,"Another related service is running or recovering, or its storage is in use. Stop it before starting this service."))?;
+            }
+        }
+    }
     tokio::time::timeout(
         Duration::from_secs(90),
         futures_util::stream::iter(containers)
@@ -59,14 +76,7 @@ pub(super) async fn change(
                     super::super::worker::inspect_owned(state, service, &container).await?;
                     let result = match input.operation {
                         Operation::Start => {
-                            if application {
-                                let info=super::super::worker::inspect_owned(state,service,&container).await?;
-                                if info.state.and_then(|s|s.running)!=Some(true) {
-                                    let cipher:Option<Vec<u8>>=sqlx::query_scalar("SELECT service_cipher FROM deployments WHERE id=(SELECT active_deployment_id FROM applications WHERE id=$1)").bind(service).fetch_one(&state.pool).await?;
-                                    let runtime=super::super::application_runtime::decode(state,service,cipher.as_deref())?;
-                                    super::super::application_runtime::ensure_single_writer(state,service,&runtime).await.map_err(|_|ApiError(StatusCode::CONFLICT,"Another container is using this service or its storage. Stop it before starting this instance."))?;
-                                }
-                            }
+                            if application {state.docker.update_container(&container,bollard::models::ContainerUpdateBody{restart_policy:Some(bollard::models::RestartPolicy{name:Some(bollard::models::RestartPolicyNameEnum::UNLESS_STOPPED),maximum_retry_count:None}),..Default::default()}).await.map_err(|_|unavailable())?;}
                             state
                                 .docker
                                 .start_container(

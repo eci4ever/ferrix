@@ -6,11 +6,9 @@ use axum::{
     routing::{get, post},
 };
 use chrono::{DateTime, Utc};
-use futures_util::{StreamExt, stream};
 use serde::Serialize;
 use serde_json::{Value, json};
 use sqlx::FromRow;
-use std::time::Duration;
 use uuid::Uuid;
 
 pub(crate) fn routes() -> Router<AppState> {
@@ -66,10 +64,34 @@ struct AlertState {
     last: Option<DateTime<Utc>>,
     notified: bool,
 }
-fn observe(mut state: AlertState, usage: Option<f64>, now: DateTime<Utc>) -> (AlertState, bool) {
+#[cfg(test)]
+fn observe(state: AlertState, usage: Option<f64>, now: DateTime<Utc>) -> (AlertState, bool) {
+    observe_policy(
+        state,
+        usage,
+        now,
+        AlertPolicy {
+            threshold: 90.,
+            sustained_seconds: 60,
+            gap_seconds: 120,
+        },
+    )
+}
+#[derive(Clone, Copy)]
+pub(crate) struct AlertPolicy {
+    pub threshold: f64,
+    pub sustained_seconds: i64,
+    pub gap_seconds: i64,
+}
+fn observe_policy(
+    mut state: AlertState,
+    usage: Option<f64>,
+    now: DateTime<Utc>,
+    policy: AlertPolicy,
+) -> (AlertState, bool) {
     if state
         .last
-        .is_none_or(|last| now - last > chrono::Duration::seconds(120))
+        .is_none_or(|last| now - last > chrono::Duration::seconds(policy.gap_seconds))
     {
         state = AlertState::default()
     }
@@ -83,7 +105,7 @@ fn observe(mut state: AlertState, usage: Option<f64>, now: DateTime<Utc>) -> (Al
             false,
         );
     };
-    if usage < 80.0 {
+    if usage < (policy.threshold - 10.).max(0.) {
         return (
             AlertState {
                 last: Some(now),
@@ -92,23 +114,25 @@ fn observe(mut state: AlertState, usage: Option<f64>, now: DateTime<Utc>) -> (Al
             false,
         );
     }
-    if usage < 90.0 {
+    if usage < policy.threshold {
         state.since = None;
         return (state, false);
     }
     let since = *state.since.get_or_insert(now);
-    let emit = !state.notified && now - since >= chrono::Duration::seconds(60);
+    let emit =
+        !state.notified && now - since >= chrono::Duration::seconds(policy.sustained_seconds);
     if emit {
         state.notified = true
     }
     (state, emit)
 }
-async fn record(
+pub(crate) async fn record(
     state: &AppState,
     service: Uuid,
     resource: &str,
     container: Option<&str>,
     usage: Option<f64>,
+    policy: AlertPolicy,
 ) -> Result<(), ApiError> {
     let now = Utc::now();
     let mut tx = state.pool.begin().await?;
@@ -118,7 +142,7 @@ async fn record(
     let Some((since, last, notified, previous)) = row else {
         return Ok(());
     };
-    let (next, emit) = observe(
+    let (next, emit) = observe_policy(
         if previous.as_deref() == container {
             AlertState {
                 since,
@@ -130,81 +154,26 @@ async fn record(
         },
         usage,
         now,
+        policy,
     );
     sqlx::query("UPDATE service_resource_alerts SET high_since=$3,last_sample=$4,notified=$5,container_id=$6 WHERE service_id=$1 AND resource=$2").bind(service).bind(resource).bind(next.since).bind(now).bind(next.notified).bind(container).execute(&mut *tx).await?;
     if emit {
         sqlx::query("INSERT INTO notifications(id,organization_id,project_id,service_id,kind,title,message) SELECT $1,p.organization_id,p.id,a.id,'resource_high',$3,a.name || ' · ' || p.name || ' / ' || e.name FROM applications a JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id WHERE a.id=$2").bind(Uuid::new_v4()).bind(service).bind(if resource=="cpu"{"High CPU usage"}else{"High memory usage"}).execute(&mut *tx).await?;
     }
+    if notified
+        && !next.notified
+        && usage.is_some_and(|v| v < (policy.threshold - 10.).max(0.))
+        && previous.as_deref() == container
+    {
+        sqlx::query("INSERT INTO notifications(id,organization_id,project_id,service_id,kind,title,message) SELECT $1,p.organization_id,p.id,a.id,'resource_recovered',$3,a.name || ' · resource usage returned below its recovery threshold' FROM applications a JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id WHERE a.id=$2").bind(Uuid::new_v4()).bind(service).bind(if resource=="cpu"{"CPU usage recovered"}else{"Memory usage recovered"}).execute(&mut *tx).await?;
+    }
     tx.commit().await?;
     Ok(())
 }
-pub async fn run_worker(state: AppState, mut stop: tokio::sync::watch::Receiver<bool>) {
-    let cache = crate::deployments::observability::MetricsCache::default();
-    let mut timer = tokio::time::interval(Duration::from_secs(30));
-    timer.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    let mut cursor = Uuid::nil();
-    loop {
-        tokio::select! {_ = stop.changed()=>break,_=timer.tick()=>{}}
-        let services:Result<Vec<(Uuid,Uuid)>,_>=sqlx::query_as("SELECT a.id,p.organization_id FROM applications a JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id WHERE a.active_container_id IS NOT NULL AND a.id>$1 ORDER BY a.id LIMIT 32").bind(cursor).fetch_all(&state.pool).await;
-        let Ok(services) = services else {
-            tracing::warn!("Could not list services for resource alerts");
-            continue;
-        };
-        cursor = if services.len() < 32 {
-            Uuid::nil()
-        } else {
-            services.last().unwrap().0
-        };
-        stream::iter(services)
-            .for_each_concurrent(4, |(service, org)| {
-                let state = &state;
-                let cache = &cache;
-                async move {
-                    // Internal worker identity is organization scoped and never becomes a browser session.
-                    let identity = Identity {
-                        session_id: Uuid::nil(),
-                        user_id: Uuid::nil(),
-                        name: String::new(),
-                        email: String::new(),
-                        system_role: "user".into(),
-                        organization_id: org,
-                        organization_name: String::new(),
-                        role: "member".into(),
-                        authenticated_at: Utc::now(),
-                        expires_at: Utc::now(),
-                    };
-                    let sample = match crate::deployments::app_access(state, &identity, service)
-                        .await
-                    {
-                        Ok(app) => crate::deployments::observability::sample(state, &app, cache)
-                            .await
-                            .ok(),
-                        Err(_) => None,
-                    };
-                    for (resource, usage) in [
-                        ("cpu", sample.as_ref().and_then(|s| s.cpu_percent_of_limit)),
-                        (
-                            "memory",
-                            sample.as_ref().and_then(|s| s.memory_percent_of_limit),
-                        ),
-                    ] {
-                        if let Err(error) = record(
-                            state,
-                            service,
-                            resource,
-                            sample.as_ref().and_then(|s| s.container_id.as_deref()),
-                            usage,
-                        )
-                        .await
-                        {
-                            tracing::warn!(?error, "Could not sample resource alert");
-                        }
-                    }
-                }
-            })
-            .await;
-    }
+pub async fn run_worker(state: AppState, stop: tokio::sync::watch::Receiver<bool>) {
+    crate::deployments::observability::history::run_worker(state, stop).await
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -47,6 +47,7 @@ type DatabaseJob = {
   pruning?: boolean
   pruned_at?: string | null
   retention_error?: string | null
+  sha256?: string | null
   size_bytes: number | null
   created_at: string
   started_at: string | null
@@ -56,16 +57,19 @@ export function ServiceBackups({
   serviceId,
   serviceName,
   canManage,
+  application = false,
 }: {
   serviceId: string
   serviceName: string
   canManage: boolean
+  application?: boolean
 }) {
   const [jobs, setJobs] = useState<DatabaseJob[] | null>(null)
   const [error, setError] = useState('')
   const [pollError, setPollError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
+  const [confirmBackup, setConfirmBackup] = useState(false)
   const [restoring, setRestoring] = useState<DatabaseJob | null>(null)
   const base = `/services/${serviceId}/backups`
   useEffect(() => {
@@ -150,25 +154,23 @@ export function ServiceBackups({
       <Card>
         <CardHeader>
           <CardTitle>
-            <h2>Database backups</h2>
+            <h2>{application ? 'Application volume backups' : 'Database backups'}</h2>
           </CardTitle>
           <CardDescription>
-            Back up the configured database. Restore creates a new Database
-            service in this environment with new credentials.
+            {application ? 'Offline backups stop this Application temporarily and preserve its complete owned data volume. Restore creates a new stopped Application in this environment.' : 'Back up the configured database. Restore creates a new Database service in this environment with new credentials.'}
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <p className="text-sm text-muted-foreground">
             Backups use the destination configured below. S3 backups keep a local
             copy and are only marked successful after upload completes.
-            Avoid schema changes during a backup. MariaDB consistency requires
-            transactional tables.
+            {application ? 'Archives contain credentials and private files. Use restricted local access or a private S3 bucket with encryption at rest. Verify the restored data and stop the source before starting the new service.' : 'Avoid schema changes during a backup. MariaDB consistency requires transactional tables.'}
           </p>
           {canManage ? (
             <Button
               className="self-start"
               disabled={busy || pending || jobs === null}
-              onClick={() =>
+              onClick={() => application ? setConfirmBackup(true) :
                 void action(async () => {
                   await request(base, { method: 'POST' })
                   setNotice('Backup request accepted.')
@@ -181,13 +183,13 @@ export function ServiceBackups({
           ) : null}
           {pending ? (
             <p role="status" className="text-sm">
-              A database operation is in progress. Deploy and runtime controls
+              A backup or restore is in progress. Deploy and runtime controls
               are paused for the affected services.
             </p>
           ) : null}
         </CardContent>
       </Card>
-      {canManage ? <BackupPolicy serviceId={serviceId} /> : null}
+      {canManage ? <BackupPolicy serviceId={serviceId} application={application} /> : null}
       <Card>
         <CardHeader>
           <CardTitle>
@@ -255,6 +257,7 @@ export function ServiceBackups({
                         ? `${(job.size_bytes / 1024).toFixed(1)} KiB`
                         : `${(job.size_bytes / 1024 / 1024).toFixed(2)} MiB`,
                 },
+                { id: 'checksum', label: 'SHA-256', value: job => job.sha256 ?? '', cell: job => job.sha256 ? <span className="block max-w-32 truncate font-mono" title={job.sha256}>{job.sha256}</span> : '—' },
                 {
                   id: 'progress',
                   label: 'Progress',
@@ -312,6 +315,7 @@ export function ServiceBackups({
           )}
         </CardContent>
       </Card>
+      <Dialog open={confirmBackup} onOpenChange={open=>{if(!busy)setConfirmBackup(open)}}><DialogContent><DialogHeader><DialogTitle>Back up Application offline?</DialogTitle><DialogDescription>Ferrix will stop this service, archive its complete data directory including SQLite WAL/SHM files, then restore its previous running or stopped state. Deploy and runtime controls are blocked during the operation. This causes downtime if the service is running.</DialogDescription></DialogHeader><DialogFooter><Button variant="outline" disabled={busy} onClick={()=>setConfirmBackup(false)}>Cancel</Button><Button disabled={busy} onClick={()=>void action(async()=>{await request(base,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({offline:true})});setConfirmBackup(false);setNotice('Offline backup request accepted.')})}>Stop temporarily and back up</Button></DialogFooter>{error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}</DialogContent></Dialog>
       <Dialog
         open={restoring !== null}
         onOpenChange={(open) => {
@@ -320,11 +324,9 @@ export function ServiceBackups({
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Restore to a new database</DialogTitle>
+            <DialogTitle>{application ? 'Restore to a new stopped Application' : 'Restore to a new database'}</DialogTitle>
             <DialogDescription>
-              A new Database service will be created in the same environment,
-              using this backup’s database version and a fresh password. Wait
-              for restore to succeed before using it.
+              {application ? 'A new Application and empty owned volume will be created from this backup’s image, command, environment and resource snapshot. The target stays stopped. Verify its files, SQLite integrity and credentials, then stop the source before starting only the target. Failed targets remain blocked.' : 'A new Database service will be created in the same environment, using this backup’s database version and a fresh password. Wait for restore to succeed before using it.'}
             </DialogDescription>
           </DialogHeader>
           <form onSubmit={restore} className="flex flex-col gap-4">
@@ -347,8 +349,7 @@ export function ServiceBackups({
                   disabled={busy}
                 />
                 <FieldDescription>
-                  The database name and username match the backup. Connection
-                  details are available on the new service.
+                  {application ? 'Data is never overlaid onto an existing service. Archives preserve numeric UID/GID, modes and dotfiles.' : 'The database name and username match the backup. Connection details are available on the new service.'}
                 </FieldDescription>
               </Field>
             </FieldGroup>

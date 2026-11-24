@@ -22,10 +22,10 @@ test('Domains explains DNS, checks HTTPS and confirms removal on mobile', async 
     const base = '/api/v1/services/web/domains'
     if (path === base) {
       if (req.method() === 'POST') {
-        expect(req.postDataJSON()).toEqual({ hostname: 'app.example.com' })
+        expect(req.postDataJSON()).toEqual({ hostname: 'app.example.com', route_kind:'direct', canonical:false })
         domains = [
           {
-            id: 'domain',
+            id: 'domain', route_kind:'direct', canonical:false, http_status:'unverified', tunnel_status:'not_applicable',
             hostname: 'app.example.com',
             verification_token: 'example-public-dns-proof-token',
             verified_at: null,

@@ -45,6 +45,7 @@ pub(super) async fn remove(
             .fetch_optional(&mut *tx)
             .await?
             .ok_or_else(missing)?;
+    project_bundles::lock_app(&mut tx, service, id.organization_id).await?;
     if input.name != current {
         return Err(invalid("Type the exact service name to confirm deletion."));
     }

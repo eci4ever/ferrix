@@ -316,3 +316,100 @@ async fn application_does_not_adopt_or_delete_a_foreign_volume() {
         std::panic::resume_unwind(error)
     }
 }
+
+async fn assert_limits(f: &Fixture, deployment: &Value, memory_mib: i64, cpus: f64) {
+    let info = f
+        .state
+        .docker
+        .inspect_container(deployment["container_id"].as_str().unwrap(), None)
+        .await
+        .unwrap();
+    let host = info.host_config.unwrap();
+    assert_eq!(host.memory, Some(memory_mib * 1024 * 1024));
+    assert_eq!(
+        host.nano_cpus,
+        Some((cpus * 1_000_000_000.0).round() as i64)
+    );
+}
+#[tokio::test]
+#[ignore = "requires FERRIX_TEST_DATABASE_URL and Docker"]
+async fn resource_limits_are_snapshotted_redeployed_and_rolled_back() {
+    let f = Fixture::new().await;
+    let (stop, rx) = tokio::sync::watch::channel(false);
+    let worker = tokio::spawn(crate::deployments::run_worker(f.state.clone(), rx));
+    let result=AssertUnwindSafe(async {
+        // A pre-runtime Application and deployment still use the original limits.
+        sqlx::query("UPDATE applications SET service_cipher=NULL WHERE id=$1").bind(f.service).execute(&f.state.pool).await.unwrap();
+        let legacy=request(&f,"GET","/configuration",Value::Null).await;
+        assert_eq!(legacy.body["memory_mib"],512);assert_eq!(legacy.body["cpus"],1.0);
+        assert_eq!(request(&f,"POST","/deploy",json!({})).await.status,StatusCode::ACCEPTED);
+        let first=wait(&f,"succeeded").await;assert_limits(&f,&first,512,1.0).await;
+        let mut config=json!({"name":"Resource worker","image":"nginx:alpine","worker_mode":true,"command":["sh","-c","trap 'exit 0' TERM INT; while :; do sleep 1 & wait $!; done"],"memory_mib":768,"cpus":0.75});
+        for invalid in [json!({"memory_mib":0,"cpus":0.75}),json!({"memory_mib":768,"cpus":0.0}),json!({"memory_mib":768,"cpus":0.755})] {
+            let mut bad=config.clone();bad["memory_mib"]=invalid["memory_mib"].clone();bad["cpus"]=invalid["cpus"].clone();
+            assert_eq!(request(&f,"POST","/configuration",bad).await.status,StatusCode::UNPROCESSABLE_ENTITY);
+        }
+        assert_eq!(request(&f,"POST","/configuration",config.clone()).await.status,StatusCode::OK);
+        sqlx::query("UPDATE auth_members SET role='member' WHERE user_id=$1 AND organization_id=$2").bind(f.user).bind(f.org).execute(&f.state.pool).await.unwrap();
+        assert_eq!(request(&f,"POST","/configuration",config.clone()).await.status,StatusCode::FORBIDDEN);
+        sqlx::query("UPDATE auth_members SET role='owner' WHERE user_id=$1 AND organization_id=$2").bind(f.user).bind(f.org).execute(&f.state.pool).await.unwrap();
+        assert_eq!(request(&f,"POST","/deploy",json!({})).await.status,StatusCode::ACCEPTED);
+        // Change saved settings while the queued snapshot remains 768 MiB/0.75 CPU.
+        config["memory_mib"]=json!(1024);config["cpus"]=json!(0.5);
+        assert_eq!(request(&f,"POST","/configuration",config.clone()).await.status,StatusCode::OK);
+        let custom=wait(&f,"succeeded").await;assert_limits(&f,&custom,768,0.75).await;
+        for _ in 0..2 {
+            assert_eq!(request(&f,"POST","/deploy",json!({})).await.status,StatusCode::ACCEPTED);
+            let deployment=wait(&f,"succeeded").await;assert_limits(&f,&deployment,1024,0.5).await;
+        }
+        config["memory_mib"]=json!(1536);config["cpus"]=json!(0.25);
+        assert_eq!(request(&f,"POST","/configuration",config).await.status,StatusCode::OK);
+        assert_eq!(request(&f,"POST","/rollback",json!({"deployment_id":custom["id"]})).await.status,StatusCode::ACCEPTED);
+        let rolled=wait(&f,"succeeded").await;assert_limits(&f,&rolled,768,0.75).await;
+        let saved=request(&f,"GET","/configuration",Value::Null).await.body;
+        assert_eq!(saved["memory_mib"],1536);assert_eq!(saved["cpus"],0.25);
+        assert_eq!(request(&f,"POST","/deploy",json!({})).await.status,StatusCode::ACCEPTED);
+        let latest=wait(&f,"succeeded").await;assert_limits(&f,&latest,1536,0.25).await;
+        assert_eq!(request(&f,"POST","/rollback",json!({"deployment_id":first["id"]})).await.status,StatusCode::ACCEPTED);
+        let legacy=wait(&f,"succeeded").await;assert_limits(&f,&legacy,512,1.0).await;
+        assert_eq!(request(&f,"DELETE","",json!({"name":"Resource worker"})).await.status,StatusCode::NO_CONTENT);
+    }).catch_unwind().await;
+    stop.send(true).unwrap();
+    worker.await.unwrap();
+    let filters = HashMap::from([(
+        "label".to_owned(),
+        vec![format!("io.ferrix.application={}", f.service)],
+    )]);
+    if let Ok(rows) = f
+        .state
+        .docker
+        .list_containers(Some(
+            bollard::query_parameters::ListContainersOptionsBuilder::default()
+                .all(true)
+                .filters(&filters)
+                .build(),
+        ))
+        .await
+    {
+        for row in rows {
+            if let Some(id) = row.id {
+                let _ = f
+                    .state
+                    .docker
+                    .remove_container(
+                        &id,
+                        Some(
+                            bollard::query_parameters::RemoveContainerOptionsBuilder::default()
+                                .force(true)
+                                .build(),
+                        ),
+                    )
+                    .await;
+            }
+        }
+    }
+    f.finish().await;
+    if let Err(error) = result {
+        std::panic::resume_unwind(error)
+    }
+}
