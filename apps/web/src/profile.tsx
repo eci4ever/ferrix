@@ -6,6 +6,7 @@ import { Field, FieldLabel, FieldDescription } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
+import { ActionNotice } from '@/components/action-notice'
 
 const panel = 'flex flex-col gap-4 rounded-xl border bg-card p-6 text-card-foreground'
 
@@ -21,13 +22,13 @@ export function ProfilePage({ profile, refresh }: { profile: Profile; refresh: (
   return <div className="flex flex-col gap-6">
     <h1 className="text-2xl font-semibold">Profile</h1>
     {error && <Alert variant="destructive" role="alert"><AlertTitle>Profile could not be saved</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}
-    {notice && <Alert role="status"><AlertTitle>Account notice</AlertTitle><AlertDescription>{notice}</AlertDescription></Alert>}
+    <ActionNotice message={notice} onDismiss={() => setNotice('')} />
     <section className={panel}><h2 className="font-semibold">Personal details</h2>
       <form className="flex flex-col gap-4" onSubmit={async event => {
         event.preventDefault()
         setBusy(true); setError(''); setNotice('')
         try {
-          await request('/auth/profile', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, avatar, avatar_url: avatarUrl.trim() || null }) })
+          await request('/auth/profile', { method: 'POST', notifyOnError: true, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, avatar, avatar_url: avatarUrl.trim() || null }) })
           await refresh()
           setNotice('Profile saved.')
         } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not save profile. Try again.') }

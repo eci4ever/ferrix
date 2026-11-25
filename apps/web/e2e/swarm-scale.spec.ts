@@ -59,7 +59,8 @@ test('service actions confirm mutations and display bounded log snapshots with r
   await page.getByLabel('Replicas',{exact:true}).fill('3')
   conflict = true
   await page.getByRole('button',{name:'Scale service',exact:true}).click()
-  await expect(page.getByText('Service changed. Refresh swarm before scaling again.',{exact:true})).toBeVisible()
+  await expect(page.getByRole('dialog').getByText('Service changed. Refresh swarm before scaling again.',{exact:true})).toBeVisible()
+  await expect(page.locator('[data-sonner-toast][data-type="error"]').filter({hasText:'Service changed. Refresh swarm before scaling again.'})).toBeVisible()
   conflict = false
   await page.getByRole('button',{name:'Scale service',exact:true}).click()
   await expect(page.getByRole('dialog')).toHaveCount(0)

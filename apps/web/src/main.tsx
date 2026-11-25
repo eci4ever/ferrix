@@ -36,6 +36,7 @@ import { MonitoringPage } from './monitoring'
 import { DockerPage } from './docker'
 import { ProjectList } from './project-list'
 import './index.css'
+import { Toaster } from '@/components/ui/sonner'
 
 function ErrorNotice({ message }: { message: string }) {
   return <Alert variant="destructive"><CircleAlert /><AlertTitle>Something needs attention</AlertTitle><AlertDescription>{message}</AlertDescription></Alert>
@@ -213,4 +214,4 @@ const adminRoute = createRoute({ getParentRoute: () => rootRoute, path: '/admin'
 const router = createRouter({ routeTree: rootRoute.addChildren([landingRoute, loginRoute, signupRoute, homeRoute, projectsRoute, projectRoute, applicationRoute, serviceRoute, monitoringRoute, containersRoute, profileRoute, securityRoute, teamRoute, apiKeysRoute, adminRoute]), defaultPendingMs: 150, defaultPendingMinMs: 200 })
 declare module '@tanstack/react-router' { interface Register { router: typeof router } }
 
-createRoot(document.getElementById('root')!).render(<StrictMode><RouterProvider router={router} /></StrictMode>)
+createRoot(document.getElementById('root')!).render(<StrictMode><RouterProvider router={router} /><Toaster /></StrictMode>)

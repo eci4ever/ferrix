@@ -1,3 +1,5 @@
+import { toast } from 'sonner'
+
 export type Project = { id: string; name: string; description: string; created_at: string; service_count: number }
 export type SystemStatus = { database: boolean; docker: boolean; version: string }
 export type Container = { id: string; name: string; image: string; state: string; status: string }
@@ -6,16 +8,24 @@ export class ApiRequestError extends Error {
   constructor(message: string, public readonly status: number) { super(message); this.name = 'ApiRequestError' }
 }
 
-export async function request<T>(path: string, init?: RequestInit): Promise<T> {
+type RequestOptions = RequestInit & { notifyOnError?: boolean }
+
+export async function request<T>(path: string, init?: RequestOptions): Promise<T> {
+  const { notifyOnError = !['GET', 'HEAD'].includes((init?.method ?? 'GET').toUpperCase()) && !path.startsWith('/auth/'), ...options } = init ?? {}
+  function fail(error: Error): never {
+    const cancelled = options.signal?.aborted && options.signal.reason?.name !== 'TimeoutError'
+    if (notifyOnError && !cancelled) toast.error(error.message, { id: `request-error:${path}`, duration: 8000 })
+    throw error
+  }
   let response: Response
   try {
-    response = await fetch(`/api/v1${path}`, { ...init, signal: init?.signal ?? AbortSignal.timeout(10_000) })
+    response = await fetch(`/api/v1${path}`, { ...options, signal: options.signal ?? AbortSignal.timeout(10_000) })
   } catch {
-    throw new Error('Cannot reach Ferrix. Check that the API is running, then refresh.')
+    return fail(new Error('Cannot reach Ferrix. Check that the API is running, then refresh.'))
   }
   if (!response.ok) {
     const body = await response.json().catch(() => null)
-    throw new ApiRequestError(body?.error ?? `Request failed (${response.status}). Check that the API is running.`, response.status)
+    return fail(new ApiRequestError(body?.error ?? `Request failed (${response.status}). Check that the API is running.`, response.status))
   }
   if (response.status === 204) return undefined as T
   const body = await response.text()
