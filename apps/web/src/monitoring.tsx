@@ -85,7 +85,6 @@ export function MonitoringPage({ admin }: { admin: boolean }) {
   const stale = !!latest && now - latest.at > 20_000
   const fraction = (a: number | null | undefined, b: number | null | undefined) => a != null && b ? a / b * 100 : null
   return <>
-    <TelemetryHistory/><TelemetrySettings/>
     <div className="flex flex-wrap items-start justify-between gap-3"><div><h1 className="text-2xl font-semibold tracking-tight">Monitoring</h1><p className="mt-1 text-sm text-muted-foreground">Watch your server’s CPU, memory, storage and I/O.</p></div><Badge variant="outline">Admin · host scope</Badge></div>
     {error ? <Alert variant="destructive"><AlertTitle>Monitoring refresh failed</AlertTitle><AlertDescription>{error} {data ? 'Previous readings remain visible.' : ''}<Button variant="outline" size="sm" onClick={() => setRetry(v => v + 1)}>Retry</Button></AlertDescription></Alert> : null}
     {data ? <><div className="text-sm text-muted-foreground"><p><span className="font-medium text-foreground">{data.host}</span> · {data.os} · {latest ? `Sampled ${time(latest.at)}` : 'Warming up…'} · every {data.interval_seconds}s</p><p className="mt-1">API host metrics. In containers, CPU and memory reflect the visible OS, not container limits. Docker storage comes from the connected daemon, which may run in a VM.</p>{stale ? <p role="status" className="mt-2 font-medium text-destructive">Host readings are stale. Collector has not updated for over 20 seconds.</p> : null}</div>
@@ -97,6 +96,10 @@ export function MonitoringPage({ admin }: { admin: boolean }) {
       <Card><CardHeader><CardTitle>Block I/O</CardTitle><CardDescription>Read: {rate(latest?.read_bps)} · Write: {rate(latest?.write_bps)}</CardDescription></CardHeader><CardContent><History samples={samples} format={rate} series={[{ name: 'Read', key: 'read_bps', color: colors[0] }, { name: 'Write', key: 'write_bps', color: colors[1], dash: '6 4' }]} /><p className="mt-2 text-xs text-muted-foreground">API host · mounted block devices · bytes per second.</p></CardContent></Card>
       <Card><CardHeader><CardTitle>Network I/O</CardTitle><CardDescription>In: {rate(latest?.receive_bps)} · Out: {rate(latest?.transmit_bps)}</CardDescription></CardHeader><CardContent><History samples={samples} format={rate} series={[{ name: 'Received', key: 'receive_bps', color: colors[0] }, { name: 'Transmitted', key: 'transmit_bps', color: colors[1], dash: '6 4' }]} /><p className="mt-2 text-xs text-muted-foreground">API host · non-loopback interfaces · bytes per second.</p></CardContent></Card>
     </div><p className="text-xs text-muted-foreground">Last 15 minutes · up to 180 samples · history resets when the API restarts</p></> : !error ? <div role="status" aria-label="Loading monitoring" className="grid gap-6 lg:grid-cols-2">{Array.from({ length: 6 }, (_, i) => <Skeleton key={i} className="h-72 w-full" />)}</div> : null}
+    <section aria-label="Monitoring history and settings" className="flex min-w-0 flex-col gap-6">
+      <TelemetryHistory />
+      <TelemetrySettings />
+    </section>
   </>
 }
 
