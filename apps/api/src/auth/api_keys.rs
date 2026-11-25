@@ -38,19 +38,27 @@ struct KeyInfo {
     last_used_at: Option<DateTime<Utc>>,
 }
 pub async fn list(State(state): State<AppState>, id: Identity) -> Result<Json<Value>, ApiError> {
-    let rows:Vec<KeyInfo>=sqlx::query_as("SELECT k.id,k.name,k.prefix,k.scopes,k.created_at,k.expires_at,k.revoked_at,k.last_used_at,k.project_id,p.name AS project_name FROM auth_api_keys k LEFT JOIN projects p ON p.id=k.project_id WHERE k.user_id=$1 AND k.organization_id=$2 ORDER BY (k.revoked_at IS NULL AND k.expires_at>now()) DESC,k.created_at DESC,k.id LIMIT 100")
+    let rows:Vec<KeyInfo>=sqlx::query_as("SELECT k.id,k.name,k.prefix,k.scopes,k.created_at,k.expires_at,k.revoked_at,k.last_used_at,k.project_id,p.name AS project_name FROM auth_api_keys k LEFT JOIN projects p ON p.id=k.project_id AND ferrix_project_visible(k.user_id,k.organization_id,p.id) WHERE k.user_id=$1 AND k.organization_id=$2 ORDER BY (k.revoked_at IS NULL AND k.expires_at>now()) DESC,k.created_at DESC,k.id LIMIT 100")
         .bind(id.user_id).bind(id.organization_id).fetch_all(&state.pool).await?;
     let projects: Vec<(Uuid, String)> =
-        sqlx::query_as("SELECT id,name FROM projects WHERE organization_id=$1 ORDER BY name,id")
+        sqlx::query_as("SELECT id,name FROM projects WHERE organization_id=$1 AND ferrix_project_visible($2,$1,id) ORDER BY name,id")
             .bind(id.organization_id)
+            .bind(id.user_id)
             .fetch_all(&state.pool)
             .await?;
     let projects: Vec<Value> = projects
         .into_iter()
         .map(|(id, name)| json!({"id":id,"name":name}))
         .collect();
+    let allowed_scopes = if permissions::manager(&id) {
+        SCOPES.to_vec()
+    } else if permissions::has_developer(&state, &id, None).await? {
+        vec!["read", "manage", "deploy", "secrets:read"]
+    } else {
+        vec!["read"]
+    };
     Ok(Json(
-        json!({"projects":projects,"keys":rows,"scopes":SCOPES,"rate_limit_per_minute":RATE_LIMIT}),
+        json!({"projects":projects,"keys":rows,"scopes":SCOPES,"allowed_scopes":allowed_scopes,"rate_limit_per_minute":RATE_LIMIT}),
     ))
 }
 #[derive(Deserialize)]
@@ -86,14 +94,23 @@ pub async fn create(
     let mut tx = state.pool.begin().await?;
     let role = management::authorize(&mut tx, &id, "member").await?;
     if role == "member" && scopes.iter().any(|s| s != "read") {
-        return Err(forbidden());
+        let assigned: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM applications a JOIN environments e ON e.id=a.environment_id WHERE a.service_kind='application' AND ($3::uuid IS NULL OR e.project_id=$3) AND ferrix_service_permission($1,$2,a.id)='developer')")
+            .bind(id.user_id).bind(id.organization_id).bind(input.project_id).fetch_one(&mut *tx).await?;
+        if !assigned
+            || scopes
+                .iter()
+                .any(|s| !matches!(s.as_str(), "read" | "manage" | "deploy" | "secrets:read"))
+        {
+            return Err(forbidden());
+        }
     }
     if let Some(project) = input.project_id {
         let exists: bool = sqlx::query_scalar(
-            "SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1 AND organization_id=$2)",
+            "SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1 AND organization_id=$2 AND ferrix_project_visible($3,$2,id))",
         )
         .bind(project)
         .bind(id.organization_id)
+        .bind(id.user_id)
         .fetch_one(&mut *tx)
         .await?;
         if !exists {
@@ -318,7 +335,7 @@ async fn authenticate(state: &AppState, headers: &HeaderMap) -> Result<Principal
             return Err(error);
         }
     };
-    let found=sqlx::query_as("SELECT k.id key_id,k.name key_name,k.project_id,p.name AS project_name,k.scopes,u.id user_id,u.name,u.email,u.system_role,o.id organization_id,o.name organization_name,m.role,k.expires_at FROM auth_api_keys k JOIN auth_users u ON u.id=k.user_id JOIN auth_members m ON m.user_id=u.id AND m.organization_id=k.organization_id JOIN auth_organizations o ON o.id=m.organization_id LEFT JOIN projects p ON p.id=k.project_id AND p.organization_id=k.organization_id WHERE (k.project_id IS NULL OR p.id IS NOT NULL) AND k.key_hash=$1 AND k.revoked_at IS NULL AND k.expires_at>now() AND NOT auth_user_banned(u.banned,u.ban_expires_at)")
+    let found=sqlx::query_as("SELECT k.id key_id,k.name key_name,k.project_id,p.name AS project_name,k.scopes,u.id user_id,u.name,u.email,u.system_role,o.id organization_id,o.name organization_name,m.role,k.expires_at FROM auth_api_keys k JOIN auth_users u ON u.id=k.user_id JOIN auth_members m ON m.user_id=u.id AND m.organization_id=k.organization_id JOIN auth_organizations o ON o.id=m.organization_id LEFT JOIN projects p ON p.id=k.project_id AND p.organization_id=k.organization_id AND ferrix_project_visible(k.user_id,k.organization_id,p.id) WHERE (k.project_id IS NULL OR p.id IS NOT NULL) AND k.key_hash=$1 AND k.revoked_at IS NULL AND k.expires_at>now() AND NOT auth_user_banned(u.banned,u.ban_expires_at)")
         .bind(digest(&value)).fetch_optional(&state.pool).await?;
     if let Some(found) = found {
         Ok(found)
@@ -384,7 +401,6 @@ pub(crate) async fn run(state: &AppState, mut req: Request, next: Next) -> Respo
         required
             .split('+')
             .all(|scope| principal.scopes.iter().any(|value| value == scope))
-            && (required == "read" || matches!(principal.role.as_str(), "owner" | "admin"))
     });
     let project_access = if allowed {
         project_access(state, principal.project_id, &method, &route, resource).await
@@ -439,16 +455,31 @@ pub(crate) async fn run(state: &AppState, mut req: Request, next: Next) -> Respo
     response
 }
 pub async fn agent(
+    State(state): State<AppState>,
     id: Identity,
     key: Option<axum::Extension<KeyAccess>>,
 ) -> Result<Json<Value>, ApiError> {
     let key = key.ok_or_else(forbidden)?.0;
+    let developer = permissions::has_developer(&state, &id, key.project_id).await?;
     let effective: Vec<_> = key
         .scopes
         .iter()
-        .filter(|scope| scope.as_str() == "read" || matches!(id.role.as_str(), "owner" | "admin"))
+        .filter(|scope| {
+            scope.as_str() == "read"
+                || permissions::manager(&id)
+                || (developer && scope.as_str() != "delete")
+        })
         .collect();
-    let workflow = if key.project_id.is_some() {
+    let workflow = if !permissions::manager(&id) {
+        vec![
+            "GET /api/v1/projects",
+            "GET /api/v1/projects/{id}/environments",
+            "GET /api/v1/environments/{id}/services",
+            "GET /api/v1/services/{id}",
+            "POST /api/v1/services/{id}/deploy",
+            "GET /api/v1/services/{id}/runtime",
+        ]
+    } else if key.project_id.is_some() {
         vec![
             "GET /api/v1/projects",
             "GET /api/v1/projects/{id}/environments",
@@ -469,7 +500,7 @@ pub async fn agent(
         ]
     };
     Ok(Json(
-        json!({"project_id":key.project_id,"project_name":key.project_name,"api_version":"v1","user_id":id.user_id,"organization_id":id.organization_id,"organization_name":id.organization_name,"organization_role":id.role,"key_id":key.id,"scopes":effective,"granted_scopes":key.scopes,"rate_limit_per_minute":RATE_LIMIT,"documentation":"/api/v1/agent/docs","workflow":workflow,"constraints":["Scopes never exceed the current organization role","Account and organization administration require a browser session","Configuration reads require secrets:read; deployment and application logs may contain sensitive application output"]}),
+        json!({"project_id":key.project_id,"project_name":key.project_name,"api_version":"v1","user_id":id.user_id,"organization_id":id.organization_id,"organization_name":id.organization_name,"organization_role":id.role,"key_id":key.id,"scopes":effective,"granted_scopes":key.scopes,"rate_limit_per_minute":RATE_LIMIT,"documentation":"/api/v1/agent/docs","workflow":workflow,"constraints":["Scopes intersect the current organization role, resource assignments and project restriction","Account and organization administration require a browser session","Configuration reads require secrets:read; deployment and application logs may contain sensitive application output"]}),
     ))
 }
 

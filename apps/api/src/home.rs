@@ -6,12 +6,12 @@ use serde_json::Value;
 // or Docker host inventory are used to infer organization totals/runtime health.
 const SUMMARY: &str = r#"
 WITH org_projects AS MATERIALIZED (
-    SELECT id, created_at FROM projects WHERE organization_id = $1 AND ($2::UUID IS NULL OR id=$2)
+    SELECT id, created_at FROM projects WHERE organization_id = $1 AND ($2::UUID IS NULL OR id=$2) AND ferrix_project_visible($3,$1,id)
 ), org_services AS MATERIALIZED (
     SELECT a.id, a.name, a.service_kind, e.project_id
     FROM applications a JOIN environments e ON e.id = a.environment_id
     JOIN org_projects p ON p.id = e.project_id
-    WHERE a.service_kind IN ('application','database')
+    WHERE a.service_kind IN ('application','database') AND ferrix_service_permission($3,$1,a.id) IS NOT NULL
 ), recent_deployments AS MATERIALIZED (
     SELECT d.status FROM deployments d JOIN org_services s ON s.id = d.application_id
     WHERE d.created_at >= now() - interval '24 hours'
@@ -48,6 +48,7 @@ pub(crate) async fn get(
     let summary: sqlx::types::Json<Value> = sqlx::query_scalar(SUMMARY)
         .bind(id.organization_id)
         .bind(key.and_then(|key| key.project_id))
+        .bind(id.user_id)
         .fetch_one(&state.pool)
         .await?;
     Ok(Json(summary.0))

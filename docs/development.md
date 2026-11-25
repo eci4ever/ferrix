@@ -360,6 +360,12 @@ cascading deletes, failed-migration recovery, expiry preservation, locked renewa
 bounded cleanup, concurrent cleaners and worker startup/shutdown. Run against your
 own test database with `cargo test --test database_integrity -- --include-ignored`.
 
+### Classroom resource assignments
+
+For classroom resource assignments and the opt-in member visibility restriction,
+see [Resource permissions](resource-permissions.md). Migration 0033 preserves
+legacy visibility by default; no existing member receives new mutation rights.
+
 ### Organization deletion and sessions
 
 Deleting an empty, non-default organization moves only the requesting browser

@@ -79,7 +79,7 @@ pub fn webhook_routes(_state: AppState) -> Router<AppState> {
         .layer(DefaultBodyLimit::max(2 * 1024 * 1024))
 }
 async fn access(state: &AppState, id: &Identity, service: Uuid) -> Result<(), ApiError> {
-    id.manager()?;
+    crate::auth::permissions::developer(state, id, service).await?;
     if app_access(state, id, service).await?.kind != "application" {
         return Err(missing());
     }
@@ -292,6 +292,17 @@ async fn save(
         .transpose()?;
     if edit.clear_token && edit.token.as_ref().is_some_and(|t| !t.is_empty()) {
         return Err(invalid("Choose a new token or clear the saved token."));
+    }
+    if !crate::auth::permissions::manager(&id)
+        && !edit.clear_token
+        && edit.token.as_ref().is_none_or(|token| token.is_empty())
+        && previous
+            .as_ref()
+            .is_some_and(|source| source.token.is_some() && source.repository != repo)
+    {
+        return Err(invalid(
+            "Provide your own token or clear the saved token when changing repositories.",
+        ));
     }
     let token = if edit.clear_token {
         None
@@ -524,7 +535,7 @@ pub(super) async fn dispatch(
         if !row.enabled || !row.auto_deploy || row.pending_delivery.is_none() {
             continue;
         }
-        let name:Option<String>=sqlx::query_scalar("SELECT u.name FROM applications a JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id JOIN auth_members m ON m.organization_id=p.organization_id JOIN auth_users u ON u.id=m.user_id WHERE a.id=$1 AND u.id=$2 AND m.role IN ('owner','admin') AND NOT auth_user_banned(u.banned,u.ban_expires_at)").bind(app).bind(row.configured_by).fetch_optional(&mut *tx).await.map_err(|_|"Could not check auto-deploy permissions.")?;
+        let name:Option<String>=sqlx::query_scalar("SELECT u.name FROM applications a JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id JOIN auth_members m ON m.organization_id=p.organization_id JOIN auth_users u ON u.id=m.user_id WHERE a.id=$1 AND u.id=$2 AND ferrix_service_permission(u.id,p.organization_id,a.id) IN ('manager','developer') AND NOT auth_user_banned(u.banned,u.ban_expires_at)").bind(app).bind(row.configured_by).fetch_optional(&mut *tx).await.map_err(|_|"Could not check auto-deploy permissions.")?;
         let message = if let Some(ref name) = name {
             let deployment = Uuid::new_v4();
             sqlx::query("INSERT INTO deployments(id,application_id,requested_by,requested_by_name,image,container_port,env_cipher,service_kind,worker_mode,service_cipher,source_cipher,source_revision,source_repository,source_branch,trigger_kind,trigger_sender) SELECT $1,id,$2,$3,image,container_port,env_cipher,service_kind,worker_mode,service_cipher,$4,$5,$6,$7,'webhook',$8 FROM applications WHERE id=$9 AND service_kind='application'").bind(deployment).bind(row.configured_by).bind(name).bind(row.config_cipher).bind(row.revision).bind(row.repository).bind(row.branch).bind(row.pending_sender).bind(app).execute(&mut *tx).await.map_err(|_|"Could not queue GitHub deployment.")?;

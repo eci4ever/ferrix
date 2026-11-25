@@ -47,7 +47,7 @@ async fn upload(
     Query(options): Query<Options>,
     body: Bytes,
 ) -> Result<Json<Value>, ApiError> {
-    id.manager()?;
+    crate::auth::permissions::developer(&state, &id, app).await?;
     if app_access(&state, &id, app).await?.kind != "application" {
         return Err(missing());
     }
@@ -319,9 +319,7 @@ pub(super) async fn heavy_guard(
     let Some(id) = req.extensions().get::<Identity>() else {
         return ApiError(StatusCode::UNAUTHORIZED, "Sign in to continue.").into_response();
     };
-    if let Err(e) = id.manager() {
-        return e.into_response();
-    }
+    let _ = id; // Resource permission was checked by sessions::protect before this guard.
     let Ok(_slot) = SLOTS.try_acquire() else {
         return ApiError(
             StatusCode::TOO_MANY_REQUESTS,

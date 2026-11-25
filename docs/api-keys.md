@@ -52,7 +52,10 @@ Service telemetry uses `GET /api/v1/services/{id}/metrics` and `GET /api/v1/serv
 Database restore requires both `manage` and `deploy` because it creates a new Database service in the same environment. Use `POST /api/v1/services/{id}/backups/{backup_id}/restore` with `{ "name": "Restored database" }`, then poll `GET /api/v1/services/{id}/backups` until that operation succeeds. Backups can be queued with `POST /api/v1/services/{id}/backups`. Only PostgreSQL and MariaDB are supported. Keep the returned new service ID and wait for restore completion before connecting an application.
 
 The default owner/admin key has `read`, `manage`, `deploy`; delete and secret
-reads are opt-in. Organization members can create read-only keys. A platform
+reads are opt-in. Organization members can create read-only keys; members with
+an application developer assignment can also request manage/deploy/secrets:read,
+limited on every request to their current assignments and the key's project.
+Delete, shared database administration and restore remain manager-only. A platform
 `user` who is an organization `owner/admin` can manage and deploy with a key;
 platform role is not a substitute for organization permission. Current user
 status, membership and organization role are checked on every request. A role
@@ -165,4 +168,4 @@ References: [OWASP REST security](https://cheatsheetseries.owasp.org/cheatsheets
 
 Backup schedules and S3 credentials are managed through owner/admin browser settings. API keys cannot access `/services/{id}/backup-policy` or its connection test; existing backup requests use the saved destination without exposing credentials.
 
-Application GitHub credentials and webhook settings require an owner/admin browser session. A deploy-scoped key can deploy the saved GitHub source through the normal service deploy endpoint; source settings endpoints remain unavailable to keys. The image-agent script rejects GitHub-source applications instead of changing their source implicitly.
+Application source editing requires an organization manager or an assigned application developer. Webhook-secret generation remains manager-only. A deploy-scoped key can deploy the saved GitHub source through the normal service deploy endpoint; source settings endpoints remain unavailable to keys. The image-agent script rejects GitHub-source applications instead of changing their source implicitly.

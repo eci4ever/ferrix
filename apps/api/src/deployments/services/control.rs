@@ -29,7 +29,7 @@ pub(super) async fn change(
     Path(service): Path<Uuid>,
     Json(input): Json<Control>,
 ) -> Result<StatusCode, ApiError> {
-    id.manager()?;
+    crate::auth::permissions::developer(&state, &id, service).await?;
     let mut tx = state.pool.begin().await?;
     // Serialize lifecycle operations with deployment snapshots and deletion.
     let app = sqlx::query_as::<_,Application>(&format!("SELECT {APP_COLUMNS} FROM applications a JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id WHERE a.id=$1 AND p.organization_id=$2 AND a.service_kind IN ('application','database') FOR UPDATE OF a"))
@@ -131,9 +131,9 @@ pub(super) async fn statuses(
 ) -> Result<Json<Value>, ApiError> {
     environment_access(&state, &id, environment).await?;
     let apps: Vec<Application> = sqlx::query_as(&format!(
-        "SELECT {APP_COLUMNS} FROM applications a WHERE environment_id=$1 AND service_kind IN ('application','database')"
+        "SELECT {APP_COLUMNS} FROM applications a WHERE environment_id=$1 AND service_kind IN ('application','database') AND ferrix_service_permission($2,$3,a.id) IS NOT NULL"
     ))
-    .bind(environment)
+    .bind(environment).bind(id.user_id).bind(id.organization_id)
     .fetch_all(&state.pool)
     .await?;
     let filters = HashMap::from([(
@@ -222,7 +222,7 @@ pub(super) async fn environment(
     id: Identity,
     Path(service): Path<Uuid>,
 ) -> Result<Json<Value>, ApiError> {
-    id.manager()?;
+    crate::auth::permissions::developer(&state, &id, service).await?;
     app_access(&state, &id, service).await?;
     let cipher: Option<Vec<u8>> =
         sqlx::query_scalar("SELECT env_cipher FROM applications WHERE id=$1")
@@ -239,7 +239,7 @@ pub(super) async fn save_environment(
     Path(service): Path<Uuid>,
     Json(input): Json<EnvironmentEdit>,
 ) -> Result<StatusCode, ApiError> {
-    id.manager()?;
+    crate::auth::permissions::developer(&state, &id, service).await?;
     let app = app_access(&state, &id, service).await?;
     let values = parse_environment(&input.environment)?;
     if app.kind == "database" {
