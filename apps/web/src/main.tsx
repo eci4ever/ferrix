@@ -26,7 +26,7 @@ import { Notifications } from './notifications'
 import { ServerClock } from '@/components/server-clock'
 import { AppSidebar } from '@/components/app-sidebar'
 import { SidebarProvider, SidebarInset, SidebarTrigger } from '@/components/ui/sidebar'
-import { TooltipProvider } from '@/components/ui/tooltip'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { Breadcrumb, BreadcrumbList, BreadcrumbItem, BreadcrumbLink, BreadcrumbPage, BreadcrumbSeparator } from '@/components/ui/breadcrumb'
 import { Separator } from '@/components/ui/separator'
 import { Card, CardHeader, CardTitle, CardDescription, CardAction, CardContent } from '@/components/ui/card'
@@ -63,7 +63,7 @@ function Shell() {
   async function refresh() {
     setRefreshing(true); setRefreshError('')
     setRefreshVersion(version => version + 1)
-    try { await router.invalidate() }
+    try { await router.invalidate({ sync: true }) }
     catch { setRefreshError('Refresh failed. Please try again.') }
     finally { setRefreshing(false) }
   }
@@ -88,8 +88,8 @@ function Shell() {
     <AppSidebar identity={account.data} organizations={organizations.data ?? []} theme={theme} busy={accountBusy} onSwitch={id => accountAction('organizations/switch', { organization_id: id })} onSignOut={() => accountAction('sign-out')} onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} version={status.data?.version} />
     <SidebarInset id="main" tabIndex={-1}>
       <header className="flex min-h-16 shrink-0 flex-wrap items-center justify-between gap-2 px-4 py-2 sm:flex-nowrap transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12 motion-reduce:transition-none">
-        <div className="flex min-w-0 max-w-full items-center gap-2"><SidebarTrigger className="-ml-1" /><Separator orientation="vertical" className="mr-2 data-[orientation=vertical]:h-4" /><Breadcrumb><BreadcrumbList className="min-w-0 flex-wrap"><BreadcrumbItem className="hidden md:block"><BreadcrumbLink asChild><Link to="/organization">{account.data.organization_name}</Link></BreadcrumbLink></BreadcrumbItem><BreadcrumbSeparator className="hidden md:block" /><BreadcrumbItem><BreadcrumbPage className="max-w-40 truncate sm:max-w-none">{pageNames[pathname] ?? (pathname.startsWith('/projects/') ? 'Projects' : 'Page not found')}</BreadcrumbPage></BreadcrumbItem></BreadcrumbList></Breadcrumb></div>
-        <div className="ml-auto flex shrink-0 items-center gap-2"><ServerClock /><Notifications key={account.data.organization_id} /><Button variant="outline" onClick={refresh} disabled={refreshing} aria-label="Refresh workspace"><RefreshCw data-icon="inline-start" /><span className="hidden sm:inline">{refreshing ? 'Refreshing…' : 'Refresh'}</span></Button></div>
+        <div className="flex min-w-0 max-w-full items-center gap-2"><SidebarTrigger className="-ml-1" /><Separator orientation="vertical" className="mr-2 data-vertical:h-4 data-vertical:self-center" /><Breadcrumb><BreadcrumbList className="min-w-0 flex-wrap"><BreadcrumbItem className="hidden md:block"><BreadcrumbLink asChild><Link to="/organization">{account.data.organization_name}</Link></BreadcrumbLink></BreadcrumbItem><BreadcrumbSeparator className="hidden md:block" /><BreadcrumbItem><BreadcrumbPage className="max-w-40 truncate sm:max-w-none">{pageNames[pathname] ?? (pathname.startsWith('/projects/') ? 'Projects' : 'Page not found')}</BreadcrumbPage></BreadcrumbItem></BreadcrumbList></Breadcrumb></div>
+        <div className="ml-auto flex shrink-0 items-center gap-2"><ServerClock /><Notifications key={account.data.organization_id} /><Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" onClick={refresh} disabled={refreshing} aria-label="Refresh workspace" aria-busy={refreshing}><RefreshCw aria-hidden="true" className={refreshing ? 'animate-spin motion-reduce:animate-none' : undefined} /></Button></TooltipTrigger><TooltipContent side="bottom">{refreshing ? 'Refreshing workspace data…' : 'Refresh current page data'}</TooltipContent></Tooltip></div>
       </header>
       <div className="flex min-w-0 flex-1 flex-col gap-6 p-4 pt-2 md:p-6 md:pt-2">
         {refreshError ? <ErrorNotice message={refreshError} /> : null}
@@ -208,7 +208,7 @@ const securityRoute = createRoute({ getParentRoute: () => rootRoute, path: '/sec
 }, component: function AccountSecurity() { const { sessions, security, audit } = securityRoute.useLoaderData(); const router = useRouter(); return sessions.data && security.data ? <SecurityPage sessions={sessions.data} security={security.data} audit={audit.data ?? []} refresh={() => router.invalidate()} /> : <ErrorNotice message={sessions.error ?? security.error ?? 'Could not load security settings.'} /> } })
 const teamRoute = createRoute({ getParentRoute: () => rootRoute, path: '/organization', loader: async () => {
   const [organizations, members, invitations] = await Promise.all([load<Organization[]>('/auth/organizations'), load<Member[]>('/auth/members'), load<Invitation[]>('/auth/invitations')]); return { organizations, members, invitations }
-}, component: function OrganizationSettings() { const { organizations, members, invitations } = teamRoute.useLoaderData(); const { account } = rootRoute.useLoaderData(); const router = useRouter(); return account.data && organizations.data && members.data ? <TeamPage key={account.data.organization_id} identity={account.data} organizations={organizations.data} members={members.data} invitations={invitations.data ?? []} refresh={() => router.invalidate()} /> : <ErrorNotice message="Could not load organization settings." /> } })
+}, component: function OrganizationSettings() { const { organizations, members, invitations } = teamRoute.useLoaderData(); const { account } = rootRoute.useLoaderData(); const router = useRouter(); return account.data && organizations.data && members.data ? <TeamPage key={account.data.organization_id} identity={account.data} members={members.data} invitations={invitations.data ?? []} refresh={() => router.invalidate()} /> : <ErrorNotice message="Could not load organization settings." /> } })
 const apiKeysRoute = createRoute({ getParentRoute: () => rootRoute, path: '/api-keys', component: function Keys() { const { account } = rootRoute.useLoaderData(); return account.data ? <ApiKeysPage key={account.data.organization_id} identity={account.data} /> : null } })
 const adminRoute = createRoute({ getParentRoute: () => rootRoute, path: '/admin', component: function UserAdministration() { const { account } = rootRoute.useLoaderData(); const router = useRouter(); return account.data ? <AdminPage identity={account.data} refresh={() => router.invalidate()} /> : null } })
 const router = createRouter({ routeTree: rootRoute.addChildren([landingRoute, loginRoute, signupRoute, homeRoute, projectsRoute, projectRoute, applicationRoute, serviceRoute, monitoringRoute, containersRoute, profileRoute, securityRoute, teamRoute, apiKeysRoute, adminRoute]), defaultPendingMs: 150, defaultPendingMinMs: 200 })

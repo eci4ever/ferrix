@@ -99,11 +99,10 @@ export function AdminPage({ identity, refresh }: { identity: Identity; refresh: 
   </div>
 }
 
-export function TeamPage({ identity, organizations, members, invitations, refresh }: { identity: Identity; organizations: Organization[]; members: Member[]; invitations: Invitation[]; refresh: Refresh }) {
+export function TeamPage({ identity, members, invitations, refresh }: { identity: Identity; members: Member[]; invitations: Invitation[]; refresh: Refresh }) {
   const manager = identity.role === 'owner' || identity.role === 'admin'
   const [profile, setProfile] = useState<OrgProfile | null>(null); const [profileError, setProfileError] = useState(''); const [version, setVersion] = useState(0)
   const [token, setToken] = useState(''); const [invitationRole, setInvitationRole] = useState('member'); const [transferTo, setTransferTo] = useState('')
-  const [creatingOrganization, setCreatingOrganization] = useState(false)
   const [inviting, setInviting] = useState(false)
   const [invitationToken, setInvitationToken] = useState('')
   const [operation, setOperation] = useState<Operation | null>(null)
@@ -116,16 +115,7 @@ export function TeamPage({ identity, organizations, members, invitations, refres
   }, [identity.organization_id, version])
   // A regenerated token is shown only in this browser until explicitly dismissed.
   const open = (value: Operation) => { setMessage(''); setOperation(value) }
-  return <div className="flex flex-col gap-6"><h1 className="text-2xl font-semibold">Organization</h1>{!creatingOrganization && !inviting && !operation ? <Notice message={message} /> : null}
-    <Section title="Your organizations"><div className="flex flex-wrap gap-2">{organizations.map(org => <Button key={org.id} variant={org.id === identity.organization_id ? 'secondary' : 'outline'} disabled={busy || org.id === identity.organization_id} onClick={() => action('organizations/switch', { organization_id: org.id })}>{org.name} ({org.role})</Button>)}</div>
-      {identity.system_role === 'admin' ? <FormDialog open={creatingOrganization} onOpenChange={open => { setCreatingOrganization(open); setMessage('') }} title="Create organization" description="Create an organization to group projects and members." busy={busy} trigger={<Button className="self-start" disabled={busy}>New organization</Button>}>
-        <Notice message={message} />
-        <form className="flex flex-col gap-4" onSubmit={async event => { const input = values(event); const result = await action('organizations', input); if (result) setCreatingOrganization(false) }}>
-          <fieldset disabled={busy}><FieldGroup><Text name="name" label="New organization name" maxLength={80} /></FieldGroup></fieldset>
-          <DialogFooter><Button type="button" variant="outline" disabled={busy} onClick={() => { setCreatingOrganization(false); setMessage('') }}>Cancel</Button><Button type="submit" disabled={busy}>{busy ? 'Creating…' : 'Create organization'}</Button></DialogFooter>
-        </form>
-      </FormDialog> : null}
-    </Section>
+  return <div className="flex flex-col gap-6"><h1 className="text-2xl font-semibold">Organization</h1>{!inviting && !operation ? <Notice message={message} /> : null}
     <Section title="Organization profile" description="Owners and organization admins can update the name and logo.">
       {profileError ? <><Notice message={profileError} /><Button variant="outline" onClick={() => setVersion(value => value + 1)}>Retry organization</Button></> : null}
       {!profile ? !profileError ? <p role="status">Loading organization…</p> : null : <>
