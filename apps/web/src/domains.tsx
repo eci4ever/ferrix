@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { ArrowUpRight, RefreshCw, Trash2 } from 'lucide-react'
+import { FormDialog } from '@/components/form-dialog'
 import { request } from '@/lib/api'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -81,6 +82,7 @@ export function ServiceDomains({
   const [data, setData] = useState<Domains | null>(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const [adding, setAdding] = useState(false)
   const [config,setConfig]=useState('')
   const [canonical,setCanonical]=useState(false)
   const [busy, setBusy] = useState(false)
@@ -122,6 +124,8 @@ export function ServiceDomains({
         body: JSON.stringify({ hostname, route_kind, canonical }),
       })
       form.reset()
+      setCanonical(false)
+      setAdding(false)
       setNotice(
         'Domain added. Check the DNS records below, then select Check DNS & HTTPS.',
       )
@@ -131,7 +135,7 @@ export function ServiceDomains({
     <div className="flex flex-col gap-4">
       <Dialog open={!!config} onOpenChange={open=>{if(!open)setConfig('')}}><DialogContent><DialogHeader><DialogTitle>Cloudflare Tunnel rule</DialogTitle><DialogDescription>Merge this single rule before the existing catch-all. Preserve other routes. Supply credentials to cloudflared directly and mount only Caddy’s public CA certificate. Keep origin TLS verification enabled.</DialogDescription></DialogHeader><pre className="max-h-80 overflow-auto rounded-md bg-muted p-3 text-xs">{config}</pre></DialogContent></Dialog>
       {data?.diagnostic_url?<p className="break-all text-xs text-muted-foreground">Loopback diagnostic only: {data.diagnostic_url}. This address works on the Ferrix server; use a domain URL from other devices.</p>:null}
-      {error ? (
+      {error && !adding && !removing ? (
         <Alert variant="destructive">
           <AlertTitle>Unable to continue</AlertTitle>
           <AlertDescription>
@@ -197,9 +201,13 @@ export function ServiceDomains({
                   connect a custom domain.
                 </p>
               ) : canManage ? (
+                <>
+                  <FormDialog open={adding} onOpenChange={open => { setAdding(open); setError(''); if (open) setCanonical(false) }} title="Add domain" description="Connect a hostname to this application, then verify its DNS and HTTPS settings." busy={busy}
+                    trigger={<Button disabled={busy || data.domains.length >= 10}>Add domain</Button>}>
+                    {error ? <Alert variant="destructive"><AlertTitle>Unable to add domain</AlertTitle><AlertDescription>{error} Review the hostname and try again.</AlertDescription></Alert> : null}
                 <form
                   onSubmit={add}
-                  className="flex flex-col gap-4 sm:flex-row sm:items-end"
+                  className="flex flex-col gap-4"
                 >
                   <FieldGroup className="flex-1">
                     <Field>
@@ -207,6 +215,7 @@ export function ServiceDomains({
                         Domain name
                       </FieldLabel>
                       <Input
+                        autoFocus
                         id="custom-domain"
                         name="hostname"
                         placeholder={
@@ -227,10 +236,11 @@ export function ServiceDomains({
                   {data.private?<Field><FieldLabel htmlFor="domain-route-kind">Route</FieldLabel><NativeSelect name="route_kind" id="domain-route-kind" defaultValue="tunnel"><NativeSelectOption value="tunnel">Cloudflare Tunnel · public HTTPS</NativeSelectOption><NativeSelectOption value="lan">LAN · split DNS</NativeSelectOption></NativeSelect></Field>:null}
                   <Field orientation="horizontal"><Checkbox id="canonical-domain" checked={canonical} onCheckedChange={v=>setCanonical(v===true)}/><FieldLabel htmlFor="canonical-domain">Preferred website URL after verification</FieldLabel></Field>
                   </FieldGroup>
-                  <Button disabled={busy || data.domains.length >= 10}>
-                    Add domain
-                  </Button>
+                  <DialogFooter><Button type="button" variant="outline" disabled={busy} onClick={() => { setAdding(false); setError('') }}>Cancel</Button><Button disabled={busy || data.domains.length >= 10}>{busy ? 'Adding…' : 'Add domain'}</Button></DialogFooter>
                 </form>
+                  </FormDialog>
+                  {data.domains.length >= 10 ? <p className="mt-2 text-sm text-muted-foreground">Remove a domain before adding another. Each application supports up to 10 domains.</p> : null}
+                </>
               ) : (
                 <p className="text-sm text-muted-foreground">
                   Organization owners and admins can manage domains.

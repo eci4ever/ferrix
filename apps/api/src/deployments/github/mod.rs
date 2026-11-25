@@ -568,3 +568,26 @@ pub(super) async fn build_image(
 use super::test_support;
 #[cfg(test)]
 mod tests;
+
+// Copy build settings with a new encryption context; webhook state never transfers.
+pub(super) async fn clone_source(
+    state: &AppState,
+    conn: &mut sqlx::PgConnection,
+    source: Uuid,
+    target: Uuid,
+    user: Uuid,
+) -> Result<(), ApiError> {
+    let row: Option<(bool, Vec<u8>)> = sqlx::query_as(
+        "SELECT enabled,config_cipher FROM application_git_sources WHERE application_id=$1",
+    )
+    .bind(source)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if let Some((enabled, cipher)) = row {
+        let config: Source = open(state, source, "source", &cipher)?;
+        let cipher = seal(state, target, "source", &config)?;
+        sqlx::query("INSERT INTO application_git_sources(application_id,enabled,repository,branch,config_cipher,revision,configured_by) VALUES($1,$2,$3,$4,$5,$6,$7)")
+            .bind(target).bind(enabled).bind(config.repository).bind(config.branch).bind(cipher).bind(Uuid::new_v4()).bind(user).execute(conn).await?;
+    }
+    Ok(())
+}

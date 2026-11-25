@@ -1,3 +1,5 @@
+import { FormDialog } from '@/components/form-dialog'
+import { DialogFooter } from '@/components/ui/dialog'
 import { ProfilePage } from './profile'
 import type { Profile } from './profile'
 import { createContext, useContext, StrictMode, useEffect, useRef, useState } from 'react'
@@ -133,8 +135,10 @@ function ProjectsPage() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const createButton = useRef<HTMLButtonElement>(null)
+  const createOrigin = useRef<HTMLButtonElement | null>(null)
+  const canManage = account.data?.role === 'owner' || account.data?.role === 'admin'
 
-  function closeForm() { setCreating(false); setError(''); createButton.current?.focus() }
+  function closeForm() { setCreating(false); setError('') }
   async function createProject(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const form = new FormData(event.currentTarget)
@@ -150,20 +154,20 @@ function ProjectsPage() {
     finally { setSaving(false) }
   }
   return <>
-    <div className="flex flex-wrap items-center justify-between gap-4 [&_h1]:text-2xl [&_h1]:font-semibold [&_h1]:tracking-tight [&_p]:mt-1 [&_p]:text-sm [&_p]:text-muted-foreground"><div><h1>Projects</h1><p>A home for the applications you deploy.</p></div><Button ref={createButton} size="lg" onClick={() => { setCreating(true); setNotice('') }} aria-expanded={creating}><Plus data-icon="inline-start" />New project</Button></div>
+    <div className="flex flex-wrap items-center justify-between gap-4 [&_h1]:text-2xl [&_h1]:font-semibold [&_h1]:tracking-tight [&_p]:mt-1 [&_p]:text-sm [&_p]:text-muted-foreground"><div><h1>Projects</h1><p>A home for the applications you deploy.</p></div>{canManage ? <Button ref={createButton} size="lg" onClick={event => { createOrigin.current = event.currentTarget; setCreating(true); setNotice(''); setError('') }} aria-haspopup="dialog"><Plus data-icon="inline-start" />New project</Button> : null}</div>
     <ActionNotice message={notice} onDismiss={() => setNotice('')} />
-    {creating ? <section className="grid gap-6 rounded-xl border bg-card p-6 text-card-foreground md:grid-cols-[1fr_2fr] [&_h2]:font-semibold [&>div>p]:mt-1 [&>div>p]:text-sm [&>div>p]:text-muted-foreground" aria-labelledby="create-heading">
-      <div><h2 id="create-heading">Create a project</h2><p>Group related applications in one place.</p></div>
+    <FormDialog open={creating} onOpenChange={open => { if (!open) closeForm() }} title="Create a project" description="Group related applications in one place." busy={saving}
+      onCloseAutoFocus={event => { event.preventDefault(); (createOrigin.current?.isConnected ? createOrigin.current : createButton.current)?.focus() }}>
       <form onSubmit={createProject} className="flex flex-col gap-6">
         <FieldGroup>
           <Field><FieldLabel htmlFor="project-name">Project name</FieldLabel><Input id="project-name" name="name" required maxLength={80} autoFocus placeholder="e.g. Customer portal" disabled={saving} /></Field>
           <Field><FieldLabel htmlFor="description">Description <span className="text-muted-foreground">(optional)</span></FieldLabel><Input id="description" name="description" maxLength={500} placeholder="What will this project run?" disabled={saving} /><FieldDescription>Each project starts with a production environment.</FieldDescription></Field>
         </FieldGroup>
         {error ? <ErrorNotice message={error} /> : null}
-        <div className="flex justify-end gap-2"><Button variant="outline" type="button" onClick={closeForm} disabled={saving}>Cancel</Button><Button type="submit" disabled={saving}>{saving ? 'Creating…' : 'Create project'}</Button></div>
+        <DialogFooter><Button variant="outline" type="button" onClick={closeForm} disabled={saving}>Cancel</Button><Button type="submit" disabled={saving}>{saving ? 'Creating…' : 'Create project'}</Button></DialogFooter>
       </form>
-    </section> : null}
-    {projects.data === null ? <ErrorNotice message={projects.error} /> : projects.data.length === 0 ? <section className="overflow-hidden rounded-xl border bg-card text-card-foreground [&>[data-slot=empty]]:min-h-72 [&_[data-slot=table-caption]]:p-4"><Empty><EmptyHeader><EmptyMedia variant="icon"><Folder /></EmptyMedia><EmptyTitle>Your first deployment starts here</EmptyTitle><EmptyDescription>Create a project to organise your applications. This workspace is ready for a fresh start.</EmptyDescription></EmptyHeader>{!creating ? <Button variant="outline" onClick={() => setCreating(true)}><Plus data-icon="inline-start" />Create your first project</Button> : null}</Empty></section> : <ProjectList projects={projects.data} canManage={account.data?.role === 'owner' || account.data?.role === 'admin'} />}
+    </FormDialog>
+    {projects.data === null ? <ErrorNotice message={projects.error} /> : projects.data.length === 0 ? <section className="overflow-hidden rounded-xl border bg-card text-card-foreground [&>[data-slot=empty]]:min-h-72 [&_[data-slot=table-caption]]:p-4"><Empty><EmptyHeader><EmptyMedia variant="icon"><Folder /></EmptyMedia><EmptyTitle>Your first deployment starts here</EmptyTitle><EmptyDescription>Create a project to organise your applications. This workspace is ready for a fresh start.</EmptyDescription></EmptyHeader>{canManage ? <Button variant="outline" aria-haspopup="dialog" onClick={event => { createOrigin.current = event.currentTarget; setCreating(true); setError(''); setNotice('') }}><Plus data-icon="inline-start" />Create your first project</Button> : null}</Empty></section> : <ProjectList projects={projects.data} canManage={account.data?.role === 'owner' || account.data?.role === 'admin'} />}
     <div className="flex max-w-xl items-start gap-3 text-sm text-muted-foreground [&>svg]:size-5 [&>svg]:shrink-0 [&_h2]:font-medium [&_h2]:text-foreground [&_p]:mt-1"><Layers3 aria-hidden="true" /><div><h2>Built for your own infrastructure</h2><p>Create an environment, add an application and deploy its Docker image.</p></div></div>
   </>
 }

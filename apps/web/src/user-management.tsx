@@ -1,6 +1,7 @@
 import { useEffect, useId, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import type { Identity, Organization, Member, Invitation, Session } from './auth'
+import { FormDialog } from '@/components/form-dialog'
 import { request } from '@/lib/api'
 import { DataTable } from '@/components/data-table'
 import { Button } from '@/components/ui/button'
@@ -9,7 +10,7 @@ import { Field, FieldGroup, FieldLabel, FieldDescription } from '@/components/ui
 import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog'
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem } from '@/components/ui/dropdown-menu'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 
@@ -102,21 +103,32 @@ export function TeamPage({ identity, organizations, members, invitations, refres
   const manager = identity.role === 'owner' || identity.role === 'admin'
   const [profile, setProfile] = useState<OrgProfile | null>(null); const [profileError, setProfileError] = useState(''); const [version, setVersion] = useState(0)
   const [token, setToken] = useState(''); const [invitationRole, setInvitationRole] = useState('member'); const [transferTo, setTransferTo] = useState('')
+  const [creatingOrganization, setCreatingOrganization] = useState(false)
+  const [inviting, setInviting] = useState(false)
+  const [invitationToken, setInvitationToken] = useState('')
   const [operation, setOperation] = useState<Operation | null>(null)
   const { busy, message, setMessage, action } = useActions(async () => { await refresh(); setVersion(value => value + 1) })
   useEffect(() => {
-    const abort = new AbortController(); setProfile(null); setProfileError('')
+    // This page is keyed by organization. Keep its editor mounted during background refreshes.
+    const abort = new AbortController(); setProfileError('')
     request<OrgProfile>('/auth/organizations/current', { signal: abort.signal }).then(value => { if (!abort.signal.aborted) setProfile(value) }).catch(error => { if (!abort.signal.aborted) setProfileError(error.message) })
     return () => abort.abort()
   }, [identity.organization_id, version])
   // A regenerated token is shown only in this browser until explicitly dismissed.
   const open = (value: Operation) => { setMessage(''); setOperation(value) }
-  return <div className="flex flex-col gap-6"><h1 className="text-2xl font-semibold">Organization</h1><Notice message={message} />
+  return <div className="flex flex-col gap-6"><h1 className="text-2xl font-semibold">Organization</h1>{!creatingOrganization && !inviting && !operation ? <Notice message={message} /> : null}
     <Section title="Your organizations"><div className="flex flex-wrap gap-2">{organizations.map(org => <Button key={org.id} variant={org.id === identity.organization_id ? 'secondary' : 'outline'} disabled={busy || org.id === identity.organization_id} onClick={() => action('organizations/switch', { organization_id: org.id })}>{org.name} ({org.role})</Button>)}</div>
-      {identity.system_role === 'admin' ? <form className="flex flex-col gap-4" onSubmit={async event => { const input = values(event); await action('organizations', input) }}><FieldGroup><Text name="name" label="New organization name" maxLength={80} /></FieldGroup><Button type="submit" disabled={busy}>Create organization</Button></form> : null}
+      {identity.system_role === 'admin' ? <FormDialog open={creatingOrganization} onOpenChange={open => { setCreatingOrganization(open); setMessage('') }} title="Create organization" description="Create an organization to group projects and members." busy={busy} trigger={<Button className="self-start" disabled={busy}>New organization</Button>}>
+        <Notice message={message} />
+        <form className="flex flex-col gap-4" onSubmit={async event => { const input = values(event); const result = await action('organizations', input); if (result) setCreatingOrganization(false) }}>
+          <fieldset disabled={busy}><FieldGroup><Text name="name" label="New organization name" maxLength={80} /></FieldGroup></fieldset>
+          <DialogFooter><Button type="button" variant="outline" disabled={busy} onClick={() => { setCreatingOrganization(false); setMessage('') }}>Cancel</Button><Button type="submit" disabled={busy}>{busy ? 'Creating…' : 'Create organization'}</Button></DialogFooter>
+        </form>
+      </FormDialog> : null}
     </Section>
     <Section title="Organization profile" description="Owners and organization admins can update the name and logo.">
-      {profileError ? <><Notice message={profileError} /><Button variant="outline" onClick={() => setVersion(value => value + 1)}>Retry organization</Button></> : !profile ? <p role="status">Loading organization…</p> : <>
+      {profileError ? <><Notice message={profileError} /><Button variant="outline" onClick={() => setVersion(value => value + 1)}>Retry organization</Button></> : null}
+      {!profile ? !profileError ? <p role="status">Loading organization…</p> : null : <>
         {profile.logo_url ? <img src={profile.logo_url} alt={`${profile.name} logo`} className="size-12 object-contain" referrerPolicy="no-referrer" /> : null}
         {manager ? <form key={`${profile.id}:${profile.name}:${profile.logo_url}`} onSubmit={async event => { const input = values(event); await action('organizations/current', { name: input.name, logo_url: input.logo_url.trim() || null }) }} className="flex flex-col gap-4"><fieldset disabled={busy}><FieldGroup><Text name="name" label="Organization name" maxLength={80} defaultValue={profile.name} /><Text name="logo_url" label="Logo URL" type="url" maxLength={2048} required={false} defaultValue={profile.logo_url ?? ''} /><FieldDescription>Optional HTTPS image URL. The image provider receives requests from your browser.</FieldDescription></FieldGroup></fieldset><Button type="submit" disabled={busy}>Save organization</Button></form> : <p>{profile.name}</p>}
       </>}
@@ -127,7 +139,13 @@ export function TeamPage({ identity, organizations, members, invitations, refres
       ...(manager ? [{ id: 'actions', label: 'Actions', cell: (member: Member) => <div className="flex flex-wrap gap-2">{identity.role === 'owner' ? ['owner', 'admin', 'member'].filter(role => role !== member.role).map(role => <Button key={role} variant="outline" disabled={busy} onClick={() => open({ title: `Change ${member.name} to ${role}?`, description: 'The last owner is protected. Platform access is unchanged.', path: `members/${member.id}/role`, kind: 'confirm', body: { role } })}>Make {role}</Button>) : null}{member.id !== identity.user_id && (identity.role === 'owner' || member.role === 'member') ? <Button variant="outline" disabled={busy} onClick={() => open({ title: `Remove ${member.name}?`, description: 'Removes membership and sessions active in this organization. Other memberships remain.', path: `members/${member.id}/remove`, kind: 'confirm' })}>Remove</Button> : null}</div> }] : []),
     ]} /></Section>
     {manager ? <Section title="Invitations" description="Tokens are bound to an email and expire after two days. Share generated tokens privately; email delivery is not configured.">
-      <form className="flex flex-col gap-4" onSubmit={async event => { const input = values(event); const result = await action('invitations', { ...input, role: invitationRole }); if (result?.token) setToken(result.token) }}><fieldset disabled={busy}><FieldGroup><Text name="email" label="Invitation email" type="email" /><Choice label="Invitation role" value={invitationRole} onChange={setInvitationRole} options={identity.role === 'owner' ? [['member', 'Member'], ['admin', 'Admin']] : [['member', 'Member']]} /></FieldGroup></fieldset><Button type="submit" disabled={busy}>Invite member</Button></form>
+      <FormDialog open={inviting} onOpenChange={open => { setInviting(open); setMessage(''); if (open) setInvitationRole('member') }} title={invitationToken ? 'Save invitation token' : 'Invite member'} description={invitationToken ? 'Share this token privately with the invited person. It expires after two days.' : 'Invite a member to this organization. Email delivery is not configured.'} busy={busy || !!invitationToken} trigger={<Button className="self-start" disabled={busy}>Invite member</Button>}>
+        <Notice message={message} />
+        {invitationToken ? <><code className="break-all select-all rounded-md bg-muted p-3" aria-label="New invitation token">{invitationToken}</code><Button autoFocus onClick={() => { setInvitationToken(''); setInviting(false) }}>I saved the invitation token</Button></> : <form className="flex flex-col gap-4" onSubmit={async event => { const input = values(event); const result = await action('invitations', { ...input, role: invitationRole }); if (result?.token) setInvitationToken(result.token) }}>
+          <fieldset disabled={busy}><FieldGroup><Text name="email" label="Invitation email" type="email" /><Choice label="Invitation role" value={invitationRole} onChange={setInvitationRole} options={identity.role === 'owner' ? [['member', 'Member'], ['admin', 'Admin']] : [['member', 'Member']]} /></FieldGroup></fieldset>
+          <DialogFooter><Button type="button" variant="outline" disabled={busy} onClick={() => { setInviting(false); setMessage('') }}>Cancel</Button><Button type="submit" disabled={busy}>{busy ? 'Inviting…' : 'Invite member'}</Button></DialogFooter>
+        </form>}
+      </FormDialog>
       {token ? <Alert><AlertTitle>Invitation token</AlertTitle><AlertDescription><code className="break-all select-all">{token}</code><Button type="button" variant="outline" onClick={() => setToken('')}>Dismiss token</Button></AlertDescription></Alert> : null}
       <DataTable label="Invitations" data={invitations} columns={[
         { id: 'email', label: 'Email', value: invite => invite.email }, { id: 'role', label: 'Role', value: invite => invite.role }, { id: 'expires', label: 'Expires', value: invite => invite.expires_at, cell: invite => <time dateTime={invite.expires_at}>{new Date(invite.expires_at).toLocaleString()}</time> },

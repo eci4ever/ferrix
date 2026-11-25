@@ -99,8 +99,11 @@ test('Domains explains DNS, checks HTTPS and confirms removal on mobile', async 
   })
   await page.goto('/projects/project/services/web')
   await page.getByRole('tab', { name: 'Domains', exact: true }).click()
-  await page.getByLabel('Domain name', { exact: true }).fill('app.example.com')
   await page.getByRole('button', { name: 'Add domain', exact: true }).click()
+  const addDialog = page.getByRole('dialog', { name: 'Add domain', exact: true })
+  await addDialog.getByLabel('Domain name', { exact: true }).fill('app.example.com')
+  await addDialog.getByRole('button', { name: 'Add domain', exact: true }).click()
+  await expect(addDialog).toHaveCount(0)
   await expect(page.getByText('Waiting for DNS', { exact: true })).toBeVisible()
   await expect(
     page.getByText('_ferrix-challenge.app.example.com', { exact: true }),

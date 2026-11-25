@@ -359,3 +359,47 @@ PostgreSQL regression tests cover invalid ownership/pointers, deferred activatio
 cascading deletes, failed-migration recovery, expiry preservation, locked renewals,
 bounded cleanup, concurrent cleaners and worker startup/shutdown. Run against your
 own test database with `cargo test --test database_integrity -- --include-ignored`.
+
+### Service notes
+
+Application and Database workspaces include a Notes tab. Notes are plain text,
+shared with members of the service's organization, with a 32 KiB UTF-8 byte limit.
+Owners/admins can save or clear notes; members can read them. Do not put secrets
+in notes. Updates take effect immediately and do not change deployment settings
+or deployment snapshots. Drafts survive switching workspace tabs, but are not
+saved until **Save notes** is used.
+
+`GET /api/v1/services/{id}/notes` returns `{ notes, revision }`.
+`POST` to the same route requires both fields and the current revision. A stale
+revision returns 409 without overwriting saved text. The UI retains the local
+draft so the user can copy it before loading the latest saved notes. API keys
+require `read` for GET or `manage` for POST; organization role and project scope
+remain enforced. Migration 0032 initializes existing services with empty notes.
+
+
+### Moving and cloning services
+
+Service Overview includes **Move service** and **Clone to environment** dialogs
+for organization owners/admins. Destinations are other environments in the same
+project. API keys need `manage`; project and organization boundaries still apply.
+Both operations reject pending deployments, backup/restore and project maintenance.
+
+Move preserves service identity, notes, domains, history and named data volumes.
+Stop the service first. Move removes its stopped active container without deleting
+volumes, then clears the active runtime pointer. Deploy again to attach to the new
+environment network and create correct Docker labels. Other services, connection
+strings and environment variables are not moved or rewritten automatically.
+
+Clone creates an undeployed service from saved configuration, including CPU/RAM,
+command, worker mode, storage settings, notes and encrypted environment variables.
+GitHub build configuration/token is re-encrypted for the new service; auto-deploy
+and webhook credentials/deliveries are reset. Uploaded source archives are copied
+to an independently owned upload. Database passwords are regenerated. Runtime
+containers, volume contents, domain mappings, history, schedules and restore
+lineage are not copied. Review environment-specific connection strings before
+deploying. Each clone's storage volume is identified by its new service UUID.
+
+`POST /api/v1/services/{id}/move` accepts `{ "environment_id": "UUID" }`.
+`POST /api/v1/services/{id}/clone` accepts the same destination plus optional
+`name`. Duplicate destination names return 409; a different project or unknown
+environment is rejected. No operation automatically deploys the destination.
