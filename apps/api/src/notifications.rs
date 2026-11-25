@@ -29,9 +29,9 @@ struct Notification {
     read: bool,
 }
 async fn list(State(state): State<AppState>, id: Identity) -> Result<Json<Value>, ApiError> {
-    let rows:Vec<Notification>=sqlx::query_as("SELECT n.id,n.project_id,n.service_id,n.kind,n.title,n.message,n.created_at,EXISTS(SELECT 1 FROM notification_reads r WHERE r.notification_id=n.id AND r.user_id=$2) AS read FROM notifications n WHERE n.organization_id=$1 AND n.expires_at>now() ORDER BY n.created_at DESC,n.id DESC LIMIT 100")
+    let rows:Vec<Notification>=sqlx::query_as("SELECT n.id,n.project_id,n.service_id,n.kind,n.title,n.message,n.created_at,EXISTS(SELECT 1 FROM notification_reads r WHERE r.notification_id=n.id AND r.user_id=$2) AS read FROM notifications n WHERE n.organization_id=$1 AND n.expires_at>now() AND ((n.service_id IS NOT NULL AND ferrix_service_permission($2,$1,n.service_id) IS NOT NULL) OR (n.service_id IS NULL AND ferrix_project_permission($2,$1,n.project_id) IS NOT NULL)) ORDER BY n.created_at DESC,n.id DESC LIMIT 100")
  .bind(id.organization_id).bind(id.user_id).fetch_all(&state.pool).await?;
-    let unread:i64=sqlx::query_scalar("SELECT count(*) FROM notifications n WHERE n.organization_id=$1 AND n.expires_at>now() AND NOT EXISTS(SELECT 1 FROM notification_reads r WHERE r.notification_id=n.id AND r.user_id=$2)").bind(id.organization_id).bind(id.user_id).fetch_one(&state.pool).await?;
+    let unread:i64=sqlx::query_scalar("SELECT count(*) FROM notifications n WHERE n.organization_id=$1 AND n.expires_at>now() AND ((n.service_id IS NOT NULL AND ferrix_service_permission($2,$1,n.service_id) IS NOT NULL) OR (n.service_id IS NULL AND ferrix_project_permission($2,$1,n.project_id) IS NOT NULL)) AND NOT EXISTS(SELECT 1 FROM notification_reads r WHERE r.notification_id=n.id AND r.user_id=$2)").bind(id.organization_id).bind(id.user_id).fetch_one(&state.pool).await?;
     Ok(Json(json!({"notifications":rows,"unread":unread})))
 }
 async fn read(
@@ -39,7 +39,7 @@ async fn read(
     id: Identity,
     Path(notification): Path<Uuid>,
 ) -> Result<axum::http::StatusCode, ApiError> {
-    let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM notifications WHERE id=$1 AND organization_id=$2 AND expires_at>now())").bind(notification).bind(id.organization_id).fetch_one(&state.pool).await?;
+    let exists:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM notifications n WHERE n.id=$1 AND n.organization_id=$2 AND n.expires_at>now() AND ((n.service_id IS NOT NULL AND ferrix_service_permission($3,$2,n.service_id) IS NOT NULL) OR (n.service_id IS NULL AND ferrix_project_permission($3,$2,n.project_id) IS NOT NULL)))").bind(notification).bind(id.organization_id).bind(id.user_id).fetch_one(&state.pool).await?;
     if !exists {
         return Err(ApiError(
             axum::http::StatusCode::NOT_FOUND,
@@ -53,7 +53,7 @@ async fn read_all(
     State(state): State<AppState>,
     id: Identity,
 ) -> Result<axum::http::StatusCode, ApiError> {
-    sqlx::query("INSERT INTO notification_reads(notification_id,user_id) SELECT id,$2 FROM notifications WHERE organization_id=$1 AND expires_at>now() ON CONFLICT DO NOTHING").bind(id.organization_id).bind(id.user_id).execute(&state.pool).await?;
+    sqlx::query("INSERT INTO notification_reads(notification_id,user_id) SELECT n.id,$2 FROM notifications n WHERE n.organization_id=$1 AND n.expires_at>now() AND ((n.service_id IS NOT NULL AND ferrix_service_permission($2,$1,n.service_id) IS NOT NULL) OR (n.service_id IS NULL AND ferrix_project_permission($2,$1,n.project_id) IS NOT NULL)) ON CONFLICT DO NOTHING").bind(id.organization_id).bind(id.user_id).execute(&state.pool).await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
 // Hysteresis: sustained >=90% for 60 seconds; re-arm only below 80%. Missing

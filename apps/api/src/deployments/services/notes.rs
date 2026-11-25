@@ -25,7 +25,7 @@ pub(super) async fn save(
     Path(service): Path<Uuid>,
     Json(input): Json<SaveNotes>,
 ) -> Result<Json<Notes>, ApiError> {
-    id.manager()?;
+    crate::auth::permissions::developer(&state, &id, service).await?;
     if input.notes.len() > 32768 || input.notes.contains('\0') || input.revision < 0 {
         return Err(invalid(
             "Notes must be at most 32 KiB and cannot contain null characters.",

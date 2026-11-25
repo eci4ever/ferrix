@@ -178,25 +178,14 @@ struct Deployment {
 }
 const APP_COLUMNS: &str = "(SELECT hostname FROM application_domains WHERE application_id=a.id AND canonical AND verified_at IS NOT NULL AND dns_status='ready') AS canonical_hostname,(SELECT route_kind FROM application_domains WHERE application_id=a.id AND canonical AND verified_at IS NOT NULL AND dns_status='ready') AS canonical_kind,CASE WHEN a.service_kind='database' THEN CASE WHEN a.image LIKE 'mongo:%' THEN 'mongodb' WHEN a.image LIKE 'mariadb:%' THEN 'mariadb' WHEN a.image LIKE 'redis:%' THEN 'redis' ELSE 'postgres' END END AS database_engine,CASE WHEN EXISTS(SELECT 1 FROM application_git_sources s WHERE s.application_id=a.id AND s.enabled) THEN 'github' WHEN a.source_upload_id IS NOT NULL THEN 'upload' ELSE 'image' END AS source_type,(SELECT repository FROM application_git_sources s WHERE s.application_id=a.id AND s.enabled) AS source_repository,a.service_kind AS kind,a.worker_mode,a.restore_blocked,a.traffic_enabled,a.cutover_pending,(a.active_deployment_id IS NOT NULL) AS deployed,a.active_deployment_id,(SELECT image FROM deployments WHERE id=a.active_deployment_id) AS active_image,EXISTS(SELECT 1 FROM deployments d WHERE d.id=a.active_deployment_id AND ((CASE WHEN EXISTS(SELECT 1 FROM application_git_sources s WHERE s.application_id=a.id AND s.enabled) THEN (SELECT revision FROM application_git_sources WHERE application_id=a.id) IS DISTINCT FROM d.source_revision WHEN a.source_upload_id IS NOT NULL THEN a.source_upload_id IS DISTINCT FROM d.source_revision ELSE d.source_revision IS NOT NULL OR a.image IS DISTINCT FROM d.image END) OR a.container_port IS DISTINCT FROM d.container_port OR a.env_cipher IS DISTINCT FROM d.env_cipher OR a.service_cipher IS DISTINCT FROM d.service_cipher)) AS pending_changes,EXISTS(SELECT 1 FROM database_jobs j WHERE j.status IN ('queued','running') AND (j.application_id=a.id OR j.source_application_id=a.id)) AS database_operation_pending,a.id,a.environment_id,(SELECT project_id FROM environments WHERE id=a.environment_id) AS project_id,a.name,a.image,a.container_port,a.active_container_id,a.host_port,a.created_at,a.updated_at";
 async fn project_access(state: &AppState, id: &Identity, project: Uuid) -> Result<(), ApiError> {
-    if !sqlx::query_scalar::<_, bool>(
-        "SELECT EXISTS(SELECT 1 FROM projects WHERE id=$1 AND organization_id=$2)",
-    )
-    .bind(project)
-    .bind(id.organization_id)
-    .fetch_one(&state.pool)
-    .await?
-    {
-        return Err(missing());
-    }
-    Ok(())
+    crate::auth::permissions::project(state, id, project).await
 }
 async fn environment_access(
     state: &AppState,
     id: &Identity,
     environment: Uuid,
 ) -> Result<(), ApiError> {
-    if !sqlx::query_scalar::<_,bool>("SELECT EXISTS(SELECT 1 FROM environments e JOIN projects p ON p.id=e.project_id WHERE e.id=$1 AND p.organization_id=$2)").bind(environment).bind(id.organization_id).fetch_one(&state.pool).await? { return Err(missing()); }
-    Ok(())
+    crate::auth::permissions::environment(state, id, environment).await
 }
 impl Application {
     fn with_gateway(mut self, state: &AppState) -> Self {
@@ -226,6 +215,7 @@ pub(crate) async fn app_access(
     id: &Identity,
     app: Uuid,
 ) -> Result<Application, ApiError> {
+    crate::auth::permissions::read_service(state, id, app).await?;
     sqlx::query_as::<_,Application>(&format!("SELECT {APP_COLUMNS} FROM applications a JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id WHERE a.id=$1 AND p.organization_id=$2 AND a.service_kind IN ('application','database')"))
         .bind(app).bind(id.organization_id).fetch_optional(&state.pool).await?.map(|app|app.with_gateway(state)).ok_or_else(missing)
 }
@@ -240,9 +230,9 @@ async fn environments(
         .fetch_one(&state.pool)
         .await?;
     let rows = sqlx::query_as::<_, Environment>(
-        "SELECT * FROM environments WHERE project_id=$1 ORDER BY created_at,id",
+        "SELECT * FROM environments WHERE project_id=$1 AND ferrix_environment_visible($2,$3,id) ORDER BY created_at,id",
     )
-    .bind(project)
+    .bind(project).bind(id.user_id).bind(id.organization_id)
     .fetch_all(&state.pool)
     .await?;
     Ok(Json(
@@ -277,7 +267,7 @@ async fn applications(
     Path(environment): Path<Uuid>,
 ) -> Result<Json<Vec<Application>>, ApiError> {
     environment_access(&state, &id, environment).await?;
-    Ok(Json(sqlx::query_as(&format!("SELECT {APP_COLUMNS} FROM applications a WHERE environment_id=$1 AND service_kind='application' ORDER BY created_at,id")).bind(environment).fetch_all(&state.pool).await?))
+    Ok(Json(sqlx::query_as(&format!("SELECT {APP_COLUMNS} FROM applications a WHERE environment_id=$1 AND service_kind='application' AND ferrix_service_permission($2,$3,a.id) IS NOT NULL ORDER BY created_at,id")).bind(environment).bind(id.user_id).bind(id.organization_id).fetch_all(&state.pool).await?))
 }
 fn default_application_port() -> i32 {
     80
@@ -421,7 +411,7 @@ async fn configuration(
     id: Identity,
     Path(app): Path<Uuid>,
 ) -> Result<Json<Value>, ApiError> {
-    id.manager()?;
+    crate::auth::permissions::developer(&state, &id, app).await?;
     let row = app_access(&state, &id, app).await?;
     if row.kind != "application" {
         return Err(missing());
@@ -442,7 +432,7 @@ async fn save_configuration(
     Path(app): Path<Uuid>,
     Json(mut input): Json<Configuration>,
 ) -> Result<Json<Application>, ApiError> {
-    id.manager()?;
+    crate::auth::permissions::developer(&state, &id, app).await?;
     if app_access(&state, &id, app).await?.kind != "application" {
         return Err(missing());
     }
@@ -456,6 +446,12 @@ async fn save_configuration(
             .fetch_one(&mut *tx)
             .await?;
     let old = application_runtime::decode(&state, app, previous.as_deref())?;
+    if !crate::auth::permissions::manager(&id) && old != input.runtime {
+        return Err(ApiError(
+            StatusCode::FORBIDDEN,
+            "Only organization managers can change resource limits, storage or runtime settings.",
+        ));
+    }
     let deployed: bool =
         sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM deployments WHERE application_id=$1)")
             .bind(app)
@@ -484,7 +480,7 @@ async fn deploy(
     Path(app): Path<Uuid>,
     key: Option<axum::Extension<crate::auth::api_keys::KeyAccess>>,
 ) -> Result<(StatusCode, Json<Value>), ApiError> {
-    id.manager()?;
+    crate::auth::permissions::developer(&state, &id, app).await?;
     app_access(&state, &id, app).await?;
     let mut tx = state.pool.begin().await?;
     let reserved = quotas::reserve(&state, &mut tx).await?;

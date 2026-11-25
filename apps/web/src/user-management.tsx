@@ -1,3 +1,4 @@
+import { ClassroomAccess } from './resource-access'
 import { useEffect, useId, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import type { Identity, Organization, Member, Invitation, Session } from './auth'
@@ -116,6 +117,7 @@ export function TeamPage({ identity, members, invitations, refresh }: { identity
   // A regenerated token is shown only in this browser until explicitly dismissed.
   const open = (value: Operation) => { setMessage(''); setOperation(value) }
   return <div className="flex flex-col gap-6"><h1 className="text-2xl font-semibold">Organization</h1>{!inviting && !operation ? <Notice message={message} /> : null}
+    <ClassroomAccess canManage={manager} />
     <Section title="Organization profile" description="Owners and organization admins can update the name and logo.">
       {profileError ? <><Notice message={profileError} /><Button variant="outline" onClick={() => setVersion(value => value + 1)}>Retry organization</Button></> : null}
       {!profile ? !profileError ? <p role="status">Loading organization…</p> : null : <>

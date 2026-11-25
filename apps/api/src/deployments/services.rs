@@ -223,7 +223,7 @@ async fn list(
     Path(environment): Path<Uuid>,
 ) -> Result<Json<Vec<Application>>, ApiError> {
     environment_access(&state, &id, environment).await?;
-    let rows:Vec<Application>=sqlx::query_as(&format!("SELECT {APP_COLUMNS} FROM applications a WHERE environment_id=$1 AND service_kind IN ('application','database') ORDER BY created_at DESC,id")).bind(environment).fetch_all(&state.pool).await?;
+    let rows:Vec<Application>=sqlx::query_as(&format!("SELECT {APP_COLUMNS} FROM applications a WHERE environment_id=$1 AND service_kind IN ('application','database') AND ferrix_service_permission($2,$3,a.id) IS NOT NULL ORDER BY created_at DESC,id")).bind(environment).bind(id.user_id).bind(id.organization_id).fetch_all(&state.pool).await?;
     Ok(Json(
         rows.into_iter()
             .map(|app| app.with_gateway(&state))
@@ -298,7 +298,7 @@ async fn configuration(
     id: Identity,
     Path(service): Path<Uuid>,
 ) -> Result<Json<Value>, ApiError> {
-    id.manager()?;
+    crate::auth::permissions::developer(&state, &id, service).await?;
     let app = app_access(&state, &id, service).await?;
     match app.kind.as_str() {
         "application" => super::configuration(State(state), id, Path(service)).await,
@@ -344,7 +344,7 @@ async fn save(
     Path(service): Path<Uuid>,
     Json(value): Json<Value>,
 ) -> Result<Json<Application>, ApiError> {
-    id.manager()?;
+    crate::auth::permissions::developer(&state, &id, service).await?;
     let app = app_access(&state, &id, service).await?;
     match app.kind.as_str() {
         "application" => {

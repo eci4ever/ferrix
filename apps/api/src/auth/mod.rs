@@ -3,6 +3,7 @@ pub(crate) mod api_keys;
 mod login;
 mod management;
 mod organizations;
+pub(crate) mod permissions;
 mod security;
 pub(crate) mod sessions;
 use crate::{ApiError, AppState};

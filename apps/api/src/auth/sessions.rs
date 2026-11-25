@@ -128,10 +128,31 @@ pub(crate) async fn resolve(state: &AppState, headers: &HeaderMap) -> Result<Ide
 // Background polling authenticates without extending session inactivity expiry.
 pub async fn identify(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
     if req.extensions().get::<api_keys::KeyAccess>().is_some() {
+        if let Some(id) = req.extensions().get::<Identity>()
+            && let Err(error) = super::permissions::request_access(
+                &state,
+                id,
+                req.method().as_str(),
+                req.uri().path(),
+            )
+            .await
+        {
+            return error.into_response();
+        }
         return next.run(req).await;
     }
     match resolve(&state, req.headers()).await {
         Ok(id) => {
+            if let Err(error) = super::permissions::request_access(
+                &state,
+                &id,
+                req.method().as_str(),
+                req.uri().path(),
+            )
+            .await
+            {
+                return error.into_response();
+            }
             req.extensions_mut().insert(id);
             next.run(req).await
         }
@@ -141,12 +162,29 @@ pub async fn identify(State(state): State<AppState>, mut req: Request, next: Nex
 
 pub async fn protect(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
     if req.extensions().get::<api_keys::KeyAccess>().is_some() {
+        if let Some(id) = req.extensions().get::<Identity>()
+            && let Err(error) = super::permissions::request_access(
+                &state,
+                id,
+                req.method().as_str(),
+                req.uri().path(),
+            )
+            .await
+        {
+            return error.into_response();
+        }
         return next.run(req).await;
     }
     let mut id = match resolve(&state, req.headers()).await {
         Ok(id) => id,
         Err(e) => return e.into_response(),
     };
+    if let Err(error) =
+        super::permissions::request_access(&state, &id, req.method().as_str(), req.uri().path())
+            .await
+    {
+        return error.into_response();
+    }
     let renewed: Result<Option<DateTime<Utc>>, sqlx::Error> = sqlx::query_scalar("UPDATE auth_sessions SET expires_at=LEAST(now()+interval '3 days',absolute_expires_at),updated_at=now() WHERE id=$1 AND updated_at<now()-interval '1 day' AND expires_at>now() AND absolute_expires_at>now() RETURNING expires_at").bind(id.session_id).fetch_optional(&state.pool).await;
     let cookie = match renewed {
         Ok(Some(expires)) => {

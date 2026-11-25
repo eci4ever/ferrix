@@ -24,7 +24,7 @@ pub(super) fn routes(state: AppState) -> Router<AppState> {
 fn denied() -> ApiError {
     ApiError(
         StatusCode::FORBIDDEN,
-        "Terminal access requires an owner/admin browser session from this Ferrix origin.",
+        "Terminal access requires an authorized application developer browser session from this Ferrix origin.",
     )
 }
 async fn open(
@@ -34,7 +34,7 @@ async fn open(
     headers: HeaderMap,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
-    id.manager()?;
+    crate::auth::permissions::developer(&state, &id, service).await?;
     if id.session_id.is_nil()
         || headers.get(header::ORIGIN).and_then(|v| v.to_str().ok())
             != Some(state.auth.origin.as_str())
@@ -116,7 +116,9 @@ async fn valid(
     };
     if current.session_id != id.session_id
         || current.organization_id != id.organization_id
-        || current.manager().is_err()
+        || crate::auth::permissions::developer(state, &current, service)
+            .await
+            .is_err()
     {
         return false;
     }
@@ -200,6 +202,13 @@ async fn run(
                     }
                 }
                 message = socket.recv() => {
+                    // Recheck membership/grants before accepting any further
+                    // terminal input, in addition to the idle-connection timer.
+                    let current = crate::auth::sessions::resolve(&state,&headers).await;
+                    if !matches!(current, Ok(ref current) if current.session_id == id.session_id && current.organization_id == id.organization_id)
+                        || crate::auth::permissions::developer(&state,&id,service).await.is_err() {
+                        return Err("Terminal closed because your permission changed.");
+                    }
                     match message {
                         Some(Ok(Message::Text(text))) => match serde_json::from_str::<Input>(&text) {
                             Ok(Input::Input { data }) if data.len()<=8192 => {
