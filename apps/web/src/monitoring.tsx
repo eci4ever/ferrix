@@ -97,8 +97,8 @@ export function MonitoringPage({ admin }: { admin: boolean }) {
       <Card><CardHeader><CardTitle>Network I/O</CardTitle><CardDescription>In: {rate(latest?.receive_bps)} · Out: {rate(latest?.transmit_bps)}</CardDescription></CardHeader><CardContent><History samples={samples} format={rate} series={[{ name: 'Received', key: 'receive_bps', color: colors[0] }, { name: 'Transmitted', key: 'transmit_bps', color: colors[1], dash: '6 4' }]} /><p className="mt-2 text-xs text-muted-foreground">API host · non-loopback interfaces · bytes per second.</p></CardContent></Card>
     </div><p className="text-xs text-muted-foreground">Last 15 minutes · up to 180 samples · history resets when the API restarts</p></> : !error ? <div role="status" aria-label="Loading monitoring" className="grid gap-6 lg:grid-cols-2">{Array.from({ length: 6 }, (_, i) => <Skeleton key={i} className="h-72 w-full" />)}</div> : null}
     <section aria-label="Monitoring history and settings" className="flex min-w-0 flex-col gap-6">
-      <TelemetryHistory />
-      <TelemetrySettings />
+      <TelemetryHistory collapsible />
+      <TelemetrySettings collapsible />
     </section>
   </>
 }
