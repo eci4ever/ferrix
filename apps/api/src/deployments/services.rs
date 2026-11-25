@@ -3,8 +3,10 @@ use serde::de::DeserializeOwned;
 use std::collections::HashMap;
 mod control;
 pub(super) mod database;
+mod notes;
 mod removal;
 pub(super) mod replacement;
+mod transfer;
 
 pub(super) fn routes(state: AppState) -> Router<AppState> {
     Router::new()
@@ -14,6 +16,7 @@ pub(super) fn routes(state: AppState) -> Router<AppState> {
         .route("/services/{id}", get(application))
         .route("/services/{id}/configuration", get(configuration))
         .route("/services/{id}/runtime", get(super::runtime))
+        .route("/services/{id}/notes", get(notes::read))
         .route("/services/{id}/deployments", get(history))
         .route("/services/{id}/logs", get(super::logs))
         .route_layer(axum::middleware::from_fn_with_state(
@@ -24,6 +27,9 @@ pub(super) fn routes(state: AppState) -> Router<AppState> {
             Router::new()
                 .route("/environments/{id}/services", post(create))
                 .route("/services/{id}/configuration", post(save))
+                .route("/services/{id}/notes", post(notes::save))
+                .route("/services/{id}/move", post(transfer::move_service))
+                .route("/services/{id}/clone", post(transfer::clone_service))
                 .route("/services/{id}/deploy", post(deploy))
                 .route("/services/{id}/rollback", post(rollback))
                 .route("/services/{id}/control", post(control::change))

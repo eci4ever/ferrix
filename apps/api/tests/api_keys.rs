@@ -374,6 +374,79 @@ async fn check(app: &Router, pool: &PgPool) {
     .await;
     assert_eq!(application.status, StatusCode::CREATED);
     let service = application.body["id"].as_str().unwrap();
+    transfer_checks(app, cookie, pool, (service, pid, env, &read)).await;
+    let notes_path = format!("/api/v1/services/{service}/notes");
+    let notes = key(app, "GET", &notes_path, Value::Null, &read).await;
+    assert_eq!(notes.body, json!({"notes":"", "revision":0}));
+    assert_eq!(
+        key(
+            app,
+            "POST",
+            &notes_path,
+            json!({"notes":"Denied", "revision":0}),
+            &read
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    let saved = session(
+        app,
+        &notes_path,
+        json!({"notes":"Setup\n<script>plain text</script>", "revision":0}),
+        cookie,
+    )
+    .await;
+    assert_eq!(saved.status, StatusCode::OK);
+    assert_eq!(saved.body["revision"], 1);
+    assert_eq!(
+        key(app, "GET", &notes_path, Value::Null, &read).await.body,
+        saved.body
+    );
+    assert_eq!(
+        session(
+            app,
+            &notes_path,
+            json!({"notes":"Stale", "revision":0}),
+            cookie
+        )
+        .await
+        .status,
+        StatusCode::CONFLICT
+    );
+    assert_eq!(
+        session(
+            app,
+            &notes_path,
+            json!({"notes":"x".repeat(32769), "revision":1}),
+            cookie
+        )
+        .await
+        .status,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        session(
+            app,
+            &notes_path,
+            json!({"notes":"é".repeat(16385), "revision":1}),
+            cookie
+        )
+        .await
+        .status,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let cleared = key(
+        app,
+        "POST",
+        &notes_path,
+        json!({"notes":"", "revision":1}),
+        &write,
+    )
+    .await;
+    assert_eq!(cleared.status, StatusCode::OK);
+    assert_eq!(cleared.body, json!({"notes":"", "revision":2}));
+
     assert_eq!(
         key(
             app,
@@ -576,6 +649,23 @@ async fn check(app: &Router, pool: &PgPool) {
         .execute(pool)
         .await
         .unwrap();
+    assert_eq!(
+        session(
+            app,
+            &notes_path,
+            json!({"notes":"Member denied", "revision":2}),
+            cookie
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        request(app, "GET", &notes_path, Value::Null, cookie, None, None)
+            .await
+            .status,
+        StatusCode::OK
+    );
     assert_eq!(
         key(
             app,
@@ -997,6 +1087,7 @@ async fn project_scope_checks(app: &Router, pool: &PgPool, cookie: &str) {
             "/runtime",
             "/logs",
             "/metrics",
+            "/notes",
             "/domains",
             "/backups",
         ] {
@@ -1243,4 +1334,195 @@ async fn project_scope_checks(app: &Router, pool: &PgPool, cookie: &str) {
         .execute(pool)
         .await
         .unwrap();
+}
+
+async fn transfer_checks(
+    app: &Router,
+    cookie: &str,
+    pool: &PgPool,
+    context: (&str, &str, &str, &str),
+) {
+    let (service, project, original, read) = context;
+    let target = session(
+        app,
+        &format!("/api/v1/projects/{project}/environments"),
+        json!({"name":"Transfer test"}),
+        cookie,
+    )
+    .await
+    .body;
+    let target = target["id"].as_str().unwrap();
+    let endpoint = format!("/api/v1/services/{service}");
+    assert_eq!(
+        session(
+            app,
+            &format!("{endpoint}/move"),
+            json!({"environment_id":original}),
+            cookie
+        )
+        .await
+        .status,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        session(
+            app,
+            &format!("{endpoint}/clone"),
+            json!({"environment_id":Uuid::new_v4()}),
+            cookie
+        )
+        .await
+        .status,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        key(
+            app,
+            "POST",
+            &format!("{endpoint}/clone"),
+            json!({"environment_id":target}),
+            read
+        )
+        .await
+        .status,
+        StatusCode::FORBIDDEN
+    );
+    let clone = session(
+        app,
+        &format!("{endpoint}/clone"),
+        json!({"environment_id":target}),
+        cookie,
+    )
+    .await;
+    assert_eq!(clone.status, StatusCode::CREATED, "{}", clone.body);
+    let cloned = clone.body["id"].as_str().unwrap();
+    assert_ne!(cloned, service);
+    assert_eq!(clone.body["environment_id"], target);
+    assert_eq!(clone.body["deployed"], false);
+    let settings = request(
+        app,
+        "GET",
+        &format!("/api/v1/services/{cloned}/configuration"),
+        Value::Null,
+        cookie,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(settings.status, StatusCode::OK);
+    assert_eq!(
+        settings.body["environment"],
+        "PRIVATE_VALUE=test-secret-do-not-log"
+    );
+    assert_eq!(
+        session(
+            app,
+            &format!("{endpoint}/move"),
+            json!({"environment_id":target}),
+            cookie
+        )
+        .await
+        .status,
+        StatusCode::CONFLICT
+    );
+    let github_path = format!("/api/v1/services/{cloned}/source");
+    assert_eq!(session(app, &github_path, json!({"mode":"github","repository":"example/private","branch":"main","dockerfile":"Dockerfile","context":".","token":"test-private-token","auto_deploy":true}), cookie).await.status, StatusCode::NO_CONTENT);
+    let source_copy = session(
+        app,
+        &format!("/api/v1/services/{cloned}/clone"),
+        json!({"environment_id":original,"name":"Source copy"}),
+        cookie,
+    )
+    .await;
+    assert_eq!(source_copy.status, StatusCode::CREATED);
+    let copied = source_copy.body["id"].as_str().unwrap();
+    let config = request(
+        app,
+        "GET",
+        &format!("/api/v1/services/{copied}/source"),
+        Value::Null,
+        cookie,
+        None,
+        None,
+    )
+    .await;
+    assert_eq!(config.status, StatusCode::OK);
+    assert_eq!(config.body["token_saved"], true);
+    assert_eq!(config.body["auto_deploy"], false);
+    assert_eq!(config.body["webhook_configured"], false);
+    assert_eq!(config.body["repository"], "example/private");
+    sqlx::query("DELETE FROM applications WHERE id=$1")
+        .bind(Uuid::parse_str(copied).unwrap())
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM applications WHERE id=$1")
+        .bind(Uuid::parse_str(cloned).unwrap())
+        .execute(pool)
+        .await
+        .unwrap();
+    let moved = session(
+        app,
+        &format!("{endpoint}/move"),
+        json!({"environment_id":target}),
+        cookie,
+    )
+    .await;
+    assert_eq!(moved.status, StatusCode::OK, "{}", moved.body);
+    assert_eq!(moved.body["id"], service);
+    assert_eq!(moved.body["environment_id"], target);
+    assert_eq!(
+        session(
+            app,
+            &format!("{endpoint}/move"),
+            json!({"environment_id":original}),
+            cookie
+        )
+        .await
+        .status,
+        StatusCode::OK
+    );
+    let db = session(app, &format!("/api/v1/environments/{original}/services"), json!({"kind":"database","name":"Transfer DB","engine":"mariadb","database_name":"demo","username":"demo"}), cookie).await;
+    let dbid = db.body["id"].as_str().unwrap();
+    let config = request(
+        app,
+        "GET",
+        &format!("/api/v1/services/{dbid}/configuration"),
+        Value::Null,
+        cookie,
+        None,
+        None,
+    )
+    .await
+    .body;
+    let dbclone = session(
+        app,
+        &format!("/api/v1/services/{dbid}/clone"),
+        json!({"environment_id":target}),
+        cookie,
+    )
+    .await;
+    assert_eq!(dbclone.status, StatusCode::CREATED);
+    let newid = dbclone.body["id"].as_str().unwrap();
+    let newconfig = request(
+        app,
+        "GET",
+        &format!("/api/v1/services/{newid}/configuration"),
+        Value::Null,
+        cookie,
+        None,
+        None,
+    )
+    .await
+    .body;
+    assert_eq!(newconfig["database_name"], config["database_name"]);
+    assert_ne!(newconfig["password"], config["password"]);
+    assert_ne!(newconfig["root_password"], config["root_password"]);
+    for id in [dbid, newid] {
+        sqlx::query("DELETE FROM applications WHERE id=$1")
+            .bind(Uuid::parse_str(id).unwrap())
+            .execute(pool)
+            .await
+            .unwrap();
+    }
 }
