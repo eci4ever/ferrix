@@ -183,7 +183,7 @@ const rootRoute = createRootRoute({
   notFoundComponent: () => <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 p-4 md:p-6"><h1>Page not found</h1><Link to="/projects">Back to projects</Link></div>,
   errorComponent: () => <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 p-4 md:p-6"><ErrorNotice message="The workspace could not load. Refresh the page to try again." /></div>,
 })
-const landingRoute = createRoute({ getParentRoute: () => rootRoute, path: '/', component: LandingPage })
+const landingRoute = createRoute({ getParentRoute: () => rootRoute, path: '/', component: function Landing() { const { account } = rootRoute.useLoaderData(); return <LandingPage signedIn={!!account.data} /> } })
 const loginRoute = createRoute({ getParentRoute: () => rootRoute, path: '/login' })
 const signupRoute = createRoute({ getParentRoute: () => rootRoute, path: '/signup' })
 const homeRoute = createRoute({ getParentRoute: () => rootRoute, path: '/dashboard', component: HomePage, loader: async () => { const [projects, summary] = await Promise.all([load<Project[]>('/projects'), load<HomeSummary>('/home-summary')]); return { projects, summary } } })
