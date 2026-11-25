@@ -13,6 +13,12 @@ async function workspace(page: Page, options: { member?: boolean; failProject?: 
     const req = route.request(), path = new URL(req.url()).pathname
     if (req.method() === 'POST') {
       const body = req.postDataJSON()
+      if (path === '/api/v1/auth/organizations/delete') {
+        expect(body.confirmation).toBe(selected.name)
+        organizations.splice(organizations.indexOf(selected), 1)
+        selected = organizations[0]
+        return route.fulfill({ status: 204 })
+      }
       if (path === '/api/v1/projects') {
         await options.holdProject
         if (failProject) { failProject = false; return route.fulfill({ status: 409, json: { error: 'This project name is taken. Choose a different name.' } }) }
@@ -200,4 +206,29 @@ for (const width of [320, 1440]) test(`Organization switcher creates and switche
   await page.getByRole('menuitem', { name: 'Test organization', exact: true }).click()
   await expect(page.getByLabel('Organization name', { exact: true })).toHaveValue('Test organization')
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+})
+
+test('Deleting an organization refreshes into the fallback without a login page', async ({ page }) => {
+  await workspace(page)
+  await page.goto('/organization')
+  const switcher = page.getByRole('button', { name: 'Switch organization' })
+  await switcher.click()
+  await page.getByRole('menuitem', { name: 'Create organization', exact: true }).click()
+  const create = page.getByRole('dialog', { name: 'Create organization', exact: true })
+  await create.getByLabel('New organization name').fill('Disposable organization')
+  await create.getByRole('button', { name: 'Create organization', exact: true }).click()
+  await expect(create).toHaveCount(0)
+  await switcher.click()
+  await page.getByRole('menuitem', { name: 'Disposable organization', exact: true }).click()
+  await expect(page.getByLabel('Organization name', { exact: true })).toHaveValue('Disposable organization')
+  await page.getByRole('button', { name: 'Delete organization', exact: true }).click()
+  const remove = page.getByRole('dialog', { name: 'Delete organization?', exact: true })
+  await remove.getByLabel('Type Disposable organization to confirm').fill('Disposable organization')
+  await remove.getByRole('button', { name: 'Confirm', exact: true }).click()
+  await expect(remove).toHaveCount(0)
+  await expect(switcher).toContainText('Test organization')
+  await expect(page.getByLabel('Organization name', { exact: true })).toHaveValue('Test organization')
+  await expect(page).toHaveURL(/\/organization$/)
+  await switcher.click()
+  await expect(page.getByRole('menuitem', { name: 'Disposable organization', exact: true })).toHaveCount(0)
 })

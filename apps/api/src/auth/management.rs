@@ -449,6 +449,25 @@ pub async fn delete_organization(
     if projects {
         return Err(bad("Delete all projects before deleting the organization."));
     }
+    // Move only the requesting session before the FK cascade revokes sessions
+    // still using the deleted organization. Never grant a new membership or
+    // extend authentication freshness or session expiry during this transition.
+    let fallback: Option<Uuid> = sqlx::query_scalar(
+        "SELECT o.id FROM auth_organizations o JOIN auth_members m ON m.organization_id=o.id WHERE m.user_id=$1 AND o.id<>$2 ORDER BY o.is_default DESC,o.created_at,o.id LIMIT 1",
+    )
+    .bind(id.user_id)
+    .bind(id.organization_id)
+    .fetch_optional(&mut *tx)
+    .await?;
+    if let Some(organization) = fallback {
+        sqlx::query("UPDATE auth_sessions SET active_organization_id=$1 WHERE id=$2 AND user_id=$3 AND active_organization_id=$4")
+            .bind(organization)
+            .bind(id.session_id)
+            .bind(id.user_id)
+            .bind(id.organization_id)
+            .execute(&mut *tx)
+            .await?;
+    }
     log(
         &mut tx,
         id.user_id,
