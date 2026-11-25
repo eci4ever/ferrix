@@ -1423,6 +1423,7 @@ async fn postgres_user_and_organization_management() {
     let result = AssertUnwindSafe(async {
         sqlx::migrate!().run(&pool).await.unwrap();
         check_management(&app(pool.clone()), &pool).await;
+        check_organization_delete_without_default_membership(&app(pool.clone()), &pool).await;
     })
     .catch_unwind()
     .await;
@@ -1435,6 +1436,96 @@ async fn postgres_user_and_organization_management() {
         std::panic::resume_unwind(error);
     }
 }
+async fn check_organization_delete_without_default_membership(
+    app: &axum::Router,
+    pool: &sqlx::PgPool,
+) {
+    let user = uuid::Uuid::new_v4();
+    let fallback = uuid::Uuid::new_v4();
+    let disposable = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO auth_users(id,name,email,password_hash) SELECT $1,'Fallback owner','fallback-owner@example.com',password_hash FROM auth_users WHERE email='manager@example.com'")
+        .bind(user).execute(pool).await.unwrap();
+    for (id, name) in [(fallback, "Fallback"), (disposable, "Disposable")] {
+        sqlx::query("INSERT INTO auth_organizations(id,name) VALUES($1,$2)")
+            .bind(id)
+            .bind(name)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO auth_members(organization_id,user_id,role) VALUES($1,$2,'owner')")
+            .bind(id)
+            .bind(user)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+    let (status, _, cookie) = post(
+        app,
+        "/api/v1/auth/sign-in",
+        json!({"email":"fallback-owner@example.com","password":PASSWORD}),
+        "",
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        post(
+            app,
+            "/api/v1/auth/organizations/switch",
+            json!({"organization_id":disposable}),
+            &cookie
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        post(
+            app,
+            "/api/v1/auth/organizations/delete",
+            json!({"confirmation":"Disposable"}),
+            &cookie
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    let session = get(app, "/api/v1/auth/session", &cookie).await;
+    assert_eq!(session.0, StatusCode::OK);
+    assert_eq!(session.1["organization_id"], fallback.to_string());
+    // The default organization exists, but this user must never gain access to it.
+    assert_eq!(
+        get(app, "/api/v1/auth/organizations", &cookie)
+            .await
+            .1
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        post(
+            app,
+            "/api/v1/auth/organizations/delete",
+            json!({"confirmation":"Fallback"}),
+            &cookie
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        get(app, "/api/v1/auth/session", &cookie).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert!(
+        sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM auth_users WHERE id=$1)")
+            .bind(user)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    );
+}
+
 async fn check_management(app: &axum::Router, pool: &sqlx::PgPool) {
     use uuid::Uuid;
     let (_, _, owner) = post(
@@ -1857,7 +1948,16 @@ async fn check_management(app: &axum::Router, pool: &sqlx::PgPool) {
             .1["name"],
         "Managed organization"
     );
-    // Last platform-admin membership is protected even on an otherwise empty org.
+    // Deletion preserves only the requesting session and returns it to the
+    // default organization, without extending its verification or lifetime.
+    let preserved_project = post(
+        app,
+        "/api/v1/projects",
+        json!({"name":"Preserved project"}),
+        &owner,
+    )
+    .await
+    .1;
     post(
         app,
         "/api/v1/auth/organizations/switch",
@@ -1865,6 +1965,47 @@ async fn check_management(app: &axum::Router, pool: &sqlx::PgPool) {
         &owner,
     )
     .await;
+    let owner_sessions = get(app, "/api/v1/auth/sessions", &owner).await.1;
+    let session_id: Uuid = owner_sessions
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|s| s["current"] == true)
+        .unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let before: (String,String,String) = sqlx::query_as("SELECT authenticated_at::text,expires_at::text,absolute_expires_at::text FROM auth_sessions WHERE id=$1").bind(session_id).fetch_one(pool).await.unwrap();
+    let (_, _, second_session) = post(
+        app,
+        "/api/v1/auth/sign-in",
+        json!({"email":"manager@example.com","password":PASSWORD}),
+        "",
+    )
+    .await;
+    post(
+        app,
+        "/api/v1/auth/organizations/switch",
+        json!({"organization_id":other_org}),
+        &second_session,
+    )
+    .await;
+    assert_eq!(
+        post(
+            app,
+            "/api/v1/auth/organizations/delete",
+            json!({"confirmation":"incorrect"}),
+            &owner
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        get(app, "/api/v1/auth/session", &owner).await.1["organization_id"],
+        other_org
+    );
     assert_eq!(
         post(
             app,
@@ -1876,17 +2017,33 @@ async fn check_management(app: &axum::Router, pool: &sqlx::PgPool) {
         .0,
         StatusCode::NO_CONTENT
     );
+    let session = get(app, "/api/v1/auth/session", &owner).await;
+    assert_eq!(session.0, StatusCode::OK);
+    assert_eq!(session.1["organization_id"], org);
+    assert_eq!(session.1["organization_name"], "Managed organization");
+    let after: (String,String,String) = sqlx::query_as("SELECT authenticated_at::text,expires_at::text,absolute_expires_at::text FROM auth_sessions WHERE id=$1").bind(session_id).fetch_one(pool).await.unwrap();
+    assert_eq!(before, after);
     assert_eq!(
-        get(app, "/api/v1/auth/session", &owner).await.0,
+        get(app, "/api/v1/auth/session", &second_session).await.0,
         StatusCode::UNAUTHORIZED
     );
-    let (_, _, owner) = post(
-        app,
-        "/api/v1/auth/sign-in",
-        json!({"email":"manager@example.com","password":PASSWORD}),
-        "",
-    )
-    .await;
+    assert!(
+        !get(app, "/api/v1/auth/organizations", &owner)
+            .await
+            .1
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|o| o["id"] == other_org)
+    );
+    let projects = get(app, "/api/v1/projects", &owner).await.1;
+    assert!(
+        projects
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|p| p["id"] == preserved_project["id"])
+    );
     assert_eq!(
         post(
             app,

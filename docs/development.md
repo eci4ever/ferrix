@@ -360,6 +360,18 @@ cascading deletes, failed-migration recovery, expiry preservation, locked renewa
 bounded cleanup, concurrent cleaners and worker startup/shutdown. Run against your
 own test database with `cargo test --test database_integrity -- --include-ignored`.
 
+### Organization deletion and sessions
+
+Deleting an empty, non-default organization moves only the requesting browser
+session to an organization the user already belongs to. The default organization
+is preferred, then the oldest remaining organization (with its ID as a stable
+tie-breaker). Session expiry and recent password verification are unchanged.
+Other sessions still using the deleted organization are revoked by the database
+cascade. If the requesting user has no remaining membership, their session is
+also revoked. The reassignment and deletion commit in one transaction; rejected
+deletions leave the session unchanged. Leaving an organization still revokes
+sessions using it.
+
 ### Service notes
 
 Application and Database workspaces include a Notes tab. Notes are plain text,
