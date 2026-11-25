@@ -6,6 +6,7 @@ async function workspace(page: Page, options: { member?: boolean; failProject?: 
   const environments = [{ id: 'production', name: 'production' }]
   const services: Record<string, unknown>[] = []
   const organizations = [{ id: 'org', name: 'Test organization', role: 'owner' }]
+  let selected = organizations[0]
   const invitations: Record<string, unknown>[] = []
   let failProject = Boolean(options.failProject)
   await page.route('**/api/v1/**', async route => {
@@ -20,14 +21,15 @@ async function workspace(page: Page, options: { member?: boolean; failProject?: 
       }
       if (path === '/api/v1/projects/project/environments') { const environment = { id: 'staging', name: body.name }; environments.push(environment); return route.fulfill({ status: 201, json: environment }) }
       if (path.endsWith('/services')) { const service = { ...body, id: 'web', environment_id: 'staging', project_id: 'project', created_at: now, deployed: false }; services.push(service); return route.fulfill({ status: 201, json: service }) }
+      if (path === '/api/v1/auth/organizations/switch') { selected = organizations.find(org => org.id === body.organization_id)!; return route.fulfill({ status: 204 }) }
       if (path === '/api/v1/auth/organizations') { organizations.push({ id: 'new-org', name: body.name, role: 'owner' }); return route.fulfill({ json: organizations[1] }) }
       if (path === '/api/v1/auth/invitations') { invitations.push({ id: 'invite', email: body.email, role: body.role, expires_at: now }); return route.fulfill({ json: { token: 'mock-invitation-token' } }) }
     }
     if (req.method() === 'DELETE' && path === '/api/v1/services/web') { expect(req.postDataJSON()).toEqual({ name: 'Nginx', remove_data: false }); services.length = 0; return route.fulfill({ status: 204 }) }
     const responses: Record<string, unknown> = {
-      '/api/v1/auth/session': { user_id: 'user', name: 'Dialog test', email: 'dialog@example.com', system_role: options.member ? 'user' : 'admin', role: options.member ? 'member' : 'owner', organization_id: 'org', organization_name: 'Test organization' },
+      '/api/v1/auth/session': { user_id: 'user', name: 'Dialog test', email: 'dialog@example.com', system_role: options.member ? 'user' : 'admin', role: options.member ? 'member' : 'owner', organization_id: selected.id, organization_name: selected.name },
       '/api/v1/auth/setup': { setup_required: false }, '/api/v1/auth/organizations': organizations,
-      '/api/v1/auth/organizations/current': { id: 'org', name: 'Test organization', logo_url: null, is_default: true },
+      '/api/v1/auth/organizations/current': { id: selected.id, name: selected.name, logo_url: null, is_default: selected.id === 'org' },
       '/api/v1/auth/members': [], '/api/v1/auth/invitations': invitations,
       '/api/v1/status': { database: true, docker: true, version: 'test' }, '/api/v1/projects': projects,
       '/api/v1/projects/service-status': { checked_at: now, projects: [] },
@@ -122,8 +124,9 @@ test('Environment, Application and service deletion stay in focused dialogs at 3
 
 test('Organization creation and invitation token remain in their dialogs', async ({ page }) => {
   await workspace(page); await page.goto('/organization')
-  const trigger = page.getByRole('button', { name: 'New organization', exact: true })
+  const trigger = page.getByRole('button', { name: 'Switch organization', exact: true })
   await trigger.click()
+  await page.getByRole('menuitem', { name: 'Create organization', exact: true }).click()
   let dialog = page.getByRole('dialog', { name: 'Create organization', exact: true })
   await dialog.getByLabel('New organization name').fill('Lab')
   await dialog.getByRole('button', { name: 'Create organization', exact: true }).click()
@@ -148,7 +151,10 @@ test('Members do not get manager-only creation actions', async ({ page }) => {
   await expect(page.getByRole('button', { name: 'Create Service', exact: true })).toHaveCount(0)
   await page.goto('/organization')
   await expect(page.getByRole('heading', { name: 'Organization', exact: true })).toBeVisible()
-  await expect(page.getByRole('button', { name: 'New organization', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('heading', { name: 'Your organizations', exact: true })).toHaveCount(0)
+  await page.getByRole('button', { name: 'Switch organization', exact: true }).click()
+  await expect(page.getByRole('menuitem', { name: 'Create organization', exact: true })).toHaveCount(0)
+  await page.keyboard.press('Escape')
   await expect(page.getByRole('button', { name: 'Invite member', exact: true })).toHaveCount(0)
 })
 
@@ -157,12 +163,41 @@ test('Creating an organization preserves an unfinished organization-profile draf
   const profileName = page.getByLabel('Organization name', { exact: true })
   await expect(profileName).toHaveValue('Test organization')
   await profileName.fill('Draft organization name')
-  await page.getByRole('button', { name: 'New organization', exact: true }).click()
+  await page.getByRole('button', { name: 'Switch organization', exact: true }).click()
+  await page.getByRole('menuitem', { name: 'Create organization', exact: true }).click()
   const dialog = page.getByRole('dialog', { name: 'Create organization', exact: true })
   await dialog.getByLabel('New organization name').fill('Other organization')
-  const refreshed = page.waitForResponse(response => response.url().endsWith('/api/v1/auth/organizations/current') && response.request().method() === 'GET')
+  const refreshed = page.waitForResponse(response => response.url().endsWith('/api/v1/auth/organizations') && response.request().method() === 'GET')
   await dialog.getByRole('button', { name: 'Create organization', exact: true }).click()
   await refreshed
   await expect(dialog).toHaveCount(0)
   await expect(profileName).toHaveValue('Draft organization name', { timeout: 2000 })
+})
+
+for (const width of [320, 1440]) test(`Organization switcher creates and switches organizations at ${width}px`, async ({ page }) => {
+  await page.setViewportSize({ width, height: 900 })
+  await workspace(page)
+  await page.goto('/organization')
+  await expect(page.getByRole('heading', { name: 'Your organizations', exact: true })).toHaveCount(0)
+  async function openSwitcher() {
+    if (width === 320 && !await page.getByRole('button', { name: 'Switch organization' }).isVisible()) await page.locator('header').getByRole('button', { name: 'Toggle Sidebar' }).click()
+    await page.getByRole('button', { name: 'Switch organization' }).click()
+  }
+  await openSwitcher()
+  await page.getByRole('menuitem', { name: 'Create organization', exact: true }).click()
+  const dialog = page.getByRole('dialog', { name: 'Create organization', exact: true })
+  await expect(dialog.getByLabel('New organization name')).toBeFocused()
+  await dialog.getByLabel('New organization name').fill('Second organization')
+  await dialog.getByRole('button', { name: 'Create organization', exact: true }).click()
+  await expect(dialog).toHaveCount(0)
+  await expect(page.getByRole('button', { name: 'Switch organization' })).toContainText('Test organization')
+  await openSwitcher()
+  await expect(page.getByRole('menuitem', { name: 'Test organization', exact: true })).toBeDisabled()
+  await page.getByRole('menuitem', { name: 'Second organization', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Switch organization' })).toContainText('Second organization')
+  await expect(page.getByLabel('Organization name', { exact: true })).toHaveValue('Second organization')
+  await openSwitcher()
+  await page.getByRole('menuitem', { name: 'Test organization', exact: true }).click()
+  await expect(page.getByLabel('Organization name', { exact: true })).toHaveValue('Test organization')
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
 })
