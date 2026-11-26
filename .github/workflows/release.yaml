@@ -84,6 +84,7 @@ jobs:
             ${{ needs.source.outputs.image }}:sha-${{ needs.source.outputs.commit }}
             ${{ needs.source.outputs.stable == 'true' && format('{0}:latest', needs.source.outputs.image) || '' }}
           labels: |
+            org.opencontainers.image.licenses=AGPL-3.0-only
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ needs.source.outputs.commit }}
             org.opencontainers.image.version=${{ needs.source.outputs.version }}

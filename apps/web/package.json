@@ -49,5 +49,6 @@
   "allowScripts": {
     "esbuild@0.28.2": true,
     "fsevents": false
-  }
+  },
+  "license": "AGPL-3.0-only"
 }
