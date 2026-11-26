@@ -60,6 +60,9 @@ custom Dockerfile. No database credentials are build arguments.
 
 ### URLs and offline labs
 
+For the `ferrix.pi.local` setup and reproducible LAN/TLS/offline checks, see
+[Classroom LAN](classroom-lan.md).
+
 The template reuses the application's existing Overview and Domains controls;
 it does not create a second ingress service. Public direct/tunnel mappings and
 LAN mappings retain their existing route-kind labels. A missing mapping is not
@@ -94,7 +97,7 @@ Revoke it explicitly through the MariaDB Database tab. Removing an Application
 retains its logical database and, unless explicitly selected otherwise, its owned
 volume. Exact-name logical database deletion is a separate manager operation.
 Managed database/credential backup recovery follows
-[the shared MariaDB guide](shared-mariadb.md): logical backups are manual,
+[the shared MariaDB guide](shared-mariadb.md): logical backups support manual runs and per-database schedules,
 restore is manager-only and affects the chosen database in place. Application
 volume backups protect `/opt/data` separately. Project bundles remain blocked
 until managed database mapping recovery exists. Do not describe configured-

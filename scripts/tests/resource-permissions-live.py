@@ -270,7 +270,7 @@ def cleanup_resources():
             subprocess.run(['docker', 'network', 'rm', *ids], cwd=ROOT, env=ENV, check=True, stdout=subprocess.DEVNULL)
 
 
-def main(static_dir=None):
+def main(static_dir=None, runtime_overrides=None):
     before = snapshot()
     running = set(command(['docker', 'ps', '-q', '--no-trunc']).split())
     # Reuse an already installed official image; do not build or replace local images.
@@ -286,6 +286,8 @@ def main(static_dir=None):
     preview.pop('FERRIX_STATIC_DIR', None)
     if static_dir is not None:
         preview['FERRIX_STATIC_DIR'] = str(static_dir)
+    if runtime_overrides:
+        preview.update(runtime_overrides)
     sql(f'CREATE SCHEMA {SCHEMA}')
     process = None
     try:

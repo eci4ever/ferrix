@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Real shared MariaDB isolation; disposable API/schema/owned Docker resources."""
+import argparse
 import importlib.util
 from pathlib import Path
 import json
@@ -104,7 +105,12 @@ def scenario(origin):
     def cookies(client):
         return [{'name': cookie.name, 'value': cookie.value, 'url': origin, 'httpOnly': True, 'sameSite': 'Lax'} for cookie in client.jar]
     browser_fixture = {'origin': origin, 'project': project['id'], 'server': dbid, 'target': ui_app['id'], 'studentApp': apps[0], 'managerCookies': cookies(lecturer), 'studentCookies': cookies(a)}
-    subprocess.run(['node', str(Path(__file__).with_name('shared-mariadb-browser.mjs'))], input=json.dumps(browser_fixture), text=True, env=live.ENV, cwd=live.ROOT, check=True, timeout=120)
+    if not SKIP_BROWSER:
+        subprocess.run(['node', str(Path(__file__).with_name('shared-mariadb-browser.mjs'))], input=json.dumps(browser_fixture), text=True, env=live.ENV, cwd=live.ROOT, check=True, timeout=120)
+    else:
+        # Keep the same four-student capacity fixture without starting a browser.
+        lecturer.request('POST', f'/services/{dbid}/databases', {'application_id': ui_app['id']})
+        print('Browser checks skipped explicitly; API/Docker/SQL checks remain real.', flush=True)
     base = f'/services/{dbid}/databases/{records[0]["id"]}'
     def wait_job(job):
         for _ in range(180):
@@ -186,6 +192,10 @@ def scenario(origin):
     print('PASS: separate exact-name deletion removes only C SQL database/account and preserves B.', flush=True)
 
 
+SKIP_BROWSER = False
 live.scenario = scenario
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--skip-browser', action='store_true', help='Run real API/Docker/SQL checks only; browser checks must be verified separately.')
+    SKIP_BROWSER = parser.parse_args().skip_browser
     live.main(static_dir=live.ROOT / 'apps/web/dist')
