@@ -152,7 +152,7 @@ pub(crate) async fn request_access(
             if (method == "GET"
                 && matches!(
                     suffix.as_str(),
-                    "configuration" | "environment" | "source" | "terminal"
+                    "configuration" | "environment" | "source" | "terminal" | "database-connection"
                 ))
                 || (method == "POST"
                     && matches!(

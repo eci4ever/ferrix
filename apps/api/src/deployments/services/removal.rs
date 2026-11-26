@@ -46,6 +46,16 @@ pub(super) async fn remove(
             .await?
             .ok_or_else(missing)?;
     project_bundles::lock_app(&mut tx, service, id.organization_id).await?;
+    let shared: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM managed_databases WHERE service_id=$1)")
+            .bind(service)
+            .fetch_one(&mut *tx)
+            .await?;
+    if shared {
+        return Err(invalid(
+            "This shared MariaDB service contains managed logical databases. Retain it until their data and accounts have been explicitly removed.",
+        ));
+    }
     if input.name != current {
         return Err(invalid("Type the exact service name to confirm deletion."));
     }

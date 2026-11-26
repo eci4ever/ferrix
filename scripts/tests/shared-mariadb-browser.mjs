@@ -1,0 +1,61 @@
+// Uses only the disposable runner's API and sessions; no mocks or saved logins.
+import { chromium } from '../../apps/web/node_modules/playwright/index.mjs'
+import assert from 'node:assert/strict'
+let input = ''
+for await (const chunk of process.stdin) input += chunk
+const fixture = JSON.parse(input)
+const browser = await chromium.launch({ headless: true })
+try {
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } })
+  await context.addCookies(fixture.managerCookies)
+  const page = await context.newPage()
+  const errors = []
+  page.on('pageerror', err => errors.push(err.message))
+  await page.goto(`${fixture.origin}/projects/${fixture.project}/services/${fixture.server}`)
+  await page.getByRole('tab', { name: 'Database', exact: true }).click()
+  await page.getByRole('heading', { name: 'Application databases', exact: true }).waitFor()
+  await page.getByLabel('Application in this environment', { exact: true }).selectOption(fixture.target)
+  const provisioning = page.waitForResponse(response => response.url().endsWith(`/services/${fixture.server}/databases`) && response.request().method() === 'POST')
+  await page.getByRole('button', { name: 'Provision database', exact: true }).click()
+  const response = await provisioning
+  assert.equal(response.status(), 200)
+  const record = await response.json()
+  assert.equal(record.status, 'ready')
+  const row = page.getByText(record.database_name, { exact: true }).locator('../..')
+  await row.getByRole('button', { name: 'Preview connection settings', exact: true }).click()
+  const dialog = page.getByRole('dialog')
+  const environment = dialog.getByLabel('Environment after update (contains secrets)', { exact: true })
+  await environment.waitFor()
+  const after = await environment.inputValue()
+  assert(after.includes('UNRELATED=preserve'))
+  assert(after.includes(`DB_DATABASE=${record.database_name}`))
+  const save = dialog.getByRole('button', { name: 'Save connection settings', exact: true })
+  assert(await save.isDisabled())
+  await dialog.getByLabel(`Type ${record.database_name} to confirm`, { exact: true }).fill(record.database_name)
+  const saving = page.waitForResponse(res => res.url().endsWith(`/${record.id}/environment`) && res.request().method() === 'POST')
+  await save.click()
+  assert.equal((await saving).status(), 204)
+  await dialog.waitFor({ state: 'hidden' })
+  await row.getByRole('button', { name: 'Rotate password', exact: true }).click()
+  await dialog.getByRole('heading', { name: 'Rotate application password', exact: true }).waitFor()
+  assert(await dialog.getByRole('button', { name: 'Rotate password', exact: true }).isDisabled())
+  await dialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await context.close()
+
+  const student = await browser.newContext()
+  await student.addCookies(fixture.studentCookies)
+  const own = await student.newPage()
+  own.on('pageerror', err => errors.push(err.message))
+  await own.goto(`${fixture.origin}/projects/${fixture.project}/services/${fixture.studentApp}`)
+  await own.getByRole('tab', { name: 'Database', exact: true }).click()
+  await own.getByRole('button', { name: 'Show connection settings', exact: true }).click()
+  const settings = own.getByLabel('Restricted database connection settings', { exact: true })
+  await settings.waitFor()
+  assert((await settings.inputValue()).includes('DB_DATABASE='))
+  await own.getByRole('button', { name: 'Hide credentials', exact: true }).click()
+  assert.equal(await settings.count(), 0)
+  assert.deepEqual(errors, [])
+  console.log('PASS: real browser provisions SQL database, previews and saves environment with exact-name confirmation; student sees/hides only own limited credentials.')
+} finally {
+  await browser.close()
+}

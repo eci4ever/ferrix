@@ -123,6 +123,13 @@ async fn create(
         .bind(project)
         .fetch_one(&mut *tx)
         .await?;
+    let managed: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM managed_databases m JOIN applications a ON a.id=m.service_id JOIN environments e ON e.id=a.environment_id WHERE e.project_id=$1)")
+        .bind(project).fetch_one(&mut *tx).await?;
+    if managed {
+        return Err(invalid(
+            "Project bundles do not yet recover managed database mappings. Back up each logical database explicitly; a configured-database backup does not include sibling databases.",
+        ));
+    }
     let busy:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM project_maintenance WHERE project_id=$1) OR EXISTS(SELECT 1 FROM applications a JOIN environments e ON e.id=a.environment_id WHERE e.project_id=$1 AND (a.restore_blocked OR a.cutover_pending OR EXISTS(SELECT 1 FROM terminal_connections t WHERE t.service_id=a.id AND t.closed_at IS NULL AND t.expires_at>now()) OR EXISTS(SELECT 1 FROM deployments d WHERE d.application_id=a.id AND (d.status IN ('queued','running') OR d.restore_container_id IS NOT NULL)) OR EXISTS(SELECT 1 FROM database_jobs j WHERE (j.application_id=a.id OR j.source_application_id=a.id) AND j.status IN ('queued','running'))))").bind(project).fetch_one(&mut *tx).await?;
     if busy {
         return Err(ApiError(

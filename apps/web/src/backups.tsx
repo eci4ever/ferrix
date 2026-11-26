@@ -33,6 +33,7 @@ import { Input } from '@/components/ui/input'
 import { Skeleton } from '@/components/ui/skeleton'
 
 type DatabaseJob = {
+  managed_database_id?: string | null
   id: string
   application_id: string
   service_name: string
@@ -83,7 +84,7 @@ export function ServiceBackups({
           signal: controller.signal,
         })
         if (!controller.signal.aborted) {
-          setJobs(data)
+          setJobs(data.filter(job => !job.managed_database_id))
           setPollError('')
         }
       } catch (e) {
@@ -113,7 +114,7 @@ export function ServiceBackups({
     setNotice('')
     try {
       await work()
-      setJobs(await request<DatabaseJob[]>(base))
+      setJobs((await request<DatabaseJob[]>(base)).filter(job => !job.managed_database_id))
     } catch (e) {
       setError(
         e instanceof Error ? e.message : 'Could not queue database operation.',

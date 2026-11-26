@@ -233,7 +233,7 @@ pub(super) async fn mark_excess(conn: &mut PgConnection, service: Uuid) -> Resul
         .execute(&mut *tx)
         .await
         .map_err(|_| "Could not lock backup retention.")?;
-    sqlx::query("UPDATE database_jobs SET pruning=true,prune_retry_at=now() WHERE id IN (SELECT id FROM database_jobs WHERE application_id=$1 AND operation='backup' AND status='succeeded' AND pruned_at IS NULL ORDER BY created_at DESC,id DESC OFFSET (SELECT keep_last FROM backup_policies WHERE application_id=$1)) AND EXISTS(SELECT 1 FROM backup_policies WHERE application_id=$1) AND NOT EXISTS(SELECT 1 FROM database_jobs r WHERE r.source_backup_id=database_jobs.id AND r.status IN ('queued','running'))")
+    sqlx::query("UPDATE database_jobs SET pruning=true,prune_retry_at=now() WHERE id IN (SELECT id FROM (SELECT id,row_number() OVER (PARTITION BY managed_database_id ORDER BY created_at DESC,id DESC) AS position FROM database_jobs WHERE application_id=$1 AND operation='backup' AND status='succeeded' AND pruned_at IS NULL) scoped WHERE position > (SELECT keep_last FROM backup_policies WHERE application_id=$1)) AND EXISTS(SELECT 1 FROM backup_policies WHERE application_id=$1) AND NOT EXISTS(SELECT 1 FROM database_jobs r WHERE r.source_backup_id=database_jobs.id AND r.status IN ('queued','running'))")
  .bind(service).execute(&mut *tx).await.map_err(|_|"Could not apply backup retention policy.")?;
     tx.commit()
         .await
