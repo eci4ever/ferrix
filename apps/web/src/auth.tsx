@@ -15,6 +15,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, Di
 import { DataTable } from '@/components/data-table'
 import { ApiRequestError, request } from '@/lib/api'
 import { QRCodeSVG } from 'qrcode.react'
+import { toast } from 'sonner'
 
 export type Identity = { session_id: string; user_id: string; name: string; email: string; system_role: string; organization_id: string; organization_name: string; role: string }
 export type Session = { id: string; created_at: string; expires_at: string; user_agent: string; ip_address: string; current: boolean }
@@ -154,7 +155,19 @@ export function SecurityPage({ sessions, security, audit, refresh }: { sessions:
   const [codes, setCodes] = useState<string[]>([])
   const [setupOpen, setSetupOpen] = useState(false)
   const mfaHeading = useRef<HTMLHeadingElement>(null)
-  async function action(path: string, body = {}) { setBusy(true); setMessage(''); try { const result = await request<unknown>(`/auth/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); await refresh(); return result } catch (error) { setMessage(errorText(error)); return null } finally { setBusy(false) } }
+  async function action(path: string, body = {}) {
+    setBusy(true); setMessage('')
+    try {
+      const result = await request<unknown>(`/auth/${path}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        notifyOnError: path === 'reauthenticate',
+      })
+      if (path === 'reauthenticate') toast.success('Identity verified', { description: 'Sensitive actions are available for the next 15 minutes.' })
+      await refresh()
+      return result
+    } catch (error) { setMessage(errorText(error)); return null }
+    finally { setBusy(false) }
+  }
   async function enroll(event: FormEvent<HTMLFormElement>) { const values = data(event); const result = await action('mfa/enroll', values); if (result) setEnrollment(result as { secret: string; otpauth_url: string }) }
   async function confirm(event: FormEvent<HTMLFormElement>) { const result = await action('mfa/confirm', data(event)); if (result) { setCodes((result as { recovery_codes: string[] }).recovery_codes); setEnrollment(null) } }
   return <div className="flex flex-col gap-6"><h1 className="text-2xl font-semibold">Security and sessions</h1><Message message={message} />
