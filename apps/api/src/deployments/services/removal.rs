@@ -47,7 +47,7 @@ pub(super) async fn remove(
             .ok_or_else(missing)?;
     project_bundles::lock_app(&mut tx, service, id.organization_id).await?;
     let shared: bool =
-        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM managed_databases WHERE service_id=$1)")
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM managed_databases WHERE service_id=$1) OR EXISTS(SELECT 1 FROM php_classroom_applications WHERE database_service_id=$1)")
             .bind(service)
             .fetch_one(&mut *tx)
             .await?;
