@@ -10,6 +10,7 @@ pub use github::webhook_routes;
 mod domains;
 mod managed_databases;
 pub(crate) mod observability;
+mod php_templates;
 mod services;
 mod terminal;
 mod worker;
@@ -51,6 +52,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
     reads
         .merge(services::routes(state.clone()))
         .merge(managed_databases::routes(state.clone()))
+        .merge(php_templates::routes(state.clone()))
         .merge(domains::routes(state.clone()))
         .merge(backups::routes(state.clone()))
         .merge(github::routes(state.clone()))
@@ -383,23 +385,33 @@ async fn create_application(
     State(state): State<AppState>,
     id: Identity,
     Path(environment): Path<Uuid>,
-    Json(mut input): Json<Configuration>,
+    Json(input): Json<Configuration>,
 ) -> Result<(StatusCode, Json<Application>), ApiError> {
     id.manager()?;
     environment_access(&state, &id, environment).await?;
-    let values = input.validate()?;
     let app = Uuid::new_v4();
-    let cipher = encrypt(&state, app, &values)?;
     let mut tx = state.pool.begin().await?;
-    let reserved = quotas::reserve(&state, &mut tx).await?;
-    sqlx::query("INSERT INTO applications(id,environment_id,name,image,container_port,env_cipher,service_cipher,worker_mode) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
-        .bind(app).bind(environment).bind(input.name).bind(input.image).bind(input.container_port).bind(cipher).bind(services::seal(&state,app,&input.runtime)?).bind(input.runtime.worker_mode).execute(&mut *tx).await.map_err(database_error)?;
-    quotas::check(&state, &mut tx, reserved).await?;
+    insert_application(&state, &mut tx, app, environment, input).await?;
     tx.commit().await?;
     Ok((
         StatusCode::CREATED,
         Json(app_access(&state, &id, app).await?),
     ))
+}
+async fn insert_application(
+    state: &AppState,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    app: Uuid,
+    environment: Uuid,
+    mut input: Configuration,
+) -> Result<(), ApiError> {
+    let values = input.validate()?;
+    let cipher = encrypt(state, app, &values)?;
+    let reserved = quotas::reserve(state, tx).await?;
+    sqlx::query("INSERT INTO applications(id,environment_id,name,image,container_port,env_cipher,service_cipher,worker_mode) VALUES($1,$2,$3,$4,$5,$6,$7,$8)")
+        .bind(app).bind(environment).bind(input.name).bind(input.image).bind(input.container_port).bind(cipher).bind(services::seal(state,app,&input.runtime)?).bind(input.runtime.worker_mode).execute(&mut **tx).await.map_err(database_error)?;
+    quotas::check(state, tx, reserved).await?;
+    Ok(())
 }
 async fn application(
     State(state): State<AppState>,
@@ -493,6 +505,7 @@ async fn deploy(
         .ok_or_else(missing)?;
     backups::ensure_idle(&mut tx, app).await?;
     backups::ensure_restored(&mut tx, app).await?;
+    php_templates::ensure_ready(&mut tx, app).await?;
     let deployment = Uuid::new_v4();
     sqlx::query("INSERT INTO deployments(id,application_id,requested_by,image,container_port,env_cipher,service_kind,worker_mode,service_cipher,requested_by_name,requested_by_key_id,requested_by_key_name) SELECT $1,id,$2,image,container_port,env_cipher,service_kind,worker_mode,service_cipher,$4,$5,$6 FROM applications WHERE id=$3")
         .bind(deployment).bind(id.user_id).bind(app).bind(&id.name).bind(key.as_ref().map(|key|key.id)).bind(key.as_ref().map(|key|key.name.as_str())).execute(&mut *tx).await.map_err(database_error)?;

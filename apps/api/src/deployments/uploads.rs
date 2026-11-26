@@ -27,6 +27,28 @@ struct Prepared {
     archive: tempfile::NamedTempFile,
     preview: Preview,
 }
+pub(super) async fn starter(
+    conn: &mut sqlx::PgConnection,
+    user: Uuid,
+    app: Uuid,
+    bytes: Vec<u8>,
+) -> Result<(), ApiError> {
+    let options = Options {
+        context: ".".into(),
+        dockerfile: php_templates::DOCKERFILE.into(),
+    };
+    let prepared =
+        prepare(&bytes, &options.context, &options.dockerfile).map_err(|_| internal())?;
+    let result = persist(conn, app, user, &options, &bytes, &prepared.preview).await?;
+    let revision: Uuid =
+        serde_json::from_value(result["upload_id"].clone()).map_err(|_| internal())?;
+    sqlx::query("UPDATE applications SET source_upload_id=$2 WHERE id=$1")
+        .bind(app)
+        .bind(revision)
+        .execute(conn)
+        .await?;
+    Ok(())
+}
 pub(super) fn routes(state: AppState) -> Router<AppState> {
     Router::new()
         .route(
@@ -61,23 +83,45 @@ async fn upload(
     let bytes = body.to_vec();
     let c = context.clone();
     let d = dockerfile.clone();
-    let prepared=tokio::task::spawn_blocking(move||prepare(&bytes,&c,&d)).await.map_err(|_|internal())?.map_err(|_|invalid("Invalid source archive. Check Dockerfile/context paths, limits and unsupported links or special files."))?;
-    let revision = Uuid::new_v4();
-    let sha = hex::encode(Sha256::digest(&body));
-    let preview = serde_json::to_value(&prepared.preview).map_err(|_| internal())?;
+    let prepared=tokio::task::spawn_blocking(move||prepare(&bytes,&c,&d)).await.map_err(|_|internal())?.map_err(|_|invalid("Invalid source archive. Check Dockerfile/context paths, PHP public/index.php and reserved template files, archive limits, links and special files."))?;
     let mut tx = state.pool.begin().await?;
     sqlx::query("SELECT id FROM applications WHERE id=$1 FOR UPDATE")
         .bind(app)
         .execute(&mut *tx)
         .await?;
-    sqlx::query("INSERT INTO application_source_uploads(id,application_id,created_by,archive,sha256,context,dockerfile,preview) VALUES($1,$2,$3,$4,$5,$6,$7,$8)").bind(revision).bind(app).bind(id.user_id).bind(body.as_ref()).bind(&sha).bind(&context).bind(&dockerfile).bind(&preview).execute(&mut *tx).await?;
+    let result = persist(
+        &mut tx,
+        app,
+        id.user_id,
+        &Options {
+            context,
+            dockerfile,
+        },
+        &body,
+        &prepared.preview,
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(Json(result))
+}
+async fn persist(
+    conn: &mut sqlx::PgConnection,
+    app: Uuid,
+    user: Uuid,
+    options: &Options,
+    body: &[u8],
+    preview: &Preview,
+) -> Result<Value, ApiError> {
+    let revision = Uuid::new_v4();
+    let sha = hex::encode(Sha256::digest(body));
+    let preview = serde_json::to_value(preview).map_err(|_| internal())?;
+    sqlx::query("INSERT INTO application_source_uploads(id,application_id,created_by,archive,sha256,context,dockerfile,preview) VALUES($1,$2,$3,$4,$5,$6,$7,$8)").bind(revision).bind(app).bind(user).bind(body).bind(&sha).bind(&options.context).bind(&options.dockerfile).bind(&preview).execute(&mut *conn).await?;
     // Keep five recent revisions plus the configured revision and all pending build snapshots.
     // Completed deployments roll back using their immutable image, not their source archive.
-    sqlx::query("DELETE FROM application_source_uploads u WHERE application_id=$1 AND id NOT IN (SELECT id FROM application_source_uploads WHERE application_id=$1 ORDER BY created_at DESC,id DESC LIMIT 5) AND NOT EXISTS(SELECT 1 FROM applications a WHERE a.source_upload_id=u.id) AND NOT EXISTS(SELECT 1 FROM deployments d WHERE d.source_upload_id=u.id AND d.status IN ('queued','running'))").bind(app).execute(&mut *tx).await?;
-    tx.commit().await?;
-    Ok(Json(
-        json!({"upload_id":revision,"sha256":sha,"context":context,"dockerfile":dockerfile,"preview":preview}),
-    ))
+    sqlx::query("DELETE FROM application_source_uploads u WHERE application_id=$1 AND id NOT IN (SELECT id FROM application_source_uploads WHERE application_id=$1 ORDER BY created_at DESC,id DESC LIMIT 5) AND NOT EXISTS(SELECT 1 FROM applications a WHERE a.source_upload_id=u.id) AND NOT EXISTS(SELECT 1 FROM deployments d WHERE d.source_upload_id=u.id AND d.status IN ('queued','running'))").bind(app).execute(&mut *conn).await?;
+    Ok(
+        json!({"upload_id":revision,"sha256":sha,"context":options.context,"dockerfile":options.dockerfile,"preview":preview}),
+    )
 }
 pub(super) async fn current(state: &AppState, app: Uuid) -> Result<Option<Value>, ApiError> {
     let row:Option<(Uuid,String,String,String,Value)>=sqlx::query_as("SELECT u.id,u.sha256,u.context,u.dockerfile,u.preview FROM applications a JOIN application_source_uploads u ON u.id=a.source_upload_id WHERE a.id=$1").bind(app).fetch_optional(&state.pool).await?;
@@ -223,6 +267,7 @@ fn prepare(bytes: &[u8], context: &str, dockerfile: &str) -> Result<Prepared, St
         }
     }
     let context = root.path().join(context);
+    php_templates::prepare(&context, dockerfile)?;
     if !context.is_dir() || !context.join(dockerfile).is_file() {
         return Err("Dockerfile/context not found. Paths are relative to the archive root.".into());
     }

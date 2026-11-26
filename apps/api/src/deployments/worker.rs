@@ -114,6 +114,7 @@ pub(super) async fn execute(
     conn: &mut PgConnection,
     job: &Job,
 ) -> Result<(), String> {
+    super::php_templates::ensure_ready(conn,job.application_id).await.map_err(|_| "PHP classroom database is not ready. Ask the lecturer to recover provisioning before deploying.".to_owned())?;
     if !matches!(job.service_kind.as_str(), "application" | "database") {
         return Err("This service type is no longer supported.".into());
     }

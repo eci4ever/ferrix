@@ -145,6 +145,7 @@ pub(crate) async fn request_access(
                         | "history"
                         | "logs/history"
                         | "access"
+                        | "php-template"
                 )
             {
                 return Ok(());

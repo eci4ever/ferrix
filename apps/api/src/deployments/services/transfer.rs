@@ -29,7 +29,7 @@ async fn locked(
         .bind(service).bind(id.organization_id).fetch_optional(&mut **conn).await?.ok_or_else(missing)?;
     project_bundles::lock_app(conn, service, id.organization_id).await?;
     let linked: bool = sqlx::query_scalar(
-        "SELECT EXISTS(SELECT 1 FROM managed_databases WHERE service_id=$1 OR application_id=$1)",
+        "SELECT EXISTS(SELECT 1 FROM managed_databases WHERE service_id=$1 OR application_id=$1) OR EXISTS(SELECT 1 FROM php_classroom_applications WHERE application_id=$1 OR database_service_id=$1)",
     )
     .bind(service)
     .fetch_one(&mut **conn)

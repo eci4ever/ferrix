@@ -188,6 +188,7 @@ fn context_archive(
     } else {
         repository.join(&source.context)
     };
+    php_templates::prepare(&context, &source.dockerfile)?;
     if !context.is_dir() || !context.join(&source.dockerfile).is_file() {
         return Err("Dockerfile or build context was not found in this commit.".into());
     }
@@ -292,6 +293,9 @@ pub(in crate::deployments) fn filtered_context(
             let relative = path
                 .strip_prefix(root)
                 .map_err(|_| "Source path is outside build context.")?;
+            if php_templates::excluded(dockerfile, relative) {
+                continue;
+            }
             if relative.components().count() > 128 {
                 return Err("Repository paths are too deeply nested.".into());
             }
@@ -313,6 +317,8 @@ pub(in crate::deployments) fn filtered_context(
             }
             if relative == std::path::Path::new(dockerfile)
                 || relative == std::path::Path::new(&ignore_name)
+                || (dockerfile == php_templates::DOCKERFILE
+                    && relative.starts_with(".ferrix/php-v1"))
             {
                 included = true
             }

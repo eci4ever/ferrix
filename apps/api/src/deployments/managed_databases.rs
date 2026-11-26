@@ -32,6 +32,32 @@ struct Provision {
 struct Confirm {
     database_name: String,
 }
+pub(super) async fn provision_application(
+    state: &AppState,
+    id: &Identity,
+    service: Uuid,
+    app: Uuid,
+) -> Result<(), ApiError> {
+    let Json(r) = provision(
+        State(state.clone()),
+        id.clone(),
+        Path(service),
+        Json(Provision {
+            application_id: app,
+        }),
+    )
+    .await?;
+    inject(
+        State(state.clone()),
+        id.clone(),
+        Path((service, r.id)),
+        Json(Confirm {
+            database_name: r.database_name,
+        }),
+    )
+    .await?;
+    Ok(())
+}
 pub(super) fn routes(state: AppState) -> Router<AppState> {
     Router::new()
         .route("/services/{id}/databases", get(list))
