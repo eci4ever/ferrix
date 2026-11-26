@@ -15,6 +15,8 @@ COPY docs/api-keys.md docs/api-keys.md
 RUN cargo build --locked --release -p ferrix-api
 
 FROM debian:bookworm-slim AS runtime
+LABEL org.opencontainers.image.licenses="AGPL-3.0-only"
+COPY LICENSE /usr/share/licenses/ferrix/LICENSE
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tzdata \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 ferrix && useradd --uid 10001 --gid ferrix --no-create-home ferrix
