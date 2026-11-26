@@ -233,7 +233,7 @@ pub(super) async fn mark_excess(conn: &mut PgConnection, service: Uuid) -> Resul
         .execute(&mut *tx)
         .await
         .map_err(|_| "Could not lock backup retention.")?;
-    sqlx::query("UPDATE database_jobs SET pruning=true,prune_retry_at=now() WHERE id IN (SELECT id FROM (SELECT id,row_number() OVER (PARTITION BY managed_database_id ORDER BY created_at DESC,id DESC) AS position FROM database_jobs WHERE application_id=$1 AND operation='backup' AND status='succeeded' AND pruned_at IS NULL) scoped WHERE position > (SELECT keep_last FROM backup_policies WHERE application_id=$1)) AND EXISTS(SELECT 1 FROM backup_policies WHERE application_id=$1) AND NOT EXISTS(SELECT 1 FROM database_jobs r WHERE r.source_backup_id=database_jobs.id AND r.status IN ('queued','running'))")
+    sqlx::query("UPDATE database_jobs SET pruning=true,prune_retry_at=now() WHERE id IN (SELECT id FROM (SELECT id,managed_database_id,row_number() OVER (PARTITION BY managed_database_id ORDER BY created_at DESC,id DESC) AS position FROM database_jobs WHERE application_id=$1 AND operation='backup' AND status='succeeded' AND pruned_at IS NULL) scoped WHERE position > COALESCE((SELECT keep_last FROM managed_backup_policies WHERE managed_database_id=scoped.managed_database_id),(SELECT keep_last FROM backup_policies WHERE application_id=$1))) AND NOT EXISTS(SELECT 1 FROM database_jobs r WHERE r.source_backup_id=database_jobs.id AND r.status IN ('queued','running'))")
  .bind(service).execute(&mut *tx).await.map_err(|_|"Could not apply backup retention policy.")?;
     tx.commit()
         .await
@@ -351,6 +351,46 @@ mod database_tests {
    let restore=Uuid::new_v4();sqlx::query("INSERT INTO database_jobs(id,application_id,source_application_id,source_backup_id,operation,engine,image,image_id,config_cipher,status) VALUES($1,$2,$2,$3,'restore','postgres','postgres:17-alpine','sha256:fixture','\\x00','queued')").bind(restore).bind(service).bind(jobs[0].0).execute(&pool).await.unwrap();
    mark_excess(&mut conn,service).await.unwrap();
    for(id,expected)in[(jobs[0].0,false),(older,true),(newest,false)]{assert_eq!(sqlx::query_scalar::<_,bool>("SELECT pruning FROM database_jobs WHERE id=$1").bind(id).fetch_one(&pool).await.unwrap(),expected)}
+   // Logical schedules share the physical service but have separate occurrence
+   // identity and retention. This also verifies the migration on an existing policy.
+   sqlx::query("UPDATE database_jobs SET status='succeeded' WHERE application_id=$1").bind(service).execute(&pool).await.unwrap();
+   sqlx::query("UPDATE auth_members SET role='owner' WHERE user_id=$1").bind(user).execute(&pool).await.unwrap();
+   let config=DatabaseConfig{engine:DatabaseEngine::Mariadb,root_password:Some("fixture-root".into()),database_name:"configured".into(),username:"fixture".into(),password:"fixture-password".into()};
+   let config_cipher=services::seal(&state,service,&config).unwrap();
+   sqlx::query("UPDATE applications SET image='mariadb:11.4' WHERE id=$1").bind(service).execute(&pool).await.unwrap();
+   sqlx::query("UPDATE deployments SET image='mariadb:11.4',service_cipher=$2 WHERE id=$1").bind(deployment).bind(config_cipher).execute(&pool).await.unwrap();
+   let first=Uuid::new_v4(); let second=Uuid::new_v4();
+   for (db,name) in [(first,"logical_a"),(second,"logical_b")] {
+       sqlx::query("INSERT INTO managed_databases(id,organization_id,service_id,database_name,username,credentials_cipher,status) VALUES($1,$2,$3,$4,$4,'\\x00','ready')").bind(db).bind(org).bind(service).bind(name).execute(&pool).await.unwrap();
+       sqlx::query("INSERT INTO managed_backup_policies(managed_database_id,enabled,configured_by,next_run_at,keep_last) VALUES($1,true,$2,date_trunc('day',now())-interval '1 day',1)").bind(db).bind(user).execute(&pool).await.unwrap();
+   }
+   super::super::logical_policy::schedule_due(&state,&mut conn).await.unwrap();
+   let logical:Vec<(Uuid,Uuid)>=sqlx::query_as("SELECT id,managed_database_id FROM database_jobs WHERE scheduled_for IS NOT NULL AND managed_database_id IS NOT NULL").fetch_all(&pool).await.unwrap();
+   assert_eq!(logical.len(),1);
+   super::super::logical_policy::schedule_due(&state,&mut conn).await.unwrap();
+   assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(*) FROM database_jobs WHERE managed_database_id IS NOT NULL").fetch_one(&pool).await.unwrap(),1);
+   sqlx::query("UPDATE database_jobs SET status='succeeded' WHERE id=$1").bind(logical[0].0).execute(&pool).await.unwrap();
+   super::super::logical_policy::schedule_due(&state,&mut conn).await.unwrap();
+   let logical:Vec<(Uuid,Uuid)>=sqlx::query_as("SELECT id,managed_database_id FROM database_jobs WHERE scheduled_for IS NOT NULL AND managed_database_id IS NOT NULL").fetch_all(&pool).await.unwrap();
+   assert_eq!(logical.len(),2); assert_ne!(logical[0].1,logical[1].1);
+   for (job,db) in &logical {
+       let cipher:Vec<u8>=sqlx::query_scalar("SELECT config_cipher FROM database_jobs WHERE id=$1").bind(job).fetch_one(&pool).await.unwrap();
+       let config:DatabaseConfig=services::open(&state,service,&cipher).unwrap();
+       assert_eq!(config.database_name,if *db==first {"logical_a"} else {"logical_b"});
+   }
+
+   // Both occurrences have the same timestamp but must survive the scoped index.
+   assert_eq!(sqlx::query_scalar::<_,i64>("SELECT count(DISTINCT scheduled_for) FROM database_jobs WHERE managed_database_id IS NOT NULL").fetch_one(&pool).await.unwrap(),1);
+   sqlx::query("UPDATE database_jobs SET status='succeeded' WHERE managed_database_id IS NOT NULL").execute(&pool).await.unwrap();
+   let old_logical=Uuid::new_v4();
+   sqlx::query("INSERT INTO database_jobs(id,application_id,operation,engine,image,image_id,config_cipher,status,managed_database_id,created_at) VALUES($1,$2,'backup','mariadb','mariadb:11.4','sha256:fixture','\\x00','succeeded',$3,now()-interval '5 days')").bind(old_logical).bind(service).bind(first).execute(&pool).await.unwrap();
+   mark_excess(&mut conn,service).await.unwrap();
+   assert!(sqlx::query_scalar::<_,bool>("SELECT pruning FROM database_jobs WHERE id=$1").bind(old_logical).fetch_one(&pool).await.unwrap());
+   for (job,_) in &logical { assert!(!sqlx::query_scalar::<_,bool>("SELECT pruning FROM database_jobs WHERE id=$1").bind(job).fetch_one(&pool).await.unwrap()); }
+   sqlx::query("UPDATE managed_backup_policies SET next_run_at=now()-interval '1 hour' WHERE managed_database_id=$1").bind(first).execute(&pool).await.unwrap();
+   sqlx::query("UPDATE auth_members SET role='member' WHERE user_id=$1").bind(user).execute(&pool).await.unwrap();
+   super::super::logical_policy::schedule_due(&state,&mut conn).await.unwrap();
+   assert!(!sqlx::query_scalar::<_,bool>("SELECT enabled FROM managed_backup_policies WHERE managed_database_id=$1").bind(first).fetch_one(&pool).await.unwrap());
   }).catch_unwind().await;
         pool.close().await;
         admin

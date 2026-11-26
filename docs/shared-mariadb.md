@@ -76,9 +76,24 @@ the configured-database/new-service restore endpoint.
 
 The existing MariaDB Backups tab and its schedule cover the service's original
 **configured database only**, not all logical databases or MariaDB account tables.
-Logical backups can use the shared service's S3/retention settings but are manual
-in this version. Full shared-service disaster recovery and automatic per-logical
-database schedules remain follow-up work. Project bundles are explicitly blocked
+Each logical database has an **Automatic backups** section in the Database tab.
+Owners/admins can enable a five-field cron schedule with an IANA timezone and
+its own successful-backup retention count (1–365). Schedules default to disabled.
+The shared service's saved local/S3 destination is snapshotted when each job is
+queued; changing storage does not change already-created backups. Manual logical
+backups use the same per-database retention setting when one is saved, otherwise
+they inherit the shared service's retention. No sibling database history is pruned.
+
+Due databases on one service run sequentially. Busy jobs, deployments and project
+maintenance defer a due run; missed runs coalesce after restart. A database that
+is not ready or has no eligible deployed MariaDB version is skipped with a visible
+message and retried at its next scheduled time. Demoting/removing/banning the
+manager who configured a schedule pauses it. Queued jobs recheck permissions.
+Removing the linked Application retains its database and schedule; explicitly
+deleting the logical database removes its schedule. Backups do not stop student
+applications; coordinate writers and pause them before restoring a database.
+
+Full shared-service disaster recovery remains follow-up work. Project bundles are explicitly blocked
 for projects containing managed databases until bundle mapping recovery exists;
 they must not silently produce an incomplete classroom backup.
 
@@ -93,3 +108,8 @@ operations, cookie/API-key/terminal authorization, duplicate/partial-failure
 retries, collision refusal, rotation and real Application deployment, logical
 backup/restore, revocation, retention after app deletion, and explicit data
 deletion. Cleanup checks existing metadata and running containers were preserved.
+
+Run `python3 scripts/tests/logical-backup-schedules-live.py` for real cron-triggered
+A/B backups, restore isolation, independent retention and permission regression
+checks in disposable resources. The test waits for a real cron minute and leaves
+existing demo applications and their data unchanged.

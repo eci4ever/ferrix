@@ -1,4 +1,5 @@
 mod applications;
+mod logical_policy;
 mod policy;
 mod remote;
 use super::*;
@@ -20,6 +21,7 @@ use tokio::sync::watch;
 pub(super) fn routes(state: AppState) -> Router<AppState> {
     Router::new()
         .merge(policy::routes(state.clone()))
+        .merge(logical_policy::routes(state.clone()))
         .route("/services/{id}/backups", get(list))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -679,6 +681,7 @@ pub(in crate::deployments) async fn cycle_for(
             .bind(job.id).bind(message).execute(&mut *conn).await.map_err(|_| "Could not record interrupted database operation.")?;
     }
     policy::schedule_due(state, conn).await?;
+    logical_policy::schedule_due(state, conn).await?;
     policy::prune_one(state, conn).await?;
     let job: Option<Job> = sqlx::query_as("WITH next AS (SELECT j.id FROM database_jobs j LEFT JOIN deployments d ON d.id=j.deployment_id WHERE j.status='queued' AND ($1::uuid IS NULL OR j.id=$1) AND (j.operation='backup' OR d.status IN ('succeeded','failed') OR d.id IS NULL) ORDER BY j.created_at,j.id LIMIT 1 FOR UPDATE OF j SKIP LOCKED) UPDATE database_jobs j SET status='running',started_at=now() FROM next WHERE j.id=next.id RETURNING j.*")
         .bind(only)
