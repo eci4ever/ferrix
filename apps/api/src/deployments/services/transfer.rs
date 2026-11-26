@@ -28,6 +28,17 @@ async fn locked(
     let app = sqlx::query_as::<_,Application>(&format!("SELECT {APP_COLUMNS} FROM applications a JOIN environments e ON e.id=a.environment_id JOIN projects p ON p.id=e.project_id WHERE a.id=$1 AND p.organization_id=$2 AND a.service_kind IN ('application','database') FOR UPDATE OF a"))
         .bind(service).bind(id.organization_id).fetch_optional(&mut **conn).await?.ok_or_else(missing)?;
     project_bundles::lock_app(conn, service, id.organization_id).await?;
+    let linked: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM managed_databases WHERE service_id=$1 OR application_id=$1)",
+    )
+    .bind(service)
+    .fetch_one(&mut **conn)
+    .await?;
+    if linked {
+        return Err(conflict(
+            "Managed database links must stay in their original environment. Moving or cloning would copy credentials without creating an independent database.",
+        ));
+    }
     let valid: bool = sqlx::query_scalar(
         "SELECT EXISTS(SELECT 1 FROM environments WHERE id=$1 AND project_id=$2)",
     )

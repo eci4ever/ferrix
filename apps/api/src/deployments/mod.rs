@@ -8,6 +8,7 @@ mod test_support;
 mod uploads;
 pub use github::webhook_routes;
 mod domains;
+mod managed_databases;
 pub(crate) mod observability;
 mod services;
 mod terminal;
@@ -49,6 +50,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
         ));
     reads
         .merge(services::routes(state.clone()))
+        .merge(managed_databases::routes(state.clone()))
         .merge(domains::routes(state.clone()))
         .merge(backups::routes(state.clone()))
         .merge(github::routes(state.clone()))

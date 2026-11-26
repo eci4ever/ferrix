@@ -38,6 +38,8 @@ pub(super) fn routes(state: AppState) -> Router<AppState> {
 #[derive(Serialize, sqlx::FromRow)]
 struct Record {
     id: Uuid,
+    managed_database_id: Option<Uuid>,
+    managed_database_name: Option<String>,
     application_id: Uuid,
     service_name: String,
     project_id: Uuid,
@@ -61,6 +63,8 @@ struct Record {
 struct Job {
     id: Uuid,
     application_id: Uuid,
+    #[sqlx(default)]
+    managed_database_id: Option<Uuid>,
     source_application_id: Option<Uuid>,
     source_backup_id: Option<Uuid>,
     operation: String,
@@ -137,7 +141,7 @@ async fn list(
     Path(service): Path<Uuid>,
 ) -> Result<Json<Vec<Record>>, ApiError> {
     access(&state, &id, service).await?;
-    Ok(Json(sqlx::query_as("SELECT j.id,j.application_id,a.name AS service_name,e.project_id,j.source_backup_id,j.operation,j.engine,j.status,j.message,j.size_bytes,j.sha256,CASE WHEN j.s3_cipher IS NULL THEN 'local' ELSE 's3' END AS storage,j.scheduled_for,j.pruning,j.pruned_at,j.retention_error,j.created_at,j.started_at,j.finished_at FROM database_jobs j JOIN applications a ON a.id=j.application_id JOIN environments e ON e.id=a.environment_id WHERE j.application_id=$1 OR j.source_application_id=$1 ORDER BY j.created_at DESC,j.id DESC LIMIT 100")
+    Ok(Json(sqlx::query_as("SELECT j.id,j.managed_database_id,j.managed_database_name,j.application_id,a.name AS service_name,e.project_id,j.source_backup_id,j.operation,j.engine,j.status,j.message,j.size_bytes,j.sha256,CASE WHEN j.s3_cipher IS NULL THEN 'local' ELSE 's3' END AS storage,j.scheduled_for,j.pruning,j.pruned_at,j.retention_error,j.created_at,j.started_at,j.finished_at FROM database_jobs j JOIN applications a ON a.id=j.application_id JOIN environments e ON e.id=a.environment_id WHERE j.application_id=$1 OR j.source_application_id=$1 ORDER BY j.created_at DESC,j.id DESC LIMIT 100")
         .bind(service).fetch_all(&state.pool).await?))
 }
 async fn create(
@@ -192,6 +196,54 @@ async fn create(
 struct RestoreRequest {
     name: String,
 }
+/// Reuses the same worker, integrity checks, retention volume and S3 snapshot.
+pub(super) async fn managed_job(
+    state: &AppState,
+    id: &Identity,
+    service: Uuid,
+    database: Uuid,
+    name: &str,
+    source: Option<Uuid>,
+) -> Result<Value, ApiError> {
+    id.manager()?;
+    access(state, id, service).await?;
+    let mut tx = state.pool.begin().await?;
+    sqlx::query("SELECT id FROM applications WHERE id=$1 FOR UPDATE")
+        .bind(service)
+        .fetch_one(&mut *tx)
+        .await?;
+    project_bundles::lock_app(&mut tx, service, id.organization_id).await?;
+    ensure_idle(&mut tx, service).await?;
+    ensure_restored(&mut tx, service).await?;
+    let pending: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM deployments WHERE application_id=$1 AND status IN ('queued','running'))").bind(service).fetch_one(&mut *tx).await?;
+    if pending {
+        return Err(invalid("Wait for the shared MariaDB deployment to finish."));
+    }
+    let (image,image_id,cipher,env,deployment): (String,String,Vec<u8>,Option<Vec<u8>>,Uuid) = sqlx::query_as("SELECT d.image,d.image_id,d.service_cipher,d.env_cipher,d.id FROM applications a JOIN deployments d ON d.id=a.active_deployment_id WHERE a.id=$1 AND a.active_container_id IS NOT NULL AND d.image_id IS NOT NULL")
+        .bind(service).fetch_optional(&mut *tx).await?.ok_or_else(||invalid("Deploy MariaDB before creating a logical database backup."))?;
+    let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM managed_databases WHERE id=$1 AND service_id=$2 AND database_name=$3 AND status='ready')")
+        .bind(database).bind(service).bind(name).fetch_one(&mut *tx).await?;
+    if !valid {
+        return Err(invalid("Logical database is not ready."));
+    }
+    let mut config: DatabaseConfig = services::open(state, service, &cipher)?;
+    config.database_name = name.to_owned();
+    let cipher = services::seal(state, service, &config)?;
+    let job = Uuid::new_v4();
+    let (operation, s3_cipher, s3_key) = if let Some(backup) = source {
+        let remote: Option<(Option<Vec<u8>>,Option<String>)> = sqlx::query_as("SELECT s3_cipher,s3_key FROM database_jobs WHERE id=$1 AND application_id=$2 AND managed_database_id=$3 AND operation='backup' AND status='succeeded' AND size_bytes>0 AND sha256 IS NOT NULL AND pruned_at IS NULL AND NOT pruning FOR UPDATE")
+            .bind(backup).bind(service).bind(database).fetch_optional(&mut *tx).await?;
+        let (cipher, key) = remote.ok_or_else(missing)?;
+        ("restore", cipher, key)
+    } else {
+        let (cipher, key) = policy::snapshot(state, &mut tx, service, job).await?;
+        ("backup", cipher, key)
+    };
+    sqlx::query("INSERT INTO database_jobs(id,application_id,source_application_id,source_backup_id,requested_by,operation,engine,image,image_id,config_cipher,env_cipher,deployment_id,managed_database_id,managed_database_name,s3_cipher,s3_key) VALUES($1,$2,$3,$4,$5,$6,'mariadb',$7,$8,$9,$10,$11,$12,$13,$14,$15)")
+        .bind(job).bind(service).bind(source.map(|_|service)).bind(source).bind(id.user_id).bind(operation).bind(image).bind(image_id).bind(cipher).bind(env).bind(deployment).bind(database).bind(name).bind(s3_cipher).bind(s3_key).execute(&mut *tx).await.map_err(database_error)?;
+    tx.commit().await?;
+    Ok(json!({"id":job,"status":"queued","database_name":name,"scope":"logical_database"}))
+}
 async fn restore(
     State(state): State<AppState>,
     id: Identity,
@@ -210,7 +262,7 @@ async fn restore(
         .await?
         .ok_or_else(missing)?;
     ensure_idle(&mut tx, service).await?;
-    let saved: Job = sqlx::query_as("SELECT id,application_id,source_application_id,source_backup_id,operation,engine,image,image_id,config_cipher,env_cipher,size_bytes,sha256,s3_cipher,s3_key,application_port FROM database_jobs WHERE id=$1 AND application_id=$2 AND operation='backup' AND status='succeeded' AND size_bytes>0 AND sha256 IS NOT NULL AND pruned_at IS NULL AND NOT pruning FOR UPDATE")
+    let saved: Job = sqlx::query_as("SELECT id,application_id,source_application_id,source_backup_id,operation,engine,image,image_id,config_cipher,env_cipher,size_bytes,sha256,s3_cipher,s3_key,application_port FROM database_jobs WHERE id=$1 AND application_id=$2 AND operation='backup' AND status='succeeded' AND size_bytes>0 AND sha256 IS NOT NULL AND pruned_at IS NULL AND NOT pruning AND managed_database_id IS NULL FOR UPDATE")
         .bind(backup).bind(service).fetch_optional(&mut *tx).await?.ok_or_else(missing)?;
     let target = Uuid::new_v4();
     let deployment = Uuid::new_v4();
@@ -384,6 +436,15 @@ async fn execute(
     let config: DatabaseConfig = services::open(state, job.application_id, &job.config_cipher)
         .map_err(|_| "Could not decrypt database credentials.")?;
     let restoring = job.operation == "restore";
+    if let Some(database) = job.managed_database_id {
+        let valid: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM managed_databases WHERE id=$1 AND service_id=$2 AND database_name=$3 AND status='ready')")
+            .bind(database).bind(job.application_id).bind(&config.database_name).fetch_one(&mut *conn).await.map_err(|_| "Could not verify the managed database mapping.")?;
+        if !valid {
+            return Err(
+                "Managed database mapping is no longer ready. No import was attempted.".into(),
+            );
+        }
+    }
     let source = job.source_application_id.unwrap_or(job.application_id);
     let file_id = job.source_backup_id.unwrap_or(job.id);
     if restoring && job.s3_cipher.is_some() {
@@ -664,7 +725,9 @@ pub(in crate::deployments) async fn cycle_for(
                     "Backup completed.".to_owned()
                 }
             } else {
-                if job.engine == "application" {
+                if job.managed_database_id.is_some() {
+                    "Logical database restored in place. Sibling databases and SQL accounts were not restored or rotated.".to_owned()
+                } else if job.engine == "application" {
                     "Restore completed. The new Application is stopped. Verify its data and stop the source before starting the target.".to_owned()
                 } else {
                     "Restore completed. The new database service is ready.".to_owned()

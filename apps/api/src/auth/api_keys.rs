@@ -236,6 +236,7 @@ fn scope(method: &str, route: &str) -> Option<&'static str> {
             "/applications/{id}/configuration"
             | "/services/{id}/configuration"
             | "/services/{id}/environment"
+            | "/services/{id}/database-connection"
             | "/services/{id}/source"
             | "/services/{id}/domains/{domain_id}/tunnel-config",
         ) => Some("secrets:read"),

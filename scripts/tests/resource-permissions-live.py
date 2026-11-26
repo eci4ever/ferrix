@@ -270,7 +270,7 @@ def cleanup_resources():
             subprocess.run(['docker', 'network', 'rm', *ids], cwd=ROOT, env=ENV, check=True, stdout=subprocess.DEVNULL)
 
 
-def main():
+def main(static_dir=None):
     before = snapshot()
     running = set(command(['docker', 'ps', '-q', '--no-trunc']).split())
     # Reuse an already installed official image; do not build or replace local images.
@@ -284,6 +284,8 @@ def main():
     isolated = urllib.parse.urlunsplit(DATABASE._replace(query=urllib.parse.urlencode(query)))
     preview = ENV | {'DATABASE_URL': isolated, 'FERRIX_BIND': f'127.0.0.1:{port}', 'FERRIX_AUTH_ORIGIN': origin, 'FERRIX_AUTH_KEY': secrets.token_hex(32), 'FERRIX_AUTO_DOMAIN': 'off', 'FERRIX_PUBLIC_IP': '', 'FERRIX_WEBSITE_BIND': '127.0.0.1:0'}
     preview.pop('FERRIX_STATIC_DIR', None)
+    if static_dir is not None:
+        preview['FERRIX_STATIC_DIR'] = str(static_dir)
     sql(f'CREATE SCHEMA {SCHEMA}')
     process = None
     try:
