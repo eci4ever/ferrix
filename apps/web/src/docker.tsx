@@ -92,7 +92,7 @@ function Inventory({ section, refreshVersion }: { section: Section; refreshVersi
 }
 
 export function DockerPage({ admin, refreshVersion }: { admin: boolean; refreshVersion: number }) {
-  if (!admin) return <Alert><AlertTitle>Administrator access required</AlertTitle><AlertDescription>Docker inventory is shared across the host.</AlertDescription></Alert>
+
   return <section className="flex min-w-0 flex-col gap-4">
     <div><h1 className="text-2xl font-semibold tracking-tight">Docker</h1><p className="text-sm text-muted-foreground">Inventory and diagnostics for the connected Docker host.</p></div>
     <Tabs defaultValue="containers" className="min-w-0">
@@ -102,7 +102,7 @@ export function DockerPage({ admin, refreshVersion }: { admin: boolean; refreshV
         </TabsList>
       </div>
       {sections.map(section => <TabsContent key={section.id} value={section.id} className="min-w-0">
-        {section.id === 'swarm' ? <SwarmInventory refreshVersion={refreshVersion} /> : <Inventory section={section} refreshVersion={refreshVersion} />}
+        {section.id === 'swarm' ? <SwarmInventory refreshVersion={refreshVersion} canManage={admin} /> : <Inventory section={section} refreshVersion={refreshVersion} />}
       </TabsContent>)}
     </Tabs>
   </section>

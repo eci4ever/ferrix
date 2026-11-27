@@ -33,6 +33,8 @@ import { Card, CardHeader, CardTitle, CardDescription, CardAction, CardContent }
 import { LandingPage } from './landing'
 import { ProjectServices, ServiceWorkspace } from './project-services'
 import { MonitoringPage } from './monitoring'
+import { PlatformOrganizations } from './platform-organizations'
+import { PlatformSettings } from './platform-settings'
 import { DockerPage } from './docker'
 import { ProjectList } from './project-list'
 import './index.css'
@@ -43,6 +45,7 @@ function ErrorNotice({ message }: { message: string }) {
 }
 
 const WorkspaceRefresh = createContext(0)
+const WorkspaceReload = createContext<() => Promise<void>>(async () => {})
 
 function Shell() {
   const { status, account, setup, organizations } = rootRoute.useLoaderData()
@@ -82,19 +85,19 @@ function Shell() {
     return <LoginPage key={pathname} setupRequired={pathname === '/signup' && setup.data.setup_required} initialMode={pathname === '/signup' ? 'signup' : 'login'} refresh={() => router.invalidate()} />
   }
   if (!account.data) return <Navigate to="/login" replace />
-  const pageNames: Record<string, string> = { '/dashboard': 'Home', '/monitoring': 'Monitoring', '/projects': 'Projects', '/containers': 'Docker', '/profile': 'Profile', '/security': 'Security', '/api-keys': 'API keys', '/organization': 'Organization', '/admin': 'Users' }
+  const pageNames: Record<string, string> = { '/dashboard': 'Home', '/monitoring': 'Monitoring', '/projects': 'Projects', '/containers': 'Docker', '/profile': 'Profile', '/security': 'Security', '/api-keys': 'API keys', '/organization': 'Organization', '/admin': 'Users', '/platform/settings': 'Platform Settings', '/organization/members': 'Members', '/organization/invitations': 'Invitations', '/organization/settings': 'Overview', '/platform/organizations': 'Organizations' }
   return <TooltipProvider><SidebarProvider>
     <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:bg-background focus:p-4">Skip to content</a>
     <AppSidebar identity={account.data} organizations={organizations.data ?? []} theme={theme} busy={accountBusy} onSwitch={id => accountAction('organizations/switch', { organization_id: id })} onSignOut={() => accountAction('sign-out')} onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} version={status.data?.version} />
     <SidebarInset id="main" tabIndex={-1}>
       <header className="flex min-h-16 shrink-0 flex-wrap items-center justify-between gap-2 px-4 py-2 sm:flex-nowrap transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12 motion-reduce:transition-none">
         <div className="flex min-w-0 max-w-full items-center gap-2"><SidebarTrigger className="-ml-1" /><Separator orientation="vertical" className="mr-2 data-vertical:h-4 data-vertical:self-center" /><Breadcrumb><BreadcrumbList className="min-w-0 flex-wrap"><BreadcrumbItem className="hidden md:block"><BreadcrumbLink asChild><Link to="/organization">{account.data.organization_name}</Link></BreadcrumbLink></BreadcrumbItem><BreadcrumbSeparator className="hidden md:block" /><BreadcrumbItem><BreadcrumbPage className="max-w-40 truncate sm:max-w-none">{pageNames[pathname] ?? (pathname.startsWith('/projects/') ? 'Projects' : 'Page not found')}</BreadcrumbPage></BreadcrumbItem></BreadcrumbList></Breadcrumb></div>
-        <div className="ml-auto flex shrink-0 items-center gap-2"><ServerClock /><Notifications key={account.data.organization_id} /><Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" onClick={refresh} disabled={refreshing} aria-label="Refresh workspace" aria-busy={refreshing}><RefreshCw aria-hidden="true" className={refreshing ? 'animate-spin motion-reduce:animate-none' : undefined} /></Button></TooltipTrigger><TooltipContent side="bottom">{refreshing ? 'Refreshing workspace data…' : 'Refresh current page data'}</TooltipContent></Tooltip></div>
+        <div className="ml-auto flex shrink-0 items-center gap-2"><ServerClock refreshVersion={refreshVersion} /><Notifications key={account.data.organization_id} /><Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" onClick={refresh} disabled={refreshing} aria-label="Refresh workspace" aria-busy={refreshing}><RefreshCw aria-hidden="true" className={refreshing ? 'animate-spin motion-reduce:animate-none' : undefined} /></Button></TooltipTrigger><TooltipContent side="bottom">{refreshing ? 'Refreshing workspace data…' : 'Refresh current page data'}</TooltipContent></Tooltip></div>
       </header>
       <div className="flex min-w-0 flex-1 flex-col gap-6 p-4 pt-2 md:p-6 md:pt-2">
         {refreshError ? <ErrorNotice message={refreshError} /> : null}
         {organizations.error ? <ErrorNotice message={organizations.error} /> : null}
-        <WorkspaceRefresh.Provider value={refreshVersion}><Outlet /></WorkspaceRefresh.Provider>
+        <WorkspaceRefresh.Provider value={refreshVersion}><WorkspaceReload.Provider value={refresh}><Outlet /></WorkspaceReload.Provider></WorkspaceRefresh.Provider>
       </div>
     </SidebarInset>
   </SidebarProvider></TooltipProvider>
@@ -222,6 +225,37 @@ const teamRoute = createRoute({ getParentRoute: () => rootRoute, path: '/organiz
       refreshVersion={refreshVersion} refresh={() => router.invalidate()} />
   },
 })
+const organizationLoader = async () => {
+  const [members, invitations] = await Promise.all([load<Member[]>('/auth/members'), load<Invitation[]>('/auth/invitations')])
+  return { members, invitations }
+}
+function OrganizationView({ members, invitations, view }: { members: Member[]; invitations: Invitation[]; view: 'settings' | 'team' | 'invitations' }) {
+  const { account } = rootRoute.useLoaderData()
+  const router = useRouter()
+  const refreshVersion = useContext(WorkspaceRefresh)
+  return account.data ? <TeamPage key={`${account.data.organization_id}:${view}`} view={view} identity={account.data} members={members} invitations={invitations} refreshVersion={refreshVersion} refresh={() => router.invalidate()} /> : null
+}
+const organizationMembersRoute = createRoute({ getParentRoute: () => rootRoute, path: '/organization/members', loader: organizationLoader, component: function OrganizationMembers() {
+  const { members, invitations } = organizationMembersRoute.useLoaderData()
+  return members.data ? <OrganizationView view="team" members={members.data} invitations={invitations.data ?? []} /> : <ErrorNotice message={members.error ?? 'Could not load members.'} />
+} })
+const organizationInvitationsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/organization/invitations', component: () => <Navigate to="/organization/members" replace /> })
+const organizationSettingsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/organization/settings', loader: organizationLoader, component: function OrganizationConfiguration() {
+  const { members, invitations } = organizationSettingsRoute.useLoaderData()
+  return members.data ? <OrganizationView view="settings" members={members.data} invitations={invitations.data ?? []} /> : <ErrorNotice message={members.error ?? 'Could not load settings.'} />
+} })
+const platformOrganizationsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/platform/organizations', component: function InstallationOrganizations() {
+  const { account } = rootRoute.useLoaderData()
+  const refreshVersion = useContext(WorkspaceRefresh)
+  const refresh = useContext(WorkspaceReload)
+  return <PlatformOrganizations admin={account.data?.system_role === 'admin'} activeOrganization={account.data?.organization_id ?? ''} refreshVersion={refreshVersion} refresh={refresh} />
+} })
+const platformSettingsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/platform/settings', component: function InstallationSettings() {
+  const { account } = rootRoute.useLoaderData()
+  const refreshVersion = useContext(WorkspaceRefresh)
+  const refresh = useContext(WorkspaceReload)
+  return <PlatformSettings admin={account.data?.system_role === 'admin'} refreshVersion={refreshVersion} refresh={refresh} />
+} })
 const apiKeysRoute = createRoute({ getParentRoute: () => rootRoute, path: '/api-keys', component: function Keys() { const { account } = rootRoute.useLoaderData(); return account.data ? <ApiKeysPage key={account.data.organization_id} identity={account.data} /> : null } })
 const adminRoute = createRoute({
   getParentRoute: () => rootRoute,
@@ -234,7 +268,7 @@ const adminRoute = createRoute({
       refreshVersion={refreshVersion} refresh={() => router.invalidate()} /> : null
   },
 })
-const router = createRouter({ routeTree: rootRoute.addChildren([landingRoute, loginRoute, signupRoute, homeRoute, projectsRoute, projectRoute, applicationRoute, serviceRoute, monitoringRoute, containersRoute, profileRoute, securityRoute, teamRoute, apiKeysRoute, adminRoute]), defaultPendingMs: 150, defaultPendingMinMs: 200 })
+const router = createRouter({ routeTree: rootRoute.addChildren([landingRoute, loginRoute, signupRoute, homeRoute, projectsRoute, projectRoute, applicationRoute, serviceRoute, monitoringRoute, containersRoute, profileRoute, securityRoute, teamRoute, organizationMembersRoute, organizationInvitationsRoute, organizationSettingsRoute, platformSettingsRoute, platformOrganizationsRoute, apiKeysRoute, adminRoute]), defaultPendingMs: 150, defaultPendingMinMs: 200 })
 declare module '@tanstack/react-router' { interface Register { router: typeof router } }
 
 createRoot(document.getElementById('root')!).render(<StrictMode><RouterProvider router={router} /><Toaster /></StrictMode>)

@@ -340,10 +340,9 @@ pub(crate) fn cached_docker_usage(cache: &Monitor) -> DockerUsage {
 }
 
 pub(crate) async fn get(
-    id: Identity,
+    _id: Identity,
     Extension(cache): Extension<Monitor>,
 ) -> Result<impl axum::response::IntoResponse, ApiError> {
-    id.admin()?;
     Ok((
         [(axum::http::header::CACHE_CONTROL, "no-store")],
         Json(cache.read().unwrap().clone()),

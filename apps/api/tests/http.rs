@@ -350,6 +350,8 @@ async fn postgres_auth_security_and_tenant_isolation() {
     assert_eq!(identity["email"], "owner@example.com");
     assert_eq!(identity["role"], "owner");
     assert_eq!(identity["system_role"], "admin");
+    check_platform_settings(&app, &pool, &owner).await;
+    check_platform_organizations(&app, &pool, &owner).await;
     let (monitor_status, monitoring, _) = get(&app, "/api/v1/monitoring", &owner).await;
     assert_eq!(monitor_status, StatusCode::OK);
     assert_eq!(monitoring["interval_seconds"], 5);
@@ -496,7 +498,7 @@ async fn postgres_auth_security_and_tenant_isolation() {
     assert_eq!(member_id["system_role"], "user");
     assert_eq!(
         get(&app, "/api/v1/monitoring", &member).await.0,
-        StatusCode::FORBIDDEN
+        StatusCode::OK
     );
     for section in [
         "images",
@@ -509,7 +511,10 @@ async fn postgres_auth_security_and_tenant_isolation() {
     ] {
         let path = format!("/api/v1/docker/{section}");
         assert_eq!(get(&app, &path, "").await.0, StatusCode::UNAUTHORIZED);
-        assert_eq!(get(&app, &path, &member).await.0, StatusCode::FORBIDDEN);
+        assert!(matches!(
+            get(&app, &path, &member).await.0,
+            StatusCode::OK | StatusCode::SERVICE_UNAVAILABLE
+        ));
     }
     assert_eq!(
         get(&app, "/api/v1/docker/disk-usage", &owner).await.0,
@@ -545,8 +550,62 @@ async fn postgres_auth_security_and_tenant_isolation() {
         get(&app, "/api/v1/auth/admin/users", &member).await.0,
         StatusCode::FORBIDDEN
     );
-    assert_eq!(
+    assert!(matches!(
         get(&app, "/api/v1/containers", &member).await.0,
+        StatusCode::OK | StatusCode::SERVICE_UNAVAILABLE
+    ));
+    assert_eq!(
+        get(&app, "/api/v1/auth/platform-settings", &member).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        get(&app, "/api/v1/auth/admin/organizations", &member)
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post(
+            &app,
+            "/api/v1/auth/admin/organizations",
+            json!({"name":"forbidden"}),
+            &member
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post(
+            &app,
+            &format!("/api/v1/auth/admin/organizations/{org1}"),
+            json!({"name":"forbidden","logo_url":null}),
+            &member
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post(
+            &app,
+            &format!("/api/v1/auth/admin/organizations/{org1}/delete"),
+            json!({"confirmation":"forbidden"}),
+            &member
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        post(
+            &app,
+            "/api/v1/auth/platform-settings/timezone",
+            json!({"revision":0,"values":{"timezone":"UTC"}}),
+            &member
+        )
+        .await
+        .0,
         StatusCode::FORBIDDEN
     );
     assert_eq!(
@@ -2166,5 +2225,323 @@ async fn check_management(app: &axum::Router, pool: &sqlx::PgPool) {
         .await
         .0,
         StatusCode::UNAUTHORIZED
+    );
+}
+
+async fn check_platform_settings(app: &axum::Router, pool: &sqlx::PgPool, owner: &str) {
+    let endpoint = "/api/v1/auth/platform-settings";
+    assert_eq!(get(app, endpoint, "").await.0, StatusCode::UNAUTHORIZED);
+    let (code, settings, _) = get(app, endpoint, owner).await;
+    assert_eq!(code, StatusCode::OK);
+    assert_eq!(settings["email_delivery_available"], false);
+    assert_eq!(settings["social_login_available"], false);
+    let timezone = format!("{endpoint}/timezone");
+    assert_eq!(
+        post(
+            app,
+            &timezone,
+            json!({"revision":0,"values":{"timezone":"invalid"}}),
+            owner
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        post(
+            app,
+            &timezone,
+            json!({"revision":0,"values":{"timezone":"Asia/Kathmandu"}}),
+            owner
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    let clock = get(app, "/api/v1/server-time", owner).await.1;
+    assert_eq!(clock["timezone"], "Asia/Kathmandu");
+    assert_eq!(clock["utc_offset"], "UTC+05:45");
+    assert_eq!(
+        post(
+            app,
+            &timezone,
+            json!({"revision":0,"values":{"timezone":"UTC"}}),
+            owner
+        )
+        .await
+        .0,
+        StatusCode::CONFLICT
+    );
+    let email = format!("{endpoint}/email");
+    let mut input = json!({"host":"smtp.example.com","port":587,"security":"starttls","username":"mail-user","from_address":"noreply@example.com","from_name":"Ferrix","password":"private-smtp-secret"});
+    assert_eq!(
+        post(app, &email, json!({"revision":0,"values":input}), owner)
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    let settings = get(app, endpoint, owner).await.1;
+    assert_eq!(settings["email"]["password_configured"], true);
+    assert!(!settings.to_string().contains("private-smtp-secret"));
+    let stored: Vec<u8> =
+        sqlx::query_scalar("SELECT config_cipher FROM platform_settings WHERE section='email'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert!(
+        !stored
+            .windows(b"private-smtp-secret".len())
+            .any(|bytes| bytes == b"private-smtp-secret")
+    );
+    input.as_object_mut().unwrap().remove("password");
+    assert_eq!(
+        post(app, &email, json!({"revision":1,"values":input}), owner)
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        get(app, endpoint, owner).await.1["email"]["password_configured"],
+        true
+    );
+    input["password"] = json!("");
+    assert_eq!(
+        post(app, &email, json!({"revision":2,"values":input}), owner)
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        get(app, endpoint, owner).await.1["email"]["password_configured"],
+        false
+    );
+
+    assert_eq!(post(app,&email,json!({"revision":3,"values":{"provider":"google","from_address":"sender@gmail.com","password":"google-app-password"}}),owner).await.0,StatusCode::NO_CONTENT);
+    let email_config = get(app, endpoint, owner).await.1;
+    assert_eq!(email_config["email"]["provider"], "google");
+    assert_eq!(email_config["email"]["host"], "smtp.gmail.com");
+    assert_eq!(email_config["email"]["username"], "sender@gmail.com");
+    assert_eq!(post(app,&email,json!({"revision":4,"values":{"provider":"resend","from_address":"sender@example.com","resend_api_key":"re_private-key"}}),owner).await.0,StatusCode::NO_CONTENT);
+    let email_config = get(app, endpoint, owner).await.1;
+    assert_eq!(email_config["email"]["resend_api_key_configured"], true);
+    assert!(!email_config.to_string().contains("re_private-key"));
+    assert_eq!(post(app,&email,json!({"revision":5,"values":{"provider":"resend","from_address":"sender@example.com"}}),owner).await.0,StatusCode::NO_CONTENT);
+    assert_eq!(
+        get(app, endpoint, owner).await.1["email"]["resend_api_key_configured"],
+        true
+    );
+    assert_eq!(
+        post(
+            app,
+            &email,
+            json!({"revision":6,"values":{"provider":"resend","resend_api_key":""}}),
+            owner
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        get(app, endpoint, owner).await.1["email"]["resend_api_key_configured"],
+        false
+    );
+    let social = format!("{endpoint}/social");
+    assert_eq!(post(app,&social,json!({"revision":0,"values":{"google_client_id":"google-id","github_client_id":"github-id","google_client_secret":"private-google","github_client_secret":"private-github"}}),owner).await.0,StatusCode::NO_CONTENT);
+    let response = get(app, endpoint, owner).await.1;
+    assert_eq!(response["social"]["google_client_secret_configured"], true);
+    assert_eq!(response["social"]["github_client_secret_configured"], true);
+    assert!(!response.to_string().contains("private-google"));
+    assert!(!response.to_string().contains("private-github"));
+    sqlx::query("UPDATE auth_sessions SET authenticated_at=now()-interval '16 minutes' WHERE token_hash IS NOT NULL AND user_id=(SELECT id FROM auth_users WHERE email='owner@example.com')").execute(pool).await.unwrap();
+    assert_eq!(
+        post(
+            app,
+            &timezone,
+            json!({"revision":1,"values":{"timezone":"UTC"}}),
+            owner
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    sqlx::query("UPDATE auth_sessions SET authenticated_at=now() WHERE user_id=(SELECT id FROM auth_users WHERE email='owner@example.com')").execute(pool).await.unwrap();
+    sqlx::query("DELETE FROM platform_settings")
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn check_platform_organizations(app: &axum::Router, pool: &sqlx::PgPool, owner: &str) {
+    let base = "/api/v1/auth/admin/organizations";
+    let initial = get(app, "/api/v1/auth/session", owner).await.1;
+    let active = initial["organization_id"].as_str().unwrap();
+    let foreign = uuid::Uuid::new_v4();
+    let foreign_user = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO auth_organizations(id,name) VALUES($1,'Foreign organization')")
+        .bind(foreign)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO auth_users(id,name,email,password_hash) SELECT $1,'Foreign owner',$2,password_hash FROM auth_users WHERE email='owner@example.com'").bind(foreign_user).bind(format!("{foreign_user}@example.com")).execute(pool).await.unwrap();
+    sqlx::query("INSERT INTO auth_members(organization_id,user_id,role) VALUES($1,$2,'owner')")
+        .bind(foreign)
+        .bind(foreign_user)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(get(app, base, "").await.0, StatusCode::UNAUTHORIZED);
+    assert!(
+        get(app, base, owner)
+            .await
+            .1
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|org| org["id"] == foreign.to_string())
+    );
+    let edit = format!("{base}/{foreign}");
+    assert_eq!(
+        post(
+            app,
+            &edit,
+            json!({"name":"Renamed foreign organization","logo_url":"http://example.com/logo.png"}),
+            owner
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        post(
+            app,
+            &edit,
+            json!({"name":"Renamed foreign organization","logo_url":null}),
+            owner
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    let admin_members:i64=sqlx::query_scalar("SELECT count(*) FROM auth_members WHERE organization_id=$1 AND user_id=(SELECT id FROM auth_users WHERE email='owner@example.com')").bind(foreign).fetch_one(pool).await.unwrap();
+    assert_eq!(admin_members, 0);
+    assert_eq!(
+        post(
+            app,
+            &format!("{edit}/delete"),
+            json!({"confirmation":"wrong"}),
+            owner
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let project = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO projects(id,name,organization_id) VALUES($1,'Protected project',$2)")
+        .bind(project)
+        .bind(foreign)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        post(
+            app,
+            &format!("{edit}/delete"),
+            json!({"confirmation":"Renamed foreign organization"}),
+            owner
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    sqlx::query("DELETE FROM projects WHERE id=$1")
+        .bind(project)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        post(
+            app,
+            &format!("{edit}/delete"),
+            json!({"confirmation":"Renamed foreign organization"}),
+            owner
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    let retained: i64 = sqlx::query_scalar("SELECT count(*) FROM auth_users WHERE id=$1")
+        .bind(foreign_user)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(retained, 1);
+    sqlx::query("DELETE FROM auth_users WHERE id=$1")
+        .bind(foreign_user)
+        .execute(pool)
+        .await
+        .unwrap();
+    let created = post(
+        app,
+        base,
+        json!({"name":"Platform-created organization"}),
+        owner,
+    )
+    .await;
+    assert_eq!(created.0, StatusCode::OK);
+    let org = created.1["id"].as_str().unwrap();
+    assert_eq!(
+        post(
+            app,
+            "/api/v1/auth/organizations/switch",
+            json!({"organization_id":org}),
+            owner
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        post(
+            app,
+            &format!("{base}/{org}/delete"),
+            json!({"confirmation":"Platform-created organization"}),
+            owner
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        post(
+            app,
+            "/api/v1/auth/organizations/switch",
+            json!({"organization_id":active}),
+            owner
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        post(
+            app,
+            &format!("{base}/{org}/delete"),
+            json!({"confirmation":"Platform-created organization"}),
+            owner
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        post(
+            app,
+            &format!("{base}/{active}/delete"),
+            json!({"confirmation":"anything"}),
+            owner
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
     );
 }

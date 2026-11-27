@@ -318,11 +318,7 @@ pub struct OrganizationInput {
     name: String,
     logo_url: Option<String>,
 }
-pub async fn update_organization(
-    State(state): State<AppState>,
-    id: Identity,
-    Json(input): Json<OrganizationInput>,
-) -> Result<StatusCode, ApiError> {
+fn organization_values(input: OrganizationInput) -> Result<(String, Option<String>), ApiError> {
     let name = accounts::name(&input.name)?;
     let logo = input
         .logo_url
@@ -341,6 +337,14 @@ pub async fn update_organization(
             Ok(url.to_owned())
         })
         .transpose()?;
+    Ok((name, logo))
+}
+pub async fn update_organization(
+    State(state): State<AppState>,
+    id: Identity,
+    Json(input): Json<OrganizationInput>,
+) -> Result<StatusCode, ApiError> {
+    let (name, logo) = organization_values(input)?;
     let mut tx = state.pool.begin().await?;
     authorize(&mut tx, &id, "manager").await?;
     sqlx::query("UPDATE auth_organizations SET name=$1,logo_url=$2 WHERE id=$3")
@@ -522,4 +526,96 @@ pub async fn renew_invitation(
     .await?;
     tx.commit().await?;
     Ok(Json(json!({"token":value,"expires_in_seconds":172800})))
+}
+
+#[derive(Serialize, FromRow)]
+struct PlatformOrganization {
+    id: Uuid,
+    name: String,
+    logo_url: Option<String>,
+    is_default: bool,
+    created_at: DateTime<Utc>,
+    member_count: i64,
+    project_count: i64,
+}
+// Platform administrators manage organization metadata without acquiring membership.
+pub async fn all_organizations(
+    State(state): State<AppState>,
+    id: Identity,
+) -> Result<Json<Value>, ApiError> {
+    id.admin()?;
+    let rows: Vec<PlatformOrganization> = sqlx::query_as("SELECT o.id,o.name,o.logo_url,o.is_default,o.created_at,(SELECT count(*) FROM auth_members m WHERE m.organization_id=o.id) AS member_count,(SELECT count(*) FROM projects p WHERE p.organization_id=o.id) AS project_count FROM auth_organizations o ORDER BY o.created_at,o.id").fetch_all(&state.pool).await?;
+    Ok(Json(json!(rows)))
+}
+pub async fn platform_update_organization(
+    State(state): State<AppState>,
+    id: Identity,
+    Path(org): Path<Uuid>,
+    Json(input): Json<OrganizationInput>,
+) -> Result<StatusCode, ApiError> {
+    let (name, logo) = organization_values(input)?;
+    let mut tx = state.pool.begin().await?;
+    authorize(&mut tx, &id, "platform").await?;
+    let result = sqlx::query("UPDATE auth_organizations SET name=$1,logo_url=$2 WHERE id=$3")
+        .bind(name)
+        .bind(logo)
+        .bind(org)
+        .execute(&mut *tx)
+        .await?;
+    if result.rows_affected() == 0 {
+        return Err(ApiError(StatusCode::NOT_FOUND, "Organization not found."));
+    }
+    log(&mut tx, id.user_id, org, "platform.organization_updated").await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
+}
+pub async fn platform_delete_organization(
+    State(state): State<AppState>,
+    id: Identity,
+    Path(org): Path<Uuid>,
+    Json(input): Json<Confirmation>,
+) -> Result<StatusCode, ApiError> {
+    let mut tx = state.pool.begin().await?;
+    authorize(&mut tx, &id, "platform").await?;
+    let row: Option<(String, bool)> =
+        sqlx::query_as("SELECT name,is_default FROM auth_organizations WHERE id=$1 FOR UPDATE")
+            .bind(org)
+            .fetch_optional(&mut *tx)
+            .await?;
+    let (name, is_default) =
+        row.ok_or(ApiError(StatusCode::NOT_FOUND, "Organization not found."))?;
+    if is_default {
+        return Err(bad("The default organization cannot be deleted."));
+    }
+    if org == id.organization_id {
+        return Err(bad(
+            "Switch to another organization before deleting your active organization.",
+        ));
+    }
+    if input.confirmation != name {
+        return Err(bad(
+            "Enter the exact organization name to confirm deletion.",
+        ));
+    }
+    let projects: bool =
+        sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM projects WHERE organization_id=$1)")
+            .bind(org)
+            .fetch_one(&mut *tx)
+            .await?;
+    if projects {
+        return Err(bad("Delete all projects before deleting the organization."));
+    }
+    let stranded:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM auth_members m JOIN auth_users u ON u.id=m.user_id WHERE m.organization_id=$1 AND u.system_role='admin' AND NOT EXISTS(SELECT 1 FROM auth_members other WHERE other.user_id=u.id AND other.organization_id<>$1))").bind(org).fetch_one(&mut *tx).await?;
+    if stranded {
+        return Err(bad(
+            "Platform administrators must join another organization before this one is deleted.",
+        ));
+    }
+    log(&mut tx, id.user_id, org, "platform.organization_deleted").await?;
+    sqlx::query("DELETE FROM auth_organizations WHERE id=$1")
+        .bind(org)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(StatusCode::NO_CONTENT)
 }

@@ -4,6 +4,7 @@ mod login;
 mod management;
 mod organizations;
 pub(crate) mod permissions;
+pub(crate) mod platform_settings;
 mod security;
 pub(crate) mod sessions;
 use crate::{ApiError, AppState};
@@ -18,6 +19,11 @@ use sha2::{Digest, Sha256};
 
 pub fn routes(state: AppState) -> Router<AppState> {
     Router::new()
+        .route("/platform-settings", get(platform_settings::get))
+        .route(
+            "/platform-settings/{section}",
+            post(platform_settings::save),
+        )
         .route(
             "/profile",
             get(accounts::profile).post(accounts::save_profile),
@@ -47,6 +53,18 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .route(
             "/invitations/{id}/revoke",
             post(organizations::revoke_invite),
+        )
+        .route(
+            "/admin/organizations",
+            get(management::all_organizations).post(organizations::create),
+        )
+        .route(
+            "/admin/organizations/{id}",
+            post(management::platform_update_organization),
+        )
+        .route(
+            "/admin/organizations/{id}/delete",
+            post(management::platform_delete_organization),
         )
         .route("/admin/users", get(management::users))
         .route(

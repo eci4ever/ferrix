@@ -28,7 +28,7 @@ function portLabels(service: SwarmService) {
   return service.ports?.map(port => `${port.published ?? '—'} → ${port.target ?? '—'}/${port.protocol ?? 'unknown'} (${port.mode ?? 'unknown'})`).join(', ') || 'None reported'
 }
 
-function SwarmServices({ services, active, manager, onScale, onRestart, onLogs }: { services: SwarmService[] | null | undefined; active: boolean; manager: boolean; onScale: (service: SwarmService) => void; onRestart: (service: SwarmService) => void; onLogs: (service: SwarmService) => void }) {
+function SwarmServices({ services, active, manager, onScale, onRestart, onLogs, canManage }: { services: SwarmService[] | null | undefined; canManage: boolean; active: boolean; manager: boolean; onScale: (service: SwarmService) => void; onRestart: (service: SwarmService) => void; onLogs: (service: SwarmService) => void }) {
   if (!active) return <Alert><AlertTitle>Services unavailable: Swarm is not active</AlertTitle><AlertDescription>Activate or join a Swarm cluster outside Ferrix, then refresh to view its services.</AlertDescription></Alert>
   if (!manager) return <Alert><AlertTitle>Services require manager access</AlertTitle><AlertDescription>The connected Docker node cannot list cluster services. Connect Ferrix to an active Swarm manager and refresh.</AlertDescription></Alert>
   if (!services) return <Alert><AlertTitle>Service inventory unavailable</AlertTitle><AlertDescription>Docker did not return a service inventory. Refresh swarm to retry.</AlertDescription></Alert>
@@ -42,9 +42,9 @@ function SwarmServices({ services, active, manager, onScale, onRestart, onLogs }
       { id: 'image', label: 'Image', value: service => service.image || '—', cell: service => <span className="block min-w-40 max-w-80 whitespace-normal break-all">{service.image || '—'}</span> },
       { id: 'ports', label: 'Published ports', value: portLabels, cell: service => <span className="block min-w-36 max-w-64 whitespace-normal break-words">{portLabels(service)}</span> },
       { id: 'update', label: 'Update', value: service => service.update_state || 'No update reported', cell: service => service.update_state ? <Badge variant={['paused', 'rollback_paused'].includes(service.update_state) ? 'destructive' : 'outline'}>{service.update_state.replaceAll('_', ' ')}</Badge> : <span className="text-muted-foreground">No update reported</span> },
-      { id: 'scale', label: 'Replicas', cell: service => service.mode === 'Replicated' ? <Button variant="outline" size="sm" disabled={service.replicas == null || service.version == null || service.version < 1 || service.version > 2147483647} aria-label={`Scale ${service.name || service.id}`} onClick={() => onScale(service)}>Scale replicas</Button> : <span className="text-xs text-muted-foreground">{service.mode?.endsWith('Job') ? 'Job mode' : service.mode === 'Global' ? 'Managed by node count' : 'Scale unavailable'}</span> },
-      { id: 'restart', label: 'Restart', cell: service => ['Replicated', 'Global'].includes(service.mode ?? '') ? <Button variant="outline" size="sm" disabled={service.version == null || service.version < 1 || service.version > 2147483647} aria-label={`Restart ${service.name || service.id}`} onClick={() => onRestart(service)}>Restart</Button> : <span className="text-xs text-muted-foreground">Restart unavailable</span> },
-      { id: 'logs', label: 'Logs', cell: service => <Button variant="outline" size="sm" aria-label={`View logs for ${service.name || service.id}`} onClick={() => onLogs(service)}>View logs</Button> },
+      ...(canManage ? [{ id: 'scale', label: 'Replicas', cell: (service: SwarmService) => service.mode === 'Replicated' ? <Button variant="outline" size="sm" disabled={service.replicas == null || service.version == null || service.version < 1 || service.version > 2147483647} aria-label={`Scale ${service.name || service.id}`} onClick={() => onScale(service)}>Scale replicas</Button> : <span className="text-xs text-muted-foreground">{service.mode?.endsWith('Job') ? 'Job mode' : service.mode === 'Global' ? 'Managed by node count' : 'Scale unavailable'}</span> },
+      { id: 'restart', label: 'Restart', cell: (service: SwarmService) => ['Replicated', 'Global'].includes(service.mode ?? '') ? <Button variant="outline" size="sm" disabled={service.version == null || service.version < 1 || service.version > 2147483647} aria-label={`Restart ${service.name || service.id}`} onClick={() => onRestart(service)}>Restart</Button> : <span className="text-xs text-muted-foreground">Restart unavailable</span> },
+      { id: 'logs', label: 'Logs', cell: (service: SwarmService) => <Button variant="outline" size="sm" aria-label={`View logs for ${service.name || service.id}`} onClick={() => onLogs(service)}>View logs</Button> }] : []),
     ]} />
   </div>
 }
@@ -89,7 +89,7 @@ function NodeCard({ node }: { node: SwarmNode }) {
   </Card>
 }
 
-export function SwarmInventory({ refreshVersion }: { refreshVersion: number }) {
+export function SwarmInventory({ refreshVersion, canManage }: { refreshVersion: number; canManage: boolean }) {
   const [data, setData] = useState<Swarm | null>(null)
   const [error, setError] = useState('')
   const [refresh, setRefresh] = useState(0)
@@ -134,15 +134,15 @@ export function SwarmInventory({ refreshVersion }: { refreshVersion: number }) {
             </div>
             <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">{nodes?.map((node, index) => <NodeCard key={node.id || index} node={node} />)}</div>
           </TabsContent>
-          <TabsContent value="services" className="min-w-0"><SwarmServices services={data.service_list} active={active} manager={data.manager === true} onScale={setScaling} onRestart={setRestarting} onLogs={setLogging} /></TabsContent>
+          <TabsContent value="services" className="min-w-0"><SwarmServices canManage={canManage} services={data.service_list} active={active} manager={data.manager === true} onScale={setScaling} onRestart={setRestarting} onLogs={setLogging} /></TabsContent>
           <TabsContent value="nodes">
             {nodes ? nodes.length ? <div className="grid gap-4 lg:grid-cols-2 xl:grid-cols-3">{nodes.map((node, index) => <NodeCard key={node.id || index} node={node} />)}</div> : <p className="py-4 text-sm text-muted-foreground">Docker returned no nodes. Refresh to check the cluster again.</p> : <p className="py-4 text-sm text-muted-foreground">Node inventory is unavailable until this host is an active Swarm manager.</p>}
           </TabsContent>
         </Tabs>
       </>}
     </CardContent>
-    {scaling && <SwarmScaleDialog service={scaling} onClose={() => setScaling(null)} onScaled={replicas => { setNotice(`Scale requested for ${scaling.name || scaling.id}: ${replicas} replicas. Docker may take a moment to converge; refresh swarm to check task counts.`); setScaling(null); setRefresh(value => value + 1) }} />}
-    {restarting && <SwarmRestartDialog service={restarting} onClose={() => setRestarting(null)} onRestarted={() => { setNotice(`Restart requested for ${restarting.name || restarting.id}. Docker is replacing tasks; refresh swarm to check the running/desired counts.`); setRestarting(null); setRefresh(value => value + 1) }} />}
-    {logging && <SwarmLogsDialog service={logging} onClose={() => setLogging(null)} />}
+    {canManage && scaling && <SwarmScaleDialog service={scaling} onClose={() => setScaling(null)} onScaled={replicas => { setNotice(`Scale requested for ${scaling.name || scaling.id}: ${replicas} replicas. Docker may take a moment to converge; refresh swarm to check task counts.`); setScaling(null); setRefresh(value => value + 1) }} />}
+    {canManage && restarting && <SwarmRestartDialog service={restarting} onClose={() => setRestarting(null)} onRestarted={() => { setNotice(`Restart requested for ${restarting.name || restarting.id}. Docker is replacing tasks; refresh swarm to check the running/desired counts.`); setRestarting(null); setRefresh(value => value + 1) }} />}
+    {canManage && logging && <SwarmLogsDialog service={logging} onClose={() => setLogging(null)} />}
   </Card>
 }

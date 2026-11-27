@@ -132,9 +132,8 @@ struct Container {
 
 async fn containers(
     State(state): State<AppState>,
-    id: auth::Identity,
+    _id: auth::Identity,
 ) -> Result<Json<Vec<Container>>, ApiError> {
-    id.admin()?;
     let result = tokio::time::timeout(
         Duration::from_secs(5),
         state.docker.list_containers(Some(

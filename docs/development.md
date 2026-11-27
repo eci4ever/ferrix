@@ -49,7 +49,7 @@ Do not use a wildcard safe.directory. Existing GitHub credentials and commit ide
 
 ### Dashboard server clock
 
-The dashboard reads authenticated `GET /api/v1/server-time` for the server timestamp, IANA timezone and current UTC offset. It ticks locally between synchronizations every 60 seconds and synchronizes again when the tab becomes visible. Clock requests validate the session without extending its inactivity expiry. The timezone follows a valid `TZ` environment override (for containers), otherwise the server OS, falling back to UTC if unavailable.
+The dashboard reads authenticated `GET /api/v1/server-time` for the server timestamp, IANA timezone and current UTC offset. It ticks locally between synchronizations every 60 seconds and synchronizes again when the tab becomes visible. Clock requests validate the session without extending its inactivity expiry. The timezone follows Platform Settings when configured, then a valid `TZ` environment override (for containers), otherwise the server OS, falling back to UTC if unavailable.
 
 ## Pull request CI
 
@@ -101,7 +101,7 @@ python3 -m unittest discover -s scripts/ci -p 'test_*.py' -v
 
 ### Docker Swarm inventory
 
-The administrator-only Docker → Swarm page has Overview, Nodes and Services views.
+The authenticated Docker → Swarm page has Overview, Nodes and Services views.
 `GET /api/v1/docker/swarm` reads Docker info and lists nodes only when the
 connected daemon is an active Swarm manager. Ready nodes are counted separately
 from scheduling availability (active/pause/drain). CPU and RAM are node capacity,
@@ -161,9 +161,10 @@ Log polling validates sessions without extending their inactivity expiry.
 
 ### Host monitoring
 
-System administrators can open **Monitoring** (`/monitoring`). `GET /api/v1/monitoring`
-is session protected and checks the system administrator role; organization owners
-without that role cannot access host data.
+Every signed-in user can open **Monitoring** (`/monitoring`) and read host metrics and
+retained host history. Docker inventory is also shared across authenticated roles.
+Telemetry configuration, Swarm scale/restart and Swarm logs remain restricted to
+platform administrators; organization ownership does not grant host mutation rights.
 
 One background OS collector samples CPU, memory, root filesystem capacity, mounted
 block-device throughput and non-loopback network throughput every five seconds.
@@ -418,3 +419,37 @@ deploying. Each clone's storage volume is identified by its new service UUID.
 `POST /api/v1/services/{id}/clone` accepts the same destination plus optional
 `name`. Duplicate destination names return 409; a different project or unknown
 environment is rejected. No operation automatically deploys the destination.
+
+
+## Platform settings and navigation
+
+Workspace contains Home, Projects, Monitoring and Docker for every signed-in user.
+Organization owners/admins see Overview and Members; Members contains the Members
+and Invitations tabs. Profile, Security and API Keys live in the account menu.
+Platform administrators additionally see Users, Organizations and Settings. Platform
+and organization roles are checked independently: being an organization owner/admin
+does not grant access to installation settings or host mutations.
+
+Platform Settings (`/platform/settings`) stores an optional IANA timezone, Google App Password, Resend API key or SMTP
+configuration, and Google/GitHub client credentials. The timezone changes the shared
+server clock on refresh; it does not modify the OS timezone or backup schedules.
+Blank timezone uses the existing server default. Email and social credentials are
+configuration only in this version: invitation tokens are shared manually and OAuth
+sign-in remains unavailable. No email is sent when settings are saved.
+
+`GET /api/v1/auth/platform-settings` is platform-admin-only and returns secret
+presence flags instead of saved values. `POST` to its `/timezone`, `/email` or
+`/social` section requires recent identity verification and the section's current
+revision; stale writes return 409. Omit a secret to preserve it; an explicitly empty
+string removes it. Migration 0038 stores configuration encrypted with
+`FERRIX_AUTH_KEY`, with section-bound authenticated encryption. Keep that key when
+backing up or moving the database. These settings do not rewrite `.env`.
+
+Platform Organizations (`/platform/organizations`) lists all organizations, including
+ones the administrator has not joined. Admins can create organizations (becoming
+owner), edit metadata without acquiring membership, and delete empty non-default
+organizations. Deletion requires the exact name and is blocked for the admin's active
+organization, organizations with projects, and organizations whose deletion would
+leave a platform administrator without membership. User accounts are retained.
+The endpoints under `/api/v1/auth/admin/organizations` recheck platform authority
+inside the administrative transaction lock for every write.

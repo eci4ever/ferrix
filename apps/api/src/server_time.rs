@@ -27,13 +27,19 @@ fn resolve_timezone(configured: Option<&str>, system: Option<&str>) -> Tz {
         .unwrap_or(chrono_tz::UTC)
 }
 
-pub(crate) async fn get() -> Json<ServerTime> {
-    let configured = std::env::var("TZ").ok();
-    let system = iana_time_zone::get_timezone().ok();
-    Json(ServerTime::at(
-        Utc::now(),
-        resolve_timezone(configured.as_deref(), system.as_deref()),
-    ))
+pub(crate) fn system_timezone() -> Tz {
+    resolve_timezone(
+        std::env::var("TZ").ok().as_deref(),
+        iana_time_zone::get_timezone().ok().as_deref(),
+    )
+}
+pub(crate) async fn get(
+    axum::extract::State(state): axum::extract::State<crate::AppState>,
+) -> Result<Json<ServerTime>, crate::ApiError> {
+    let timezone = crate::auth::platform_settings::timezone(&state)
+        .await?
+        .unwrap_or_else(system_timezone);
+    Ok(Json(ServerTime::at(Utc::now(), timezone)))
 }
 
 #[cfg(test)]
