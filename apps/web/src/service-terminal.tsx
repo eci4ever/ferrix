@@ -1,3 +1,6 @@
+import { useIsMobile } from '@/hooks/use-mobile'
+import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable'
+import { Kbd } from '@/components/ui/kbd'
 import { useEffect, useRef, useState } from 'react'
 import { TerminalSquare, RotateCcw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
@@ -9,6 +12,7 @@ export function ServiceTerminal({ serviceId, name, disabled }: {serviceId:string
  return <Dialog open={open} onOpenChange={setOpen}><DialogTrigger asChild><Button variant="outline" disabled={disabled}><TerminalSquare data-icon="inline-start" />Open terminal</Button></DialogTrigger><DialogContent className="flex max-h-[calc(100svh-2rem)] flex-col sm:max-w-5xl" onEscapeKeyDown={event=>event.preventDefault()} onInteractOutside={event=>event.preventDefault()}><DialogHeader><DialogTitle>Terminal · {name}</DialogTitle><DialogDescription>Runs a shell inside this service with its configured container user. Closes after 5 minutes without input or 30 minutes total. Closing disconnects this shell; files you change remain in the container.</DialogDescription></DialogHeader>{open ? <TerminalSession key={serviceId} serviceId={serviceId} /> : null}<DialogFooter><Button variant="outline" onClick={()=>setOpen(false)}>Close terminal</Button></DialogFooter></DialogContent></Dialog>
 }
 function TerminalSession({serviceId}:{serviceId:string}) {
+ const mobile = useIsMobile()
  const host=useRef<HTMLDivElement>(null)
  const [status,setStatus]=useState('Connecting…')
  const [error,setError]=useState('')
@@ -42,5 +46,5 @@ function TerminalSession({serviceId}:{serviceId:string}) {
   void connect()
   return()=>{disposed=true;socket?.close();dispose()}
  },[serviceId,version])
- return <div className="flex min-h-0 flex-col gap-3"><div className="flex items-center justify-between gap-2"><Badge variant="outline" role="status">{status}</Badge><Button variant="ghost" size="sm" disabled={status!=='Disconnected'} onClick={()=>setVersion(v=>v+1)}><RotateCcw data-icon="inline-start" />Reconnect</Button></div>{error ? <Alert variant="destructive"><AlertTitle>Terminal disconnected</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}<div ref={host} className="h-[min(55svh,28rem)] min-h-40 min-w-0 overflow-hidden rounded-md border bg-background p-2 text-foreground" aria-label="Interactive service terminal" /></div>
+ return <div className="flex min-h-0 flex-col gap-3"><div className="flex items-center justify-between gap-2"><Badge variant="outline" role="status">{status}</Badge><Button variant="ghost" size="sm" disabled={status!=='Disconnected'} onClick={()=>setVersion(v=>v+1)}><RotateCcw data-icon="inline-start" />Reconnect</Button></div>{error ? <Alert variant="destructive"><AlertTitle>Terminal disconnected</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null}<ResizablePanelGroup orientation="vertical" disabled={mobile} className="h-[min(55svh,28rem)] min-h-64 rounded-md border"><ResizablePanel defaultSize="80%" minSize="140px"><div ref={host} className="h-full min-h-0 min-w-0 overflow-hidden rounded-md border bg-background p-2 text-foreground" aria-label="Interactive service terminal" /></ResizablePanel><ResizableHandle withHandle aria-label="Resize terminal and session help" className="h-3! sm:h-2!" /><ResizablePanel defaultSize="20%" minSize="64px"><div className="h-full overflow-auto bg-muted/30 p-3 text-xs text-muted-foreground"><p>Shell input runs inside this service. <Kbd>Ctrl</Kbd> + <Kbd>C</Kbd> interrupts a command.</p><p className="mt-1">{mobile ? 'Close terminal disconnects this shell.' : 'Drag the divider or use its arrow keys to resize. Close terminal disconnects this shell.'}</p></div></ResizablePanel></ResizablePanelGroup></div>
 }
