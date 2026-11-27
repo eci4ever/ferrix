@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Real HTTP/PostgreSQL/MariaDB backup roundtrips in a disposable schema and containers."""
+import argparse
+import os
+import urllib.parse
 import importlib.util
 from pathlib import Path
 import json
@@ -57,12 +60,32 @@ def scenario(origin):
         container = wait_deploy(service, manager.request('POST', f'/services/{service}/deploy', {}, expected=202))
         assert not json.loads(live.command(['docker', 'inspect', container, '--format', '{{json .HostConfig.PortBindings}}']))
         config = manager.request('GET', f'/services/{service}/configuration')
+        policy = None
+        if REMOTE:
+            endpoint = os.environ['FERRIX_TEST_S3_ENDPOINT']
+            assert os.environ.get('FERRIX_TEST_S3_DISPOSABLE') == '1'
+            assert urllib.parse.urlsplit(endpoint).hostname == '127.0.0.1'
+            assert os.environ['FERRIX_TEST_S3_BUCKET'].startswith('ferrix-test-')
+            policy = {'enabled': False, 'cron': '0 2 * * *', 'timezone': 'UTC', 'keep_last': 10, 's3': {
+                'endpoint': endpoint, 'region': 'us-east-1', 'bucket': os.environ['FERRIX_TEST_S3_BUCKET'],
+                'prefix': 'http-audit', 'path_style': True, 'credentials': {
+                    'access_key': os.environ['FERRIX_TEST_S3_ACCESS_KEY'], 'secret_key': os.environ['FERRIX_TEST_S3_SECRET_KEY'], 'session_token': None}}}
+            manager.request('POST', f'/services/{service}/backup-policy', policy, expected=204)
+            manager.request('POST', f'/services/{service}/backup-policy/test', {})
         database_sql(container, engine, "CREATE TABLE audit_data (value varchar(30)); INSERT INTO audit_data VALUES ('before');")
         assert database_sql(container, engine, 'SELECT value FROM audit_data;') == 'before'
         student.request('POST', base, {}, expected=403)
         backup = manager.request('POST', base, {}, expected=202)
         manifest = wait_job(service, backup)
         assert manifest['size_bytes']>0 and len(manifest['sha256'])==64
+        if REMOTE:
+            assert manifest['storage'] == 's3'
+            volume = 'ferrix-backups-' + uuid.UUID(service).hex
+            info = json.loads(live.command(['docker', 'volume', 'inspect', volume]))[0]
+            assert info['Labels'].get('io.ferrix.application') == service and info['Labels'].get('io.ferrix.backups') == 'true'
+            live.command(['docker', 'volume', 'rm', volume])
+            # Restore must use the original snapshot's S3 location despite changed current settings.
+            manager.request('POST', f'/services/{service}/backup-policy', policy | {'s3': None}, expected=204)
         database_sql(container, engine, "INSERT INTO audit_data VALUES ('after');")
         student.request('POST', base+f'/{backup["id"]}/restore', {'name': 'Forbidden restore'}, expected=403)
         manager.request('POST', base+f'/{backup["id"]}/restore', {'name': ''}, expected=422)
@@ -85,9 +108,26 @@ def scenario(origin):
         assert database_sql(container, engine, 'SELECT value FROM audit_data ORDER BY value;')=='after\nbefore'
         assert database_sql(restored['container_id'], engine, 'SELECT value FROM audit_data;')=='before'
         live.sql(f"UPDATE {live.SCHEMA}.database_jobs SET sha256='{original}' WHERE id='{backup['id']}'")
+        if REMOTE:
+            manager.request('POST', f'/services/{service}/backup-policy', policy | {'keep_last': 1, 's3': None}, expected=204)
+            replacement = manager.request('POST', base, {}, expected=202)
+            wait_job(service, replacement)
+            deadline = time.monotonic()+60
+            while True:
+                original_job = next(j for j in manager.request('GET', base) if j['id']==backup['id'])
+                if original_job['pruned_at']:
+                    break
+                assert time.monotonic()<deadline, 'Remote retention did not prune original backup'
+                time.sleep(.5)
+            manager.request('POST', base+f'/{backup["id"]}/restore', {'name': 'Pruned restore forbidden'}, expected=404)
+            print(f'PASS: {engine} HTTP S3 upload; local backup volume removed; original remote destination downloaded/restored after policy changed; checksum rejection; remote retention and pruned-restore rejection.', flush=True)
         print(f'PASS: {engine} private Docker database; backup manifest; restored snapshot into separate running service with new password; source unchanged; student/cross-service restore denied; corrupt backup rejected without altering valid source/restore.', flush=True)
 
 
+REMOTE = False
 live.scenario = scenario
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--s3', action='store_true', help='Use only the disposable local S3 runner environment.')
+    REMOTE = parser.parse_args().s3
     live.main()
