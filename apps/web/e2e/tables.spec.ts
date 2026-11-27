@@ -57,6 +57,7 @@ test('Tables sort, search and paginate while service cards remain direct links',
   await expect(page.getByRole('dialog')).toHaveCount(0)
   expect(actions).toContain('/auth/admin/users/user-24/ban')
   await page.goto('/security')
+  await page.getByRole('tab', { name: 'Sessions', exact: true }).click()
   const current = page.getByRole('row').filter({ hasText: 'Current' })
   await expect(current.getByText('Protected', { exact: true })).toBeVisible()
   await expect(current.getByRole('button', { name: 'Revoke', exact: true })).toHaveCount(0)
