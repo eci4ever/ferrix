@@ -1,45 +1,35 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      source_ref:
+        description: Exact release source commit to validate
+        required: true
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ci-${{ github.workflow }}-${{ inputs.source_ref || github.sha }}
   cancel-in-progress: true
 
 jobs:
-  changes:
-    name: Detect changed components
+  helpers:
+    name: CI helper tests
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    outputs:
-      rust: ${{ steps.paths.outputs.rust }}
-      frontend: ${{ steps.paths.outputs.frontend }}
     steps:
       - uses: actions/checkout@v7
         with:
-          # Complete history supports merge-base diffs and multi-commit pushes.
-          fetch-depth: 0
-      - name: Test changed-file detection
+          ref: ${{ inputs.source_ref || github.sha }}
+      - name: Test CI helpers
         run: python3 -m unittest discover -s scripts/ci -p 'test_*.py' -v
-      - name: Select CI components
-        id: paths
-        env:
-          CI_EVENT: ${{ github.event_name }}
-          CI_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
-          CI_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: python3 scripts/ci/changes.py
 
   rust:
-    needs: changes
-    # Fail closed if detection fails or its output is missing; preserve check names.
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.rust != 'false') }}
+    needs: helpers
     name: Rust checks and PostgreSQL tests
     runs-on: ubuntu-24.04
     timeout-minutes: 20
@@ -62,6 +52,8 @@ jobs:
       FERRIX_TEST_DATABASE_URL: postgres://ferrix:ferrix@127.0.0.1:5432/ferrix_ci
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
       - name: Install Rust toolchain
         run: rustup toolchain install stable --profile minimal --component rustfmt --component clippy
       - name: Restore Cargo dependency cache
@@ -69,8 +61,8 @@ jobs:
         with:
           cmd-format: "rustup run stable {0}"
           cache-bin: "false"
-          # Main warms a shared cache; PRs restore it without saving branch copies.
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Release and manual runs can save dependency caches.
+          save-if: true
       - name: Check formatting
         run: cargo +stable fmt --all --check
       - name: Clippy
@@ -87,8 +79,7 @@ jobs:
         run: python3 -m unittest discover -s scripts/agents -p 'test_*.py' -v
 
   frontend:
-    needs: changes
-    if: ${{ !cancelled() && (needs.changes.result != 'success' || needs.changes.outputs.frontend != 'false') }}
+    needs: helpers
     name: Frontend build
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -97,6 +88,8 @@ jobs:
         working-directory: apps/web
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
       - uses: actions/setup-node@v7
         with:
           node-version: '24'
