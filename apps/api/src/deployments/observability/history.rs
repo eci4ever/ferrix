@@ -98,10 +98,9 @@ async fn history(
 }
 async fn host_history(
     State(s): State<AppState>,
-    id: Identity,
+    _id: Identity,
     Query(r): Query<Range>,
 ) -> Result<Json<Value>, ApiError> {
-    id.admin()?;
     points(&s, None, r).await
 }
 #[derive(Serialize, sqlx::FromRow)]

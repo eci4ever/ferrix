@@ -102,9 +102,9 @@ export function AdminPage({ identity, refresh, refreshVersion }: { identity: Ide
   </div>
 }
 
-export function TeamPage({ identity, members, invitations, refresh, refreshVersion }: { identity: Identity; members: Member[]; invitations: Invitation[]; refresh: Refresh; refreshVersion: number }) {
+export function TeamPage({ identity, members, invitations, refresh, refreshVersion, view = 'all' }: { view?: 'all' | 'team' | 'settings' | 'invitations'; identity: Identity; members: Member[]; invitations: Invitation[]; refresh: Refresh; refreshVersion: number }) {
   const manager = identity.role === 'owner' || identity.role === 'admin'
-  const [tab, setTab] = useState('general')
+  const [tab, setTab] = useState(view === 'team' ? 'members' : view === 'invitations' ? 'invitations' : 'general')
   useEffect(() => { if (!manager && tab === 'invitations') setTab('members') }, [manager, tab])
   const [profile, setProfile] = useState<OrgProfile | null>(null); const [profileError, setProfileError] = useState(''); const [version, setVersion] = useState(0)
   const [token, setToken] = useState(''); const [invitationRole, setInvitationRole] = useState('member'); const [transferTo, setTransferTo] = useState('')
@@ -120,16 +120,17 @@ export function TeamPage({ identity, members, invitations, refresh, refreshVersi
   }, [identity.organization_id, version, refreshVersion])
   // A regenerated token is shown only in this browser until explicitly dismissed.
   const open = (value: Operation) => { setMessage(''); setOperation(value) }
+  if (view === 'invitations' && !manager) return <Notice message="Organization owner or admin access is required to manage invitations." />
   return <div className="flex min-w-0 flex-col gap-6">
-    <div className="space-y-1"><h1 className="text-2xl font-semibold">Organization</h1><p className="text-sm text-muted-foreground">Manage your organization, team and access settings.</p></div>
+    <div className="space-y-1"><h1 className="text-2xl font-semibold">{view === 'team' ? 'Members' : view === 'invitations' ? 'Invitations' : view === 'settings' ? 'Overview' : 'Organization'}</h1><p className="text-sm text-muted-foreground">Manage your organization, team and access settings.</p></div>
     {!inviting && !operation ? <Notice message={message} /> : null}
     <Tabs value={tab} onValueChange={setTab} className="min-w-0 gap-6">
       <div className="min-w-0 overflow-x-auto pb-1">
         <TabsList aria-label="Organization sections" className="h-auto min-h-10 w-full sm:w-auto">
-          <TabsTrigger value="general" className="min-h-9 px-3">General</TabsTrigger>
-          <TabsTrigger value="members" className="min-h-9 px-3">Members</TabsTrigger>
-          {manager ? <TabsTrigger value="invitations" className="min-h-9 px-3">Invitations</TabsTrigger> : null}
-          <TabsTrigger value="access" className="min-h-9 px-3">Access</TabsTrigger>
+          {view !== 'team' && view !== 'invitations' ? <TabsTrigger value="general" className="min-h-9 px-3">General</TabsTrigger> : null}
+          {view !== 'settings' && view !== 'invitations' ? <TabsTrigger value="members" className="min-h-9 px-3">Members</TabsTrigger> : null}
+          {manager && view !== 'settings' ? <TabsTrigger value="invitations" className="min-h-9 px-3">Invitations</TabsTrigger> : null}
+          {view !== 'team' && view !== 'invitations' ? <TabsTrigger value="access" className="min-h-9 px-3">Access</TabsTrigger> : null}
         </TabsList>
       </div>
       <TabsContent value="general" forceMount className={tab === 'general' ? 'min-w-0' : 'hidden'}>

@@ -6,7 +6,7 @@ import { request } from '@/lib/api'
 type ClockResponse = { unix_ms: number; timezone: string; utc_offset: string }
 type ClockSample = ClockResponse & { receivedAt: number }
 
-export function ServerClock() {
+export function ServerClock({ refreshVersion = 0 }: { refreshVersion?: number }) {
   const [sample, setSample] = useState<ClockSample | null>(null)
   const [tick, setTick] = useState(0)
   useEffect(() => {
@@ -40,7 +40,7 @@ export function ServerClock() {
       window.clearInterval(resync)
       document.removeEventListener('visibilitychange', resume)
     }
-  }, [])
+  }, [refreshVersion])
   const time = sample ? new Intl.DateTimeFormat('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23', timeZone: sample.timezone }).format(new Date(sample.unix_ms + Math.max(0, tick - sample.receivedAt))) : null
   const description = sample ? `Server time · ${sample.timezone} · ${sample.utc_offset}` : 'Server time unavailable'
   return <Tooltip><TooltipTrigger asChild><Badge tabIndex={0} variant="outline" className="gap-2 whitespace-nowrap" aria-label={description}>

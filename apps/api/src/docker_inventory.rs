@@ -314,12 +314,11 @@ async fn change_service(
 }
 
 pub(crate) async fn get(
-    id: Identity,
+    _id: Identity,
     State(state): State<AppState>,
     Extension(monitor): Extension<crate::monitoring::Monitor>,
     Path(section): Path<String>,
 ) -> Result<impl axum::response::IntoResponse, ApiError> {
-    id.admin()?;
     let data = if section == "disk-usage" {
         json!(crate::monitoring::cached_docker_usage(&monitor))
     } else {

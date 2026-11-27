@@ -63,7 +63,6 @@ export function MonitoringPage({ admin }: { admin: boolean }) {
   const [retry, setRetry] = useState(0)
   const [now, setNow] = useState(Date.now())
   useEffect(() => {
-    if (!admin) return
     let stopped = false; let timer: ReturnType<typeof setTimeout>; let controller: AbortController | undefined
     async function poll() {
       if (stopped) return
@@ -78,14 +77,14 @@ export function MonitoringPage({ admin }: { admin: boolean }) {
     }
     void poll()
     return () => { stopped = true; clearTimeout(timer); controller?.abort() }
-  }, [admin, retry])
-  if (!admin) return <Alert><AlertTitle>Administrator access required</AlertTitle><AlertDescription>Host monitoring is available only to Ferrix system administrators.</AlertDescription></Alert>
+  }, [retry])
+
   const samples = data?.samples ?? []
   const latest = samples.at(-1)
   const stale = !!latest && now - latest.at > 20_000
   const fraction = (a: number | null | undefined, b: number | null | undefined) => a != null && b ? a / b * 100 : null
   return <>
-    <div className="flex flex-wrap items-start justify-between gap-3"><div><h1 className="text-2xl font-semibold tracking-tight">Monitoring</h1><p className="mt-1 text-sm text-muted-foreground">Watch your server’s CPU, memory, storage and I/O.</p></div><Badge variant="outline">Admin · host scope</Badge></div>
+    <div className="flex flex-wrap items-start justify-between gap-3"><div><h1 className="text-2xl font-semibold tracking-tight">Monitoring</h1><p className="mt-1 text-sm text-muted-foreground">Watch your server’s CPU, memory, storage and I/O.</p></div><Badge variant="outline">Host scope</Badge></div>
     {error ? <Alert variant="destructive"><AlertTitle>Monitoring refresh failed</AlertTitle><AlertDescription>{error} {data ? 'Previous readings remain visible.' : ''}<Button variant="outline" size="sm" onClick={() => setRetry(v => v + 1)}>Retry</Button></AlertDescription></Alert> : null}
     {data ? <><div className="text-sm text-muted-foreground"><p><span className="font-medium text-foreground">{data.host}</span> · {data.os} · {latest ? `Sampled ${time(latest.at)}` : 'Warming up…'} · every {data.interval_seconds}s</p><p className="mt-1">API host metrics. In containers, CPU and memory reflect the visible OS, not container limits. Docker storage comes from the connected daemon, which may run in a VM.</p>{stale ? <p role="status" className="mt-2 font-medium text-destructive">Host readings are stale. Collector has not updated for over 20 seconds.</p> : null}</div>
     <div className="grid min-w-0 gap-6 lg:grid-cols-2">
@@ -98,7 +97,7 @@ export function MonitoringPage({ admin }: { admin: boolean }) {
     </div><p className="text-xs text-muted-foreground">Last 15 minutes · up to 180 samples · history resets when the API restarts</p></> : !error ? <div role="status" aria-label="Loading monitoring" className="grid gap-6 lg:grid-cols-2">{Array.from({ length: 6 }, (_, i) => <Skeleton key={i} className="h-72 w-full" />)}</div> : null}
     <section aria-label="Monitoring history and settings" className="flex min-w-0 flex-col gap-6">
       <TelemetryHistory collapsible />
-      <TelemetrySettings collapsible />
+      {admin ? <TelemetrySettings collapsible /> : null}
     </section>
   </>
 }
