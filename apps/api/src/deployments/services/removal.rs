@@ -82,6 +82,69 @@ pub(super) async fn remove(
     tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
+// The worker may retire a container after the deletion inventory is collected.
+async fn remove_listed_container(
+    state: &AppState,
+    service: Uuid,
+    container: &str,
+) -> Result<(), ApiError> {
+    // Inspect again immediately before removal; never remove anonymous volumes implicitly.
+    let info = match tokio::time::timeout(
+        Duration::from_secs(5),
+        state.docker.inspect_container(container, None),
+    )
+    .await
+    .map_err(|_| failure())?
+    {
+        Ok(info) => info,
+        Err(bollard::errors::Error::DockerResponseServerError {
+            status_code: 404, ..
+        }) => return Ok(()),
+        Err(_) => return Err(failure()),
+    };
+    if !info
+        .config
+        .as_ref()
+        .and_then(|c| c.labels.as_ref())
+        .is_some_and(|labels| owned(labels, service))
+    {
+        return Err(ApiError(
+            StatusCode::CONFLICT,
+            "Container ownership could not be verified.",
+        ));
+    }
+    // Give stateful processes time to flush data before retaining their volume.
+    match state
+        .docker
+        .stop_container(
+            container,
+            Some(StopContainerOptionsBuilder::default().t(30).build()),
+        )
+        .await
+    {
+        Ok(())
+        | Err(bollard::errors::Error::DockerResponseServerError {
+            status_code: 304 | 404,
+            ..
+        }) => {}
+        Err(_) => return Err(failure()),
+    }
+    tolerate_missing(
+        state
+            .docker
+            .remove_container(
+                container,
+                Some(
+                    RemoveContainerOptionsBuilder::default()
+                        .force(true)
+                        .v(false)
+                        .build(),
+                ),
+            )
+            .await,
+    )?;
+    Ok(())
+}
 async fn cleanup(state: &AppState, service: Uuid, remove_data: bool) -> Result<(), ApiError> {
     let filters = HashMap::from([(
         "label".to_owned(),
@@ -105,38 +168,7 @@ async fn cleanup(state: &AppState, service: Uuid, remove_data: bool) -> Result<(
             return Err(failure());
         }
         let container = container.id.ok_or_else(failure)?;
-        // Inspect again immediately before removal; never remove anonymous volumes implicitly.
-        super::super::worker::inspect_owned(state, service, &container).await?;
-        // Give stateful processes time to flush data before retaining their volume.
-        match state
-            .docker
-            .stop_container(
-                &container,
-                Some(StopContainerOptionsBuilder::default().t(30).build()),
-            )
-            .await
-        {
-            Ok(())
-            | Err(bollard::errors::Error::DockerResponseServerError {
-                status_code: 304 | 404,
-                ..
-            }) => {}
-            Err(_) => return Err(failure()),
-        }
-        tolerate_missing(
-            state
-                .docker
-                .remove_container(
-                    &container,
-                    Some(
-                        RemoveContainerOptionsBuilder::default()
-                            .force(true)
-                            .v(false)
-                            .build(),
-                    ),
-                )
-                .await,
-        )?;
+        remove_listed_container(state, service, &container).await?;
     }
     let networks = state
         .docker
@@ -186,4 +218,57 @@ async fn cleanup(state: &AppState, service: Uuid, remove_data: bool) -> Result<(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    #[ignore = "requires FERRIX_TEST_DATABASE_URL and Docker with caddy:2-alpine"]
+    async fn deletion_tolerates_container_retired_after_inventory() {
+        let fixture = super::super::super::test_support::Fixture::new().await;
+        let container = fixture
+            .state
+            .docker
+            .create_container(
+                None::<bollard::query_parameters::CreateContainerOptions>,
+                bollard::models::ContainerCreateBody {
+                    image: Some("caddy:2-alpine".into()),
+                    labels: Some(HashMap::from([
+                        ("io.ferrix.managed".into(), "true".into()),
+                        ("io.ferrix.application".into(), fixture.service.to_string()),
+                    ])),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap()
+            .id;
+        let foreign = remove_listed_container(&fixture.state, Uuid::new_v4(), &container).await;
+        let preserved = fixture
+            .state
+            .docker
+            .inspect_container(&container, None)
+            .await
+            .is_ok();
+        // A real worker can remove a previously listed retired candidate at this point.
+        fixture
+            .state
+            .docker
+            .remove_container(&container, None)
+            .await
+            .unwrap();
+        let result = remove_listed_container(&fixture.state, fixture.service, &container).await;
+        fixture.finish().await;
+        assert!(matches!(foreign, Err(ApiError(StatusCode::CONFLICT, _))));
+        assert!(
+            preserved,
+            "Ownership mismatch must leave the container intact"
+        );
+        assert!(
+            result.is_ok(),
+            "A container already removed by the worker must not fail deletion"
+        );
+    }
 }
