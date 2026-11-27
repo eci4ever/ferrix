@@ -169,7 +169,7 @@ pub async fn ban(
             .execute(&mut *tx)
             .await?;
     }
-    log(
+    log_target(
         &mut tx,
         id.user_id,
         id.organization_id,
@@ -178,6 +178,7 @@ pub async fn ban(
         } else {
             "admin.user_unbanned"
         },
+        target,
     )
     .await?;
     tx.commit().await?;
@@ -218,11 +219,12 @@ pub async fn user_role(
             "User not found or banned. Unban before changing platform role.",
         ));
     }
-    log(
+    log_target(
         &mut tx,
         id.user_id,
         id.organization_id,
         "admin.user_role_changed",
+        target,
     )
     .await?;
     tx.commit().await?;
@@ -289,11 +291,12 @@ pub async fn delete_user(
         .bind(target)
         .execute(&mut *tx)
         .await?;
-    log(
+    log_target(
         &mut tx,
         id.user_id,
         id.organization_id,
         "admin.user_deleted",
+        target,
     )
     .await?;
     tx.commit().await?;

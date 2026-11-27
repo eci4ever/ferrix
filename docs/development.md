@@ -490,3 +490,46 @@ measurements of browser execution time. CSS and fonts are outside this JS budget
 `FERRIX_E2E_PRODUCTION=1` and `FERRIX_E2E_URL` to a temporary Vite preview to verify
 that page chunks are deferred and navigation stays visible during a delayed
 chunk load. It mocks API responses and does not change live development data.
+
+### Activity audit
+
+Every signed-in user can open `/activity` from Workspace. Platform administrators
+can search across organizations and filter by organization/user. Organization
+owners/admins can see their active organization's activity and filter by user;
+members see only their own events in that organization. Cross-organization filters
+and another-user filters for members return 403. Platform/admin events stay
+platform-only. API keys cannot access the activity endpoint through their route
+allowlist. The Security history endpoint retains its array response; ordinary
+members now receive only their own history rather than an empty unauthorized view.
+
+`GET /api/v1/auth/activity` accepts `q` (literal, case-insensitive substring, at most
+120 characters), optional UUID `organization_id` and `user_id`, and zero-based
+`page` (25 rows). SQL applies visibility before search/count/options; count and page
+share a statement snapshot and order by timestamp then UUID. Responses use
+`Cache-Control: no-store`. Filter choices include up to 500 distinct visible
+historical users/organizations. New names are event-time snapshots; legacy rows use names available at migration. Filter UUIDs remain
+stable if names change. Historical rows whose identity was already deleted before
+migration 0039 remain unknown; lost names cannot be reconstructed.
+
+Coverage:
+- Existing transactional authentication, MFA, sessions, invitation, membership,
+  organization, platform configuration and API-key events remain in `auth_audit`.
+- Profile updates and organization switches now have transactional events too.
+- Authenticated mutations outside `/auth/` (projects, services, deployment
+  requests, configuration, backups, domains, Docker and related controls) get a
+  request event before execution, with outcome updated after the HTTP handler.
+  Event data contains only method, fixed route template and the first resource UUID,
+  never request/response bodies, query strings, uploaded content, tokens or secrets.
+- A failed audit insert returns 503 before the mutation runs. A process interruption
+  or failed outcome update leaves a visible `pending` event with unknown outcome.
+  HTTP success means accepted/completed by the handler, not necessarily asynchronous
+  runtime convergence. Permission rejection before the recorder is not recorded.
+- Deployment inserts/status changes record `deployment.queued`,
+  `deployment.succeeded` and `deployment.failed` through a database trigger in the
+  same transaction, including worker/webhook paths and rollback behavior. The
+  resource UUID is the application ID. Existing deployment history is not backfilled.
+
+Migration 0039 adds immutable actor/organization references and name snapshots to
+preserve new activity when user/organization foreign keys are cleared on deletion.
+It adds indexes without changing shared historical migrations. Audit records are
+not removed by auth housekeeping; no retention/deletion endpoint is introduced.

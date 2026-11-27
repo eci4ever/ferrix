@@ -1,4 +1,5 @@
 pub(crate) mod accounts;
+mod activity;
 pub(crate) mod api_keys;
 mod invitation_email;
 mod login;
@@ -100,6 +101,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
         )
         .route("/security", get(security::status))
         .route("/audit", get(security::audit))
+        .route("/activity", get(activity::list))
         .route("/mfa/enroll", post(security::enroll))
         .route("/mfa/confirm", post(security::confirm))
         .route("/mfa/disable", post(security::disable))
@@ -151,11 +153,30 @@ pub(super) async fn log(
     org: uuid::Uuid,
     action: &str,
 ) -> Result<(), ApiError> {
-    sqlx::query("INSERT INTO auth_audit(id,user_id,organization_id,action) VALUES($1,$2,$3,$4)")
+    record(tx, user, org, action, None).await
+}
+pub(super) async fn log_target(
+    tx: &mut sqlx::PgConnection,
+    user: uuid::Uuid,
+    org: uuid::Uuid,
+    action: &str,
+    target: uuid::Uuid,
+) -> Result<(), ApiError> {
+    record(tx, user, org, action, Some(target)).await
+}
+async fn record(
+    tx: &mut sqlx::PgConnection,
+    user: uuid::Uuid,
+    org: uuid::Uuid,
+    action: &str,
+    target: Option<uuid::Uuid>,
+) -> Result<(), ApiError> {
+    sqlx::query("INSERT INTO auth_audit(id,user_id,organization_id,action,target_id) VALUES($1,$2,$3,$4,$5)")
         .bind(uuid::Uuid::new_v4())
         .bind(user)
         .bind(org)
         .bind(action)
+        .bind(target)
         .execute(tx)
         .await?;
     Ok(())

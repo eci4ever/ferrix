@@ -1482,6 +1482,7 @@ async fn postgres_user_and_organization_management() {
         .unwrap();
     let result = AssertUnwindSafe(async {
         sqlx::migrate!().run(&pool).await.unwrap();
+        check_activity(&app(pool.clone()), &pool).await;
         check_management(&app(pool.clone()), &pool).await;
         check_organization_delete_without_default_membership(&app(pool.clone()), &pool).await;
     })
@@ -2576,4 +2577,253 @@ async fn check_platform_organizations(app: &axum::Router, pool: &sqlx::PgPool, o
         .0,
         StatusCode::UNPROCESSABLE_ENTITY
     );
+}
+
+async fn check_activity(app: &axum::Router, pool: &sqlx::PgPool) {
+    use sha2::{Digest, Sha256};
+    let a = uuid::Uuid::new_v4();
+    let b = uuid::Uuid::new_v4();
+    for (org, name) in [(a, "Audit A"), (b, "Audit B")] {
+        sqlx::query("INSERT INTO auth_organizations(id,name) VALUES($1,$2)")
+            .bind(org)
+            .bind(name)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+    let mut actors = Vec::new();
+    for (n, role, system, org) in [
+        (1, "member", "admin", a),
+        (2, "owner", "user", a),
+        (3, "admin", "user", a),
+        (4, "member", "user", a),
+        (5, "owner", "user", b),
+    ] {
+        let user = uuid::Uuid::new_v4();
+        let token = format!("{n:064x}");
+        sqlx::query("INSERT INTO auth_users(id,name,email,password_hash,system_role) VALUES($1,$2,$3,'unused',$4)").bind(user).bind(format!("Audit user {n}")).bind(format!("audit{n}@example.com")).bind(system).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO auth_members(organization_id,user_id,role) VALUES($1,$2,$3)")
+            .bind(org)
+            .bind(user)
+            .bind(role)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO auth_sessions(id,token_hash,user_id,active_organization_id) VALUES($1,$2,$3,$4)").bind(uuid::Uuid::new_v4()).bind(hex::encode(Sha256::digest(token.as_bytes()))).bind(user).bind(org).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO auth_audit(id,user_id,organization_id,action) VALUES($1,$2,$3,'audit.fixture')").bind(uuid::Uuid::new_v4()).bind(user).bind(org).execute(pool).await.unwrap();
+        actors.push((user, format!("ferrix_test_session={token}")));
+    }
+    let base = "/api/v1/auth/activity";
+    assert_eq!(get(app, base, "").await.0, StatusCode::UNAUTHORIZED);
+    let all = get(app, base, &actors[0].1).await;
+    assert_eq!(all.0, StatusCode::OK);
+    assert_eq!(all.1["total"], 5);
+    for index in [1, 2] {
+        let result = get(app, base, &actors[index].1).await;
+        assert_eq!(result.0, StatusCode::OK);
+        assert_eq!(result.1["total"], 4);
+        assert!(
+            result.1["organizations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|org| org["id"] == a.to_string())
+        );
+        assert_eq!(
+            get(
+                app,
+                &format!("{base}?organization_id={b}"),
+                &actors[index].1
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+    assert_eq!(get(app, base, &actors[3].1).await.1["total"], 1);
+    assert_eq!(
+        get(
+            app,
+            &format!("{base}?user_id={}", actors[1].0),
+            &actors[3].1
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        get(
+            app,
+            &format!("{base}?organization_id={b}&q=fixture"),
+            &actors[0].1
+        )
+        .await
+        .1["total"],
+        1
+    );
+    assert_eq!(
+        get(app, &format!("{base}?q=%25"), &actors[0].1).await.1["total"],
+        0
+    );
+    // All mutating project requests have a durable pending record before the handler runs.
+    assert_eq!(
+        post(
+            app,
+            "/api/v1/projects",
+            json!({"name":"Audit project"}),
+            &actors[1].1
+        )
+        .await
+        .0,
+        StatusCode::CREATED
+    );
+    assert_eq!(
+        post(app, "/api/v1/projects", json!({"name":""}), &actors[1].1)
+            .await
+            .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    let events = get(app, &format!("{base}?q=request.POST"), &actors[0].1)
+        .await
+        .1;
+    assert_eq!(events["total"], 2);
+    assert!(
+        events["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["outcome"] == "failed")
+    );
+    assert!(
+        events["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["outcome"] == "succeeded")
+    );
+    sqlx::query("INSERT INTO auth_audit(id,user_id,organization_id,action) VALUES($1,$2,$3,'platform.secret_test')").bind(uuid::Uuid::new_v4()).bind(actors[0].0).bind(a).execute(pool).await.unwrap();
+    assert_eq!(
+        get(app, &format!("{base}?q=secret_test"), &actors[1].1)
+            .await
+            .1["total"],
+        0
+    );
+    // Pagination and deletion preserve historical identities, even after FKs become NULL.
+    sqlx::query("INSERT INTO auth_audit(id,user_id,organization_id,action) SELECT gen_random_uuid(),$1,$2,'audit.page' FROM generate_series(1,30)").bind(actors[4].0).bind(b).execute(pool).await.unwrap();
+    assert_eq!(
+        get(app, &format!("{base}?q=audit.page"), &actors[0].1)
+            .await
+            .1["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        25
+    );
+    assert_eq!(
+        get(app, &format!("{base}?q=audit.page&page=1"), &actors[0].1)
+            .await
+            .1["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        5
+    );
+    assert_eq!(
+        get(app, &format!("{base}?q=audit.page&page=99"), &actors[0].1)
+            .await
+            .1["total"],
+        30
+    );
+    sqlx::query("DELETE FROM auth_users WHERE id=$1")
+        .bind(actors[4].0)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM auth_organizations WHERE id=$1")
+        .bind(b)
+        .execute(pool)
+        .await
+        .unwrap();
+    let deleted = get(app, &format!("{base}?organization_id={b}"), &actors[0].1)
+        .await
+        .1;
+    assert_eq!(deleted["total"], 31);
+    assert_eq!(deleted["items"][0]["user_name"], "Audit user 5");
+    assert_eq!(deleted["items"][0]["organization_name"], "Audit B");
+    let environment:uuid::Uuid=sqlx::query_scalar("SELECT e.id FROM environments e JOIN projects p ON p.id=e.project_id WHERE p.organization_id=$1 LIMIT 1").bind(a).fetch_one(pool).await.unwrap();
+    let service = uuid::Uuid::new_v4();
+    let deployment = uuid::Uuid::new_v4();
+    sqlx::query("INSERT INTO applications(id,environment_id,name,image,container_port) VALUES($1,$2,'Audit service','nginx:alpine',80)").bind(service).bind(environment).execute(pool).await.unwrap();
+    sqlx::query("INSERT INTO deployments(id,application_id,requested_by,image,container_port) VALUES($1,$2,$3,'nginx:alpine',80)").bind(deployment).bind(service).bind(actors[1].0).execute(pool).await.unwrap();
+    sqlx::query("UPDATE deployments SET status='failed' WHERE id=$1")
+        .bind(deployment)
+        .execute(pool)
+        .await
+        .unwrap();
+    let lifecycle = get(app, &format!("{base}?q=deployment."), &actors[0].1)
+        .await
+        .1;
+    assert_eq!(lifecycle["total"], 2);
+    assert!(
+        lifecycle["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|event| event["target_id"] == service.to_string())
+    );
+    let mut tx = pool.begin().await.unwrap();
+    sqlx::query("INSERT INTO deployments(id,application_id,image,container_port) VALUES($1,$2,'nginx:alpine',80)").bind(uuid::Uuid::new_v4()).bind(service).execute(&mut *tx).await.unwrap();
+    tx.rollback().await.unwrap();
+    assert_eq!(
+        get(app, &format!("{base}?q=deployment."), &actors[0].1)
+            .await
+            .1["total"],
+        2
+    );
+    pool.execute("CREATE FUNCTION reject_audit_fixture() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION 'audit unavailable'; END $$; CREATE TRIGGER reject_audit_fixture BEFORE INSERT ON auth_audit FOR EACH ROW EXECUTE FUNCTION reject_audit_fixture()").await.unwrap();
+    assert_eq!(
+        post(
+            app,
+            "/api/v1/projects",
+            json!({"name":"Must not exist"}),
+            &actors[1].1
+        )
+        .await
+        .0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM projects WHERE name='Must not exist'")
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+        0
+    );
+    pool.execute(
+        "DROP TRIGGER reject_audit_fixture ON auth_audit; DROP FUNCTION reject_audit_fixture()",
+    )
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM projects WHERE organization_id=$1")
+        .bind(a)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM auth_audit WHERE organization_ref=ANY($1)")
+        .bind(vec![a, b])
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM auth_organizations WHERE id=$1")
+        .bind(a)
+        .execute(pool)
+        .await
+        .unwrap();
+    for (user, _) in actors {
+        sqlx::query("DELETE FROM auth_users WHERE id=$1")
+            .bind(user)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
 }

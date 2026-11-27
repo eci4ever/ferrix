@@ -215,7 +215,6 @@ pub async fn audit(
     State(state): State<AppState>,
     id: Identity,
 ) -> Result<Json<Vec<Value>>, ApiError> {
-    id.manager()?;
-    let rows:Vec<(Uuid,Option<Uuid>,String,chrono::DateTime<chrono::Utc>)>=sqlx::query_as("SELECT id,user_id,action,created_at FROM auth_audit WHERE organization_id=$1 ORDER BY created_at DESC LIMIT 100").bind(id.organization_id).fetch_all(&state.pool).await?;
+    let rows:Vec<(Uuid,Option<Uuid>,String,chrono::DateTime<chrono::Utc>)>=sqlx::query_as("SELECT id,user_id,action,created_at FROM auth_audit WHERE organization_ref=$1 AND (actor_id=$2 OR $3) AND action NOT LIKE 'admin.%' AND action NOT LIKE 'platform.%' ORDER BY created_at DESC,id DESC LIMIT 100").bind(id.organization_id).bind(id.user_id).bind(matches!(id.role.as_str(),"owner"|"admin")).fetch_all(&state.pool).await?;
     Ok(Json(rows.into_iter().map(|(id,user_id,action,created_at)|json!({"id":id,"user_id":user_id,"action":action,"created_at":created_at})).collect()))
 }
