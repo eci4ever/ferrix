@@ -318,7 +318,7 @@ async fn lock_org(tx: &mut sqlx::PgConnection, org: Uuid) -> Result<(), ApiError
         .await?;
     Ok(())
 }
-async fn preserve_owner(
+pub(super) async fn preserve_owner(
     tx: &mut sqlx::PgConnection,
     org: Uuid,
     target: Uuid,

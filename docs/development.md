@@ -533,3 +533,40 @@ Migration 0039 adds immutable actor/organization references and name snapshots t
 preserve new activity when user/organization foreign keys are cleared on deletion.
 It adds indexes without changing shared historical migrations. Audit records are
 not removed by auth housekeeping; no retention/deletion endpoint is introduced.
+
+### Platform Organization Detail
+
+Platform Organizations links to `/platform/organizations/<organization UUID>` with
+Overview, Members, Invitations and Activity tabs. The detail API reads a consistent
+snapshot of metadata, memberships and active invitations. The platform administrator
+can edit metadata, change an existing member's organization role, remove a member,
+and create/regenerate/cancel invitations without joining the organization or
+switching their active browser session. Organization deletion remains available on
+the existing list page with its existing protections.
+
+Organization owners/admins and ordinary members cannot access these platform
+endpoints. Each write rechecks live platform authority and recent identity under
+the shared administrative transaction lock. Member changes preserve the last owner;
+promotion requires an active, non-banned member. Removal preserves platform-admin
+access, removes only that organization's membership/keys and sessions, and cannot
+remove the requesting administrator from their own active organization through this
+page. Memberships/sessions in other organizations stay intact.
+
+The endpoint family is `/api/v1/auth/admin/organizations/{id}`: GET returns detail;
+existing POST edits metadata. POST to `/members/{target}/role`,
+`/members/{target}/remove`, `/invitations`, `/invitations/{invite}/renew` or
+`/invitations/{invite}/revoke` always scopes the target to the explicit organization.
+No global user role, password, ban or MFA is changed here. Those remain in Users.
+
+Mutations record `platform.member_role_changed`, `platform.member_removed` and
+`platform.invitation_created/renewed/revoked` transactionally under the target
+organization, with actor and target UUIDs. Overview edits retain
+`platform.organization_updated`. Activity fixes its organization filter to the
+viewed organization even when the admin clears text/user filters. These platform
+audit events retain the existing platform-only visibility rule.
+
+Invitations use the existing provider configuration, two-day expiry, 30-attempt
+throttle and post-commit email fallback. Browser send/renew requests allow 30 seconds
+for the bounded delivery attempt. Invitation tokens are shown only in the current
+page until dismissed. The detail lists current pending invitations; full historical
+invitation statuses and server pagination of members/invitations are separate work.

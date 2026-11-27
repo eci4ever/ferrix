@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from '@tanstack/react-router'
 import type { FormEvent } from 'react'
 import { request } from '@/lib/api'
 import { DataTable } from '@/components/data-table'
@@ -41,7 +42,7 @@ export function PlatformOrganizations({ admin, activeOrganization, refreshVersio
     {message ? <Alert role="status"><AlertTitle>{message}</AlertTitle></Alert> : null}
     {error ? <Alert variant="destructive"><AlertTitle>Organizations unavailable</AlertTitle><AlertDescription>{error}<Button variant="outline" onClick={() => setRetry(value => value + 1)}>Retry organizations</Button></AlertDescription></Alert> : null}
     <DataTable label="Platform organizations" data={items} loading={loading} columns={[
-      { id: 'name', label: 'Organization', value: org => org.name, cell: org => <div className="flex flex-wrap items-center gap-2"><span className="break-words">{org.name}</span>{org.is_default ? <Badge variant="secondary">Default</Badge> : null}{org.id === activeOrganization ? <Badge variant="outline">Current</Badge> : null}</div> },
+      { id: 'name', label: 'Organization', value: org => org.name, cell: org => <div className="flex flex-wrap items-center gap-2"><Link className="break-words font-medium underline underline-offset-4" to="/platform/organizations/$organizationId" params={{ organizationId: org.id }}>{org.name}</Link>{org.is_default ? <Badge variant="secondary">Default</Badge> : null}{org.id === activeOrganization ? <Badge variant="outline">Current</Badge> : null}</div> },
       { id: 'members', label: 'Members', cell: org => org.member_count },
       { id: 'projects', label: 'Projects', cell: org => org.project_count },
       { id: 'actions', label: 'Actions', cell: org => <div className="flex flex-wrap gap-2"><Button variant="outline" disabled={busy} aria-label={`Edit ${org.name}`} onClick={() => open({ kind: 'edit', org })}>Edit</Button><Button variant="outline" disabled={busy || org.is_default || org.project_count > 0 || org.id === activeOrganization} title={org.is_default ? 'Default organization cannot be deleted' : org.project_count > 0 ? 'Delete its projects first' : org.id === activeOrganization ? 'Switch to another organization first' : undefined} aria-label={`Delete ${org.name}`} onClick={() => open({ kind: 'delete', org })}>Delete</Button></div> },

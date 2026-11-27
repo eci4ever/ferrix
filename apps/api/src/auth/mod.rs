@@ -6,6 +6,7 @@ mod login;
 mod management;
 mod organizations;
 pub(crate) mod permissions;
+mod platform_organization;
 pub(crate) mod platform_settings;
 mod security;
 pub(crate) mod sessions;
@@ -62,11 +63,31 @@ pub fn routes(state: AppState) -> Router<AppState> {
         )
         .route(
             "/admin/organizations/{id}",
-            post(management::platform_update_organization),
+            get(platform_organization::detail).post(management::platform_update_organization),
         )
         .route(
             "/admin/organizations/{id}/delete",
             post(management::platform_delete_organization),
+        )
+        .route(
+            "/admin/organizations/{id}/members/{target}/role",
+            post(platform_organization::role),
+        )
+        .route(
+            "/admin/organizations/{id}/members/{target}/remove",
+            post(platform_organization::remove),
+        )
+        .route(
+            "/admin/organizations/{id}/invitations",
+            post(platform_organization::invite),
+        )
+        .route(
+            "/admin/organizations/{id}/invitations/{invite}/renew",
+            post(platform_organization::renew),
+        )
+        .route(
+            "/admin/organizations/{id}/invitations/{invite}/revoke",
+            post(platform_organization::revoke),
         )
         .route("/admin/users", get(management::users))
         .route(

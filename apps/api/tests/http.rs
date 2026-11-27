@@ -1483,6 +1483,7 @@ async fn postgres_user_and_organization_management() {
     let result = AssertUnwindSafe(async {
         sqlx::migrate!().run(&pool).await.unwrap();
         check_activity(&app(pool.clone()), &pool).await;
+        check_platform_org_detail(&app(pool.clone()), &pool).await;
         check_management(&app(pool.clone()), &pool).await;
         check_organization_delete_without_default_membership(&app(pool.clone()), &pool).await;
     })
@@ -2826,4 +2827,324 @@ async fn check_activity(app: &axum::Router, pool: &sqlx::PgPool) {
             .await
             .unwrap();
     }
+}
+
+async fn check_platform_org_detail(app: &axum::Router, pool: &sqlx::PgPool) {
+    use sha2::{Digest, Sha256};
+    let active = uuid::Uuid::new_v4();
+    let org = uuid::Uuid::new_v4();
+    for (id, name) in [(active, "Detail active"), (org, "Detail target")] {
+        sqlx::query("INSERT INTO auth_organizations(id,name) VALUES($1,$2)")
+            .bind(id)
+            .bind(name)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+    let mut actors = Vec::new();
+    for (n, role, system, organization) in [
+        (10, "member", "admin", active),
+        (11, "owner", "user", org),
+        (12, "admin", "user", org),
+        (13, "member", "user", org),
+    ] {
+        let user = uuid::Uuid::new_v4();
+        let token = format!("{n:064x}");
+        sqlx::query("INSERT INTO auth_users(id,name,email,password_hash,system_role) VALUES($1,$2,$3,'unused',$4)").bind(user).bind(format!("Detail actor {n}")).bind(format!("detail{n}@example.com")).bind(system).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO auth_members(organization_id,user_id,role) VALUES($1,$2,$3)")
+            .bind(organization)
+            .bind(user)
+            .bind(role)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO auth_sessions(id,token_hash,user_id,active_organization_id) VALUES($1,$2,$3,$4)").bind(uuid::Uuid::new_v4()).bind(hex::encode(Sha256::digest(token.as_bytes()))).bind(user).bind(organization).execute(pool).await.unwrap();
+        actors.push((user, format!("ferrix_test_session={token}")));
+    }
+    let base = format!("/api/v1/auth/admin/organizations/{org}");
+    let admin = &actors[0].1;
+    let original = get(app, "/api/v1/auth/session", admin).await.1;
+    assert_eq!(get(app, &base, "").await.0, StatusCode::UNAUTHORIZED);
+    for (_, cookie) in &actors[1..] {
+        assert_eq!(get(app, &base, cookie).await.0, StatusCode::FORBIDDEN);
+        assert_eq!(
+            post(
+                app,
+                &format!("{base}/members/{}/role", actors[3].0),
+                json!({"role":"admin"}),
+                cookie
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            post(
+                app,
+                &format!("{base}/members/{}/remove", actors[3].0),
+                json!({}),
+                cookie
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            post(
+                app,
+                &format!("{base}/invitations"),
+                json!({"email":"detail-invited@example.com","role":"member"}),
+                cookie
+            )
+            .await
+            .0,
+            StatusCode::FORBIDDEN
+        );
+    }
+    let read = get(app, &base, admin).await;
+    assert_eq!(read.0, StatusCode::OK);
+    assert_eq!(read.1["members"].as_array().unwrap().len(), 3);
+    assert_eq!(
+        get(
+            app,
+            &format!("/api/v1/auth/admin/organizations/{}", uuid::Uuid::new_v4()),
+            admin
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    let owner_role = format!("{base}/members/{}/role", actors[1].0);
+    let owner_remove = format!("{base}/members/{}/remove", actors[1].0);
+    assert_eq!(
+        post(app, &owner_role, json!({"role":"member"}), admin)
+            .await
+            .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        post(app, &owner_remove, json!({}), admin).await.0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(
+        post(
+            app,
+            &format!("{base}/members/{}/remove", actors[0].0),
+            json!({}),
+            admin
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    sqlx::query(
+        "UPDATE auth_sessions SET authenticated_at=now()-interval '16 minutes' WHERE user_id=$1",
+    )
+    .bind(actors[0].0)
+    .execute(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        post(app, &owner_role, json!({"role":"member"}), admin)
+            .await
+            .0,
+        StatusCode::UNAUTHORIZED
+    );
+    sqlx::query("UPDATE auth_sessions SET authenticated_at=now() WHERE user_id=$1")
+        .bind(actors[0].0)
+        .execute(pool)
+        .await
+        .unwrap();
+    let promote = format!("{base}/members/{}/role", actors[3].0);
+    assert_eq!(
+        post(app, &promote, json!({"role":"owner"}), admin).await.0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        post(app, &owner_role, json!({"role":"member"}), admin)
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    sqlx::query("INSERT INTO auth_members(organization_id,user_id,role) VALUES($1,$2,'member')")
+        .bind(active)
+        .bind(actors[1].0)
+        .execute(pool)
+        .await
+        .unwrap();
+    let alternate = "00000000000000000000000000000000000000000000000000000000000000ff";
+    sqlx::query("INSERT INTO auth_sessions(id,token_hash,user_id,active_organization_id) VALUES($1,$2,$3,$4)").bind(uuid::Uuid::new_v4()).bind(hex::encode(Sha256::digest(alternate.as_bytes()))).bind(actors[1].0).bind(active).execute(pool).await.unwrap();
+    assert_eq!(
+        post(app, &owner_remove, json!({}), admin).await.0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        get(app, "/api/v1/auth/session", &actors[1].1).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        get(
+            app,
+            "/api/v1/auth/session",
+            &format!("ferrix_test_session={alternate}")
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let invitation = post(
+        app,
+        &format!("{base}/invitations"),
+        json!({"email":"detail-invited@example.com","role":"admin"}),
+        admin,
+    )
+    .await;
+    assert_eq!(invitation.0, StatusCode::OK);
+    assert_eq!(invitation.1["email_delivery"], "not_configured");
+    let invite = invitation.1["id"].as_str().unwrap();
+    let renew = format!("{base}/invitations/{invite}/renew");
+    let renewed = post(app, &renew, json!({}), admin).await;
+    assert_eq!(renewed.0, StatusCode::OK);
+    assert_ne!(renewed.1["token"], invitation.1["token"]);
+    for (_, cookie) in &actors[2..] {
+        assert_eq!(
+            post(app, &renew, json!({}), cookie).await.0,
+            StatusCode::FORBIDDEN
+        );
+    }
+    assert_eq!(
+        post(
+            app,
+            &format!("/api/v1/auth/admin/organizations/{active}/invitations/{invite}/revoke"),
+            json!({}),
+            admin
+        )
+        .await
+        .0,
+        StatusCode::NOT_FOUND
+    );
+    let mut registration = json!({"name":"Detail invited","email":"detail-invited@example.com","password":PASSWORD,"token":invitation.1["token"]});
+    assert_eq!(
+        post(
+            app,
+            "/api/v1/auth/accept-invitation",
+            registration.clone(),
+            ""
+        )
+        .await
+        .0,
+        StatusCode::UNAUTHORIZED
+    );
+    registration["token"] = renewed.1["token"].clone();
+    assert_eq!(
+        post(app, "/api/v1/auth/accept-invitation", registration, "")
+            .await
+            .0,
+        StatusCode::OK
+    );
+    let second = post(
+        app,
+        &format!("{base}/invitations"),
+        json!({"email":"detail-cancel@example.com","role":"member"}),
+        admin,
+    )
+    .await
+    .1;
+    let revoke = format!(
+        "{base}/invitations/{}/revoke",
+        second["id"].as_str().unwrap()
+    );
+    for (_, cookie) in &actors[2..] {
+        assert_eq!(
+            post(app, &revoke, json!({}), cookie).await.0,
+            StatusCode::FORBIDDEN
+        );
+    }
+    assert_eq!(
+        post(app, &revoke, json!({}), admin).await.0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        get(app, &base, admin).await.1["invitations"]
+            .as_array()
+            .unwrap()
+            .len(),
+        0
+    );
+    let final_identity = get(app, "/api/v1/auth/session", admin).await.1;
+    assert_eq!(
+        final_identity["organization_id"],
+        original["organization_id"]
+    );
+    assert_eq!(final_identity["session_id"], original["session_id"]);
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>(
+            "SELECT count(*) FROM auth_members WHERE organization_id=$1 AND user_id=$2"
+        )
+        .bind(org)
+        .bind(actors[0].0)
+        .fetch_one(pool)
+        .await
+        .unwrap(),
+        0
+    );
+    let events = get(
+        app,
+        &format!("/api/v1/auth/activity?organization_id={org}&q=platform."),
+        admin,
+    )
+    .await
+    .1;
+    assert_eq!(events["users"].as_array().unwrap().len(), 2);
+    assert_eq!(events["total"], 7);
+    assert!(
+        events["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|event| event["user_id"] == actors[0].0.to_string()
+                && event["target_id"].is_string())
+    );
+    sqlx::query("UPDATE auth_users SET system_role='admin' WHERE id=$1")
+        .bind(actors[2].0)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        post(
+            app,
+            &format!("{base}/members/{}/remove", actors[2].0),
+            json!({}),
+            admin
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    sqlx::query("UPDATE auth_users SET system_role='user' WHERE id=$1")
+        .bind(actors[2].0)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM auth_audit WHERE organization_ref=ANY($1)")
+        .bind(vec![active, org])
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM auth_organizations WHERE id=ANY($1)")
+        .bind(vec![active, org])
+        .execute(pool)
+        .await
+        .unwrap();
+    for (user, _) in actors {
+        sqlx::query("DELETE FROM auth_users WHERE id=$1")
+            .bind(user)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+    sqlx::query("DELETE FROM auth_users WHERE email='detail-invited@example.com'")
+        .execute(pool)
+        .await
+        .unwrap();
 }
