@@ -264,6 +264,22 @@ pub async fn delete_user(
             "Transfer all organization ownership before deleting this user.",
         ));
     }
+    // Do not turn pending user requests into trusted system jobs when the FK is cleared.
+    sqlx::query("UPDATE deployments SET status='failed',finished_at=now(),logs=left(logs || E'Requesting account deleted before deployment started.\\n',65536) WHERE requested_by=$1 AND status='queued'")
+        .bind(target)
+        .execute(&mut *tx)
+        .await?;
+    let running: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM deployments WHERE requested_by=$1 AND status='running')",
+    )
+    .bind(target)
+    .fetch_one(&mut *tx)
+    .await?;
+    if running {
+        return Err(bad(
+            "Wait for this user's running deployments to finish before deleting the account.",
+        ));
+    }
     // Retire invitations issued by the deleted account before removing its FK target.
     sqlx::query("DELETE FROM auth_invitations WHERE invited_by=$1")
         .bind(target)
