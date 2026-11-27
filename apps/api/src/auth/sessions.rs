@@ -279,6 +279,10 @@ pub(super) async fn issue(
         .collect::<String>();
     // Client forwarded headers are intentionally not trusted.
     sqlx::query("INSERT INTO auth_sessions(id,token_hash,user_id,active_organization_id,user_agent,ip_address) VALUES($1,$2,$3,$4,$5,$6)").bind(Uuid::new_v4()).bind(digest(&t)).bind(user).bind(org).bind(agent).bind(headers.get("x-ferrix-peer").and_then(|v|v.to_str().ok()).unwrap_or("")).execute(&mut *tx).await?;
+    sqlx::query("UPDATE auth_users SET last_sign_in_at=now() WHERE id=$1")
+        .bind(user)
+        .execute(&mut *tx)
+        .await?;
     log(tx, user, org, "session.created").await?;
     Ok(t)
 }

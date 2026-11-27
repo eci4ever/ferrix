@@ -46,7 +46,7 @@ async function workspace(page: Page, system = 'admin', role = 'owner') {
       '/containers': [],
       '/docker/swarm': { state: 'active', manager: true, service_list: [{ id: 'a'.repeat(25), name: 'Example service', mode: 'Replicated', replicas: 1, version: 1 }], node_list: [] },
     }
-    return route.fulfill({ json: responses[path] ?? {} })
+    return route.fulfill({ json: responses[path.replace(/\/search$/, '')] ?? {} })
   })
   return posted
 }

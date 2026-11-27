@@ -168,6 +168,14 @@ pub(super) async fn deliver(
         .ok()
         .and_then(Result::ok)
         .unwrap_or(Delivery::Failed);
+    let status = match delivery {
+        Delivery::Sent => "sent",
+        Delivery::Failed => "failed",
+        Delivery::NotConfigured => "not_configured",
+    };
+    if sqlx::query("UPDATE auth_invitations SET delivery_status=$2,delivery_attempted_at=now() WHERE id=$1 AND token_hash=$3").bind(invite).bind(status).bind(super::digest(token)).execute(&state.pool).await.is_err() {
+        tracing::error!(invitation_id=%invite,"Invitation delivery status could not be persisted");
+    }
     // Only a non-sensitive outcome is logged; never log provider errors or invitation tokens.
     tracing::info!(invitation_id=%invite, ?delivery, "Invitation email attempt completed");
     delivery

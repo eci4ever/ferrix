@@ -30,13 +30,11 @@ pub(super) async fn detail(
         .execute(&mut *tx)
         .await?;
     exists(&mut tx, org).await?;
-    let organization:Value=sqlx::query_scalar("SELECT json_build_object('id',o.id,'name',o.name,'logo_url',o.logo_url,'is_default',o.is_default,'created_at',o.created_at,'project_count',(SELECT count(*) FROM projects WHERE organization_id=o.id))::jsonb FROM auth_organizations o WHERE id=$1").bind(org).fetch_one(&mut *tx).await?;
-    let members:Value=sqlx::query_scalar("SELECT COALESCE(json_agg(m),'[]'::json)::jsonb FROM (SELECT u.id,u.name,u.email,auth_user_banned(u.banned,u.ban_expires_at) AS banned,m.role FROM auth_members m JOIN auth_users u ON u.id=m.user_id WHERE m.organization_id=$1 ORDER BY u.name,u.id) m").bind(org).fetch_one(&mut *tx).await?;
-    let invitations:Value=sqlx::query_scalar("SELECT COALESCE(json_agg(i),'[]'::json)::jsonb FROM (SELECT id,email,role,expires_at FROM auth_invitations WHERE organization_id=$1 AND accepted_at IS NULL AND expires_at>now() ORDER BY created_at DESC,id DESC) i").bind(org).fetch_one(&mut *tx).await?;
+    let organization:Value=sqlx::query_scalar("SELECT json_build_object('id',o.id,'name',o.name,'logo_url',o.logo_url,'is_default',o.is_default,'created_at',o.created_at,'member_count',(SELECT count(*) FROM auth_members WHERE organization_id=o.id),'project_count',(SELECT count(*) FROM projects WHERE organization_id=o.id))::jsonb FROM auth_organizations o WHERE id=$1").bind(org).fetch_one(&mut *tx).await?;
     tx.commit().await?;
     Ok((
         [(axum::http::header::CACHE_CONTROL, "no-store")],
-        Json(json!({"organization":organization,"members":members,"invitations":invitations})),
+        Json(json!({"organization":organization})),
     ))
 }
 #[derive(Deserialize)]
@@ -146,7 +144,8 @@ pub(super) async fn invite(
     let mut tx = state.pool.begin().await?;
     management::authorize(&mut tx, &id, "platform").await?;
     exists(&mut tx, org).await?;
-    sqlx::query("UPDATE auth_invitations SET expires_at=now() WHERE organization_id=$1 AND email=$2 AND accepted_at IS NULL").bind(org).bind(&email).execute(&mut *tx).await?;
+    sqlx::query("UPDATE auth_invitations SET expires_at=now(),cancelled_at=now() WHERE organization_id=$1 AND email=$2 AND accepted_at IS NULL AND cancelled_at IS NULL AND rejected_at IS NULL AND expires_at>now()").bind(org).bind(&email).execute(&mut *tx).await?;
+    organization_lists::capacity(&mut tx, org, true, None).await?;
     sqlx::query("INSERT INTO auth_invitations(id,organization_id,email,role,token_hash,invited_by) VALUES($1,$2,$3,$4,$5,$6)").bind(invite).bind(org).bind(&email).bind(&input.role).bind(digest(&value)).bind(id.user_id).execute(&mut *tx).await?;
     log_target(
         &mut tx,
@@ -174,9 +173,14 @@ pub(super) async fn renew(
     let mut tx = state.pool.begin().await?;
     management::authorize(&mut tx, &id, "platform").await?;
     exists(&mut tx, org).await?;
-    let (email,role):(String,String)=sqlx::query_as("SELECT email,role FROM auth_invitations WHERE id=$1 AND organization_id=$2 AND accepted_at IS NULL").bind(invite).bind(org).fetch_optional(&mut *tx).await?.ok_or(ApiError(StatusCode::NOT_FOUND,"Invitation not found in this organization."))?;
+    let (email,role):(String,String)=sqlx::query_as("SELECT email,role FROM auth_invitations WHERE id=$1 AND organization_id=$2 AND accepted_at IS NULL AND cancelled_at IS NULL AND rejected_at IS NULL").bind(invite).bind(org).fetch_optional(&mut *tx).await?.ok_or(ApiError(StatusCode::NOT_FOUND,"Invitation not found in this organization."))?;
     let value = token();
-    sqlx::query("UPDATE auth_invitations SET token_hash=$1,expires_at=now()+interval '2 days',invited_by=$2 WHERE id=$3").bind(digest(&value)).bind(id.user_id).bind(invite).execute(&mut *tx).await?;
+    sqlx::query("UPDATE auth_invitations SET expires_at=now() WHERE id=$1")
+        .bind(invite)
+        .execute(&mut *tx)
+        .await?;
+    organization_lists::capacity(&mut tx, org, true, None).await?;
+    sqlx::query("UPDATE auth_invitations SET token_hash=$1,expires_at=now()+interval '2 days',invited_by=$2,delivery_status='unknown',delivery_attempted_at=NULL WHERE id=$3").bind(digest(&value)).bind(id.user_id).bind(invite).execute(&mut *tx).await?;
     log_target(
         &mut tx,
         id.user_id,
@@ -199,7 +203,7 @@ pub(super) async fn revoke(
     let mut tx = state.pool.begin().await?;
     management::authorize(&mut tx, &id, "platform").await?;
     exists(&mut tx, org).await?;
-    let result=sqlx::query("UPDATE auth_invitations SET expires_at=now() WHERE id=$1 AND organization_id=$2 AND accepted_at IS NULL").bind(invite).bind(org).execute(&mut *tx).await?;
+    let result=sqlx::query("UPDATE auth_invitations SET expires_at=now(),cancelled_at=now() WHERE id=$1 AND organization_id=$2 AND accepted_at IS NULL AND cancelled_at IS NULL AND rejected_at IS NULL AND expires_at>now()").bind(invite).bind(org).execute(&mut *tx).await?;
     if result.rows_affected() == 0 {
         return Err(ApiError(
             StatusCode::NOT_FOUND,

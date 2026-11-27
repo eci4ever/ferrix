@@ -7,6 +7,9 @@ import type { FormEvent, ReactNode } from 'react'
 import type { Identity, Organization, Member, Invitation, Session } from './auth'
 import { FormDialog } from '@/components/form-dialog'
 import { request } from '@/lib/api'
+import { Link } from '@tanstack/react-router'
+import { OrganizationPolicy } from './organization-policy'
+import { PagedTable } from '@/components/paged-table'
 import { DataTable } from '@/components/data-table'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -21,7 +24,7 @@ import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 
 type Refresh = () => Promise<unknown>
 type User = { id: string; name: string; email: string; system_role: string; banned: boolean; ban_reason: string | null; ban_expires_at: string | null; created_at: string }
-type UserDetail = { user: User; organizations: Organization[]; sessions: Session[] }
+type UserDetail = { user: User; organizations: Organization[]; sessions: Session[]; summary?: { last_sign_in_at: string | null; mfa_enabled: boolean; api_keys: { active: number; revoked: number; expired: number } } }
 type OrgProfile = { id: string; name: string; logo_url: string | null; is_default: boolean }
 function values(event: FormEvent<HTMLFormElement>) { event.preventDefault(); return Object.fromEntries(new FormData(event.currentTarget)) as Record<string, string> }
 function Notice({ message }: { message: string }) { return message ? <Alert><AlertTitle>Account notice</AlertTitle><AlertDescription>{message}</AlertDescription></Alert> : null }
@@ -94,26 +97,34 @@ export function AdminPage({ identity, refresh, refreshVersion }: { identity: Ide
           <DropdownMenuItem disabled={busy} onSelect={() => open({ title: `Revoke sessions for ${user.name}?`, description: 'Revokes this user’s sessions, except your current session if this is your account.', path: `admin/users/${user.id}/revoke-sessions`, kind: 'confirm' })}>Revoke sessions</DropdownMenuItem>
           <DropdownMenuItem disabled={busy} onSelect={() => open({ title: `Revoke API keys for ${user.name}?`, description: 'Immediately invalidates all of this user’s API keys across organizations. Browser sessions remain unchanged.', path: `admin/users/${user.id}/revoke-api-keys`, kind: 'confirm' })}>Revoke API keys</DropdownMenuItem>
           <DropdownMenuItem disabled={busy || user.banned} onSelect={() => open({ title: `Reset password for ${user.name}?`, description: 'Generate a single-use reset token to share privately. MFA remains required.', path: `admin/users/${user.id}/password-reset`, kind: 'confirm' })}>Reset password</DropdownMenuItem>
-          {user.id !== identity.user_id ? <DropdownMenuItem variant="destructive" disabled={busy} onSelect={() => open({ title: `Delete ${user.name}?`, description: 'Permanently removes the account, memberships, sessions and invitations issued by this account. Organization owners must transfer ownership first.', path: `admin/users/${user.id}/delete`, kind: 'delete', confirmation: user.email })}>Delete</DropdownMenuItem> : null}
+          {user.id !== identity.user_id ? <DropdownMenuItem variant="destructive" disabled={busy} onSelect={() => open({ title: `Delete ${user.name}?`, description: 'Permanently removes the account, memberships, sessions. Pending invitations issued by this account are cancelled; history is retained. Organization owners must transfer ownership first.', path: `admin/users/${user.id}/delete`, kind: 'delete', confirmation: user.email })}>Delete</DropdownMenuItem> : null}
           </DropdownMenuGroup></DropdownMenuContent></DropdownMenu>
         </div> },
       ]} />
     </Section>
     <Dialog open={!!detailId} onOpenChange={open => { if (!open) setDetailId(null) }}><DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto sm:max-w-3xl"><DialogHeader><DialogTitle>User details</DialogTitle><DialogDescription>Account membership and up to 100 active sessions. Authentication secrets are never shown.</DialogDescription></DialogHeader>{detailError ? <Notice message={detailError} /> : !detail ? <p role="status">Loading user…</p> : <>
       <p>{detail.user.name} · {detail.user.email}</p><p className="text-sm text-muted-foreground">Platform role: {detail.user.system_role}</p>
-      <DataTable label="User organizations" data={detail.organizations} columns={[{ id: 'name', label: 'Organization', value: org => org.name }, { id: 'role', label: 'Role', value: org => org.role }]} />
+      <div className="grid gap-3 text-sm sm:grid-cols-2"><p>Last sign-in: {detail.summary?.last_sign_in_at ? new Date(detail.summary.last_sign_in_at).toLocaleString() : 'Unknown (not recorded)'}</p><p>MFA: {detail.summary ? detail.summary.mfa_enabled ? 'Enabled' : 'Disabled' : 'Unknown'}</p><p>API keys: {detail.summary ? `${detail.summary.api_keys.active} active · ${detail.summary.api_keys.revoked} revoked · ${detail.summary.api_keys.expired} expired` : 'Unknown'}</p><Button asChild variant="outline"><Link to="/activity" search={{ user_id: detail.user.id }}>View user activity</Link></Button></div>
+      <DataTable label="User organizations" data={detail.organizations} columns={[{ id: 'name', label: 'Organization', value: org => org.name }, { id: 'role', label: 'Role', value: org => org.role }, { id: 'joined', label: 'Joined', cell: org => org.joined_at ? new Date(org.joined_at).toLocaleString() : 'Unknown (not recorded)' }]} />
       <DataTable label="User sessions" data={detail.sessions} columns={[{ id: 'device', label: 'Device', value: session => session.user_agent || 'Unknown device' }, { id: 'ip', label: 'IP address', value: session => session.ip_address }, { id: 'current', label: 'Status', cell: session => session.current ? <Badge variant="outline">Protected</Badge> : 'Active' }]} />
     </>}</DialogContent></Dialog>
     <OperationDialog operation={operation} busy={busy} message={message} close={() => setOperation(null)} submit={async body => { if (!operation) return; const result = await action(operation.path, body); if (result) { if (result.token) setToken(result.token); setOperation(null) } }} />
   </div>
 }
 
-export function TeamPage({ identity, members, invitations, refresh, refreshVersion, view = 'all' }: { view?: 'all' | 'team' | 'settings' | 'invitations'; identity: Identity; members: Member[]; invitations: Invitation[]; refresh: Refresh; refreshVersion: number }) {
+export function TeamPage({ identity, refresh, refreshVersion, view = 'all' }: { view?: 'all' | 'team' | 'settings' | 'invitations'; identity: Identity; refresh: Refresh; refreshVersion: number }) {
   const manager = identity.role === 'owner' || identity.role === 'admin'
   const [tab, setTab] = useState(view === 'team' ? 'members' : view === 'invitations' ? 'invitations' : 'general')
   useEffect(() => { if (!manager && tab === 'invitations') setTab('members') }, [manager, tab])
   const [profile, setProfile] = useState<OrgProfile | null>(null); const [profileError, setProfileError] = useState(''); const [version, setVersion] = useState(0)
   const [token, setToken] = useState(''); const [invitationRole, setInvitationRole] = useState('member'); const [transferTo, setTransferTo] = useState('')
+  const [ownerSearch, setOwnerSearch] = useState(''), [members, setMembers] = useState<Member[]>([]), [ownerError, setOwnerError] = useState('')
+  useEffect(() => {
+    if (identity.role !== 'owner' || tab !== 'access') return
+    const abort = new AbortController(); setOwnerError(''); setMembers([]); setTransferTo('')
+    const timer = setTimeout(() => request<{ items: Member[] } | Member[]>(`/auth/members/search?q=${encodeURIComponent(ownerSearch)}`, { signal: abort.signal }).then(value => { if (!abort.signal.aborted) setMembers(Array.isArray(value) ? value : value.items) }).catch(error => { if (!abort.signal.aborted) setOwnerError(error.message) }), 250)
+    return () => { clearTimeout(timer); abort.abort() }
+  }, [ownerSearch, identity.role, tab, refreshVersion])
   const [inviting, setInviting] = useState(false)
   const [invitationToken, setInvitationToken] = useState('')
   const [invitationDelivery, setInvitationDelivery] = useState('')
@@ -141,7 +152,7 @@ export function TeamPage({ identity, members, invitations, refresh, refreshVersi
           {view !== 'team' && view !== 'invitations' ? <TabsTrigger value="access" className="min-h-9 px-3">Access</TabsTrigger> : null}
         </TabsList>
       </div>
-      <TabsContent value="general" forceMount className={tab === 'general' ? 'min-w-0' : 'hidden'}>
+      <TabsContent value="general" forceMount className={tab === 'general' ? 'min-w-0 space-y-6' : 'hidden'}>
     <Section title="Organization profile" description="Owners and organization admins can update the name and logo.">
       {profileError ? <><Notice message={profileError} /><Button variant="outline" onClick={() => setVersion(value => value + 1)}>Retry organization</Button></> : null}
       {!profile ? !profileError ? <p role="status">Loading organization…</p> : null : <>
@@ -149,9 +160,10 @@ export function TeamPage({ identity, members, invitations, refresh, refreshVersi
         {manager ? <form key={`${profile.id}:${profile.name}:${profile.logo_url}`} onSubmit={async event => { const input = values(event); await action('organizations/current', { name: input.name, logo_url: input.logo_url.trim() || null }) }} className="flex max-w-xl flex-col gap-4"><fieldset disabled={busy}><FieldGroup><Text name="name" label="Organization name" maxLength={80} defaultValue={profile.name} /><Text name="logo_url" label="Logo URL" type="url" maxLength={2048} required={false} defaultValue={profile.logo_url ?? ''} /><FieldDescription>Optional HTTPS image URL. The image provider receives requests from your browser.</FieldDescription></FieldGroup></fieldset><LoadingButton loading={busy} loadingText="Saving…" type="submit" className="self-start" disabled={busy}>Save organization</LoadingButton></form> : <p>{profile.name}</p>}
       </>}
     </Section>
+    {manager ? <OrganizationPolicy path="/auth/organizations/policy" canEdit={identity.role === 'owner'} refreshVersion={refreshVersion + version} /> : null}
       </TabsContent>
       <TabsContent value="members" forceMount className={tab === 'members' ? 'min-w-0' : 'hidden'}>
-    <Section title="Members" description="Manage membership and organization roles. Platform roles are managed in Users."><DataTable label="Members" data={members} columns={[
+    <Section title="Members" description="Manage membership and organization roles. Platform roles are managed in Users."><PagedTable<Member> label="Members" path="/auth/members/search" roles refreshVersion={refreshVersion + version} columns={[
       { id: 'name', label: 'Member', value: member => `${member.name} ${member.email}`, cell: member => <div><p>{member.name}{member.id === identity.user_id ? ' (you)' : ''}</p><p className="text-xs text-muted-foreground">{member.email}</p></div> },
       { id: 'role', label: 'Role', value: member => member.role },
       ...(manager ? [{ id: 'actions', label: 'Actions', cell: (member: Member) => <div className="flex flex-wrap gap-2">{identity.role === 'owner' ? ['owner', 'admin', 'member'].filter(role => role !== member.role).map(role => <Button key={role} variant="outline" disabled={busy} onClick={() => open({ title: `Change ${member.name} to ${role}?`, description: 'The last owner is protected. Platform access is unchanged.', path: `members/${member.id}/role`, kind: 'confirm', body: { role } })}>Make {role}</Button>) : null}{member.id !== identity.user_id && (identity.role === 'owner' || member.role === 'member') ? <Button variant="outline" disabled={busy} onClick={() => open({ title: `Remove ${member.name}?`, description: 'Removes membership and sessions active in this organization. Other memberships remain.', path: `members/${member.id}/remove`, kind: 'confirm' })}>Remove</Button> : null}</div> }] : []),
@@ -167,15 +179,16 @@ export function TeamPage({ identity, members, invitations, refresh, refreshVersi
         </form>}
       </FormDialog>
       {token ? <Alert><AlertTitle>Invitation token</AlertTitle><AlertDescription><p>{delivery}</p><code className="break-all select-all">{token}</code><Button type="button" variant="outline" onClick={() => setToken('')}>Dismiss token</Button></AlertDescription></Alert> : null}
-      <DataTable label="Invitations" data={invitations} columns={[
-        { id: 'email', label: 'Email', value: invite => invite.email }, { id: 'role', label: 'Role', value: invite => invite.role }, { id: 'expires', label: 'Expires', value: invite => invite.expires_at, cell: invite => <time dateTime={invite.expires_at}>{new Date(invite.expires_at).toLocaleString()}</time> },
-        { id: 'actions', label: 'Actions', cell: invite => <div className="flex flex-wrap gap-2">{invite.role === 'member' || identity.role === 'owner' ? <Button variant="outline" disabled={busy} onClick={() => open({ title: `Regenerate invitation for ${invite.email}?`, description: 'Invalidates the old token, creates a new token valid for two days and attempts to email it.', path: `invitations/${invite.id}/renew`, kind: 'confirm' })}>Regenerate</Button> : null}<Button variant="outline" disabled={busy || (invite.role === 'admin' && identity.role !== 'owner')} onClick={() => open({ title: `Cancel invitation for ${invite.email}?`, description: 'The invitation token will stop working.', path: `invitations/${invite.id}/revoke`, kind: 'confirm' })}>Cancel invitation</Button></div> },
+      <PagedTable<Invitation> label="Invitations" path="/auth/invitations/search" roles statuses refreshVersion={refreshVersion + version} columns={[
+        { id: 'email', label: 'Email', value: invite => invite.email }, { id: 'status', label: 'Status', value: invite => invite.status ?? 'pending' }, { id: 'inviter', label: 'Invited by', value: invite => invite.inviter_name ?? 'Unknown' }, { id: 'delivery', label: 'Email delivery', value: invite => invite.delivery_status ?? 'unknown' }, { id: 'role', label: 'Role', value: invite => invite.role }, { id: 'expires', label: 'Expires', value: invite => invite.expires_at, cell: invite => <time dateTime={invite.expires_at}>{new Date(invite.expires_at).toLocaleString()}</time> },
+        { id: 'actions', label: 'Actions', cell: invite => <div className="flex flex-wrap gap-2">{invite.role === 'member' || identity.role === 'owner' ? <Button variant="outline" disabled={busy || !['pending', 'expired'].includes(invite.status ?? 'pending')} onClick={() => open({ title: `Regenerate invitation for ${invite.email}?`, description: 'Invalidates the old token, creates a new token valid for two days and attempts to email it.', path: `invitations/${invite.id}/renew`, kind: 'confirm' })}>Regenerate</Button> : null}<Button variant="outline" disabled={busy || (invite.status ?? 'pending') !== 'pending' || (invite.role === 'admin' && identity.role !== 'owner')} onClick={() => open({ title: `Cancel invitation for ${invite.email}?`, description: 'The invitation token will stop working.', path: `invitations/${invite.id}/revoke`, kind: 'confirm' })}>Cancel invitation</Button></div> },
       ]} />
     </Section>
       </TabsContent> : null}
       <TabsContent value="access" forceMount className={tab === 'access' ? 'flex min-w-0 flex-col gap-6' : 'hidden'}>
         <ClassroomAccess canManage={manager} />
     {identity.role === 'owner' ? <Section title="Transfer ownership" description="Promotes another active member to owner and changes your organization role to admin.">
+      <Field><FieldLabel htmlFor="owner-search">Find member</FieldLabel><Input id="owner-search" value={ownerSearch} maxLength={120} onChange={event => setOwnerSearch(event.target.value)} placeholder="Search by name or email" /><FieldDescription>Search to find members beyond the first 25 results.</FieldDescription></Field><Notice message={ownerError} />
       <Choice label="New owner" value={transferTo} onChange={setTransferTo} disabled={busy} options={[[ '', 'Select a member' ], ...members.filter(member => member.id !== identity.user_id).map(member => [member.id, `${member.name} (${member.email})`] as [string, string])]} />
       <Button variant="outline" disabled={busy || !members.some(member => member.id === transferTo && member.id !== identity.user_id)} onClick={() => open({ title: 'Transfer organization ownership?', description: `Make ${members.find(member => member.id === transferTo)?.email} an owner. Your role becomes admin.`, path: 'organizations/transfer', kind: 'confirm', body: { user_id: transferTo } })}>Transfer ownership</Button>
     </Section> : null}

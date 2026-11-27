@@ -44,7 +44,7 @@ async function workspace(page: Page, options: { member?: boolean; failProject?: 
       '/api/v1/environments/production/services': services, '/api/v1/environments/staging/services': services,
       '/api/v1/environments/production/service-status': [], '/api/v1/environments/staging/service-status': [],
     }
-    return route.fulfill({ json: responses[path] ?? {} })
+    return route.fulfill({ json: responses[path.replace(/\/search$/, '')] ?? {} })
   })
 }
 

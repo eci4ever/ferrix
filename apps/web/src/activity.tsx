@@ -11,8 +11,8 @@ import { Badge } from '@/components/ui/badge'
 type Option = { id: string; name: string }
 type Event = { id: string; user_id: string | null; user_name: string; organization_id: string | null; organization_name: string; action: string; target_id: string | null; outcome: string; created_at: string }
 type Result = { items: Event[]; total: number; users: Option[]; organizations: Option[] }
-export function ActivityPage({ identity, refreshVersion, organizationId }: { identity: Identity; refreshVersion: number; organizationId?: string }) {
-  const [search, setSearch] = useState(''), [organization, setOrganization] = useState(''), [user, setUser] = useState(''), [page, setPage] = useState(0)
+export function ActivityPage({ identity, refreshVersion, organizationId, initialUserId }: { identity: Identity; refreshVersion: number; organizationId?: string; initialUserId?: string }) {
+  const [search, setSearch] = useState(''), [organization, setOrganization] = useState(''), [user, setUser] = useState(initialUserId ?? ''), [page, setPage] = useState(0)
   const [result, setResult] = useState<Result | null>(null), [error, setError] = useState(''), [loading, setLoading] = useState(true), [retry, setRetry] = useState(0)
   useEffect(() => {
     const abort = new AbortController(); setLoading(true); setError('')

@@ -5,7 +5,8 @@ import type { Identity } from './auth'
 import { ActivityPage } from './activity'
 import { request } from '@/lib/api'
 import { FormDialog } from '@/components/form-dialog'
-import { DataTable } from '@/components/data-table'
+import { PagedTable } from '@/components/paged-table'
+import { OrganizationPolicy } from './organization-policy'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Field, FieldLabel } from '@/components/ui/field'
@@ -17,8 +18,8 @@ import { DialogFooter } from '@/components/ui/dialog'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 
 type Member = { id: string; name: string; email: string; role: string; banned: boolean }
-type Invitation = { id: string; email: string; role: string; expires_at: string }
-type Detail = { organization: { id: string; name: string; logo_url: string | null; created_at: string; is_default: boolean; project_count: number }; members: Member[]; invitations: Invitation[] }
+type Invitation = { id: string; email: string; role: string; expires_at: string; status?: string; inviter_name?: string; delivery_status?: string; delivery_attempted_at?: string }
+type Detail = { organization: { id: string; name: string; logo_url: string | null; created_at: string; is_default: boolean; project_count: number; member_count?: number }; members?: Member[]; invitations?: Invitation[] }
 type Operation = { kind: 'role' | 'remove'; member: Member } | { kind: 'renew' | 'revoke'; invitation: Invitation } | { kind: 'invite' }
 export function PlatformOrganizationDetail({ organizationId, identity, refreshVersion, refresh }: { organizationId: string; identity: Identity; refreshVersion: number; refresh: () => Promise<void> }) {
   const [detail, setDetail] = useState<Detail | null>(null), [error, setError] = useState(''), [message, setMessage] = useState(''), [version, setVersion] = useState(0)
@@ -58,22 +59,22 @@ export function PlatformOrganizationDetail({ organizationId, identity, refreshVe
     {token ? <Alert><AlertTitle>Invitation token</AlertTitle><AlertDescription><p>{delivery}</p><code className="break-all select-all">{token}</code><Button variant="outline" onClick={() => setToken('')}>Dismiss token</Button></AlertDescription></Alert> : null}
     {!detail ? !error ? <p role="status">Loading organization…</p> : null : <Tabs value={tab} onValueChange={setTab} className="min-w-0 gap-6">
       <div className="overflow-x-auto pb-1"><TabsList aria-label="Platform organization sections">{['overview', 'members', 'invitations', 'activity'].map(value => <TabsTrigger key={value} value={value}>{value[0].toUpperCase() + value.slice(1)}</TabsTrigger>)}</TabsList></div>
-      <TabsContent value="overview"><Card><CardHeader><CardTitle>Organization overview</CardTitle><CardDescription>{detail.members.length} members · {detail.organization.project_count} projects{detail.organization.is_default ? ' · Default organization' : ''}</CardDescription></CardHeader><CardContent>
+      <TabsContent value="overview" className="space-y-6"><Card><CardHeader><CardTitle>Organization overview</CardTitle><CardDescription>{detail.organization.member_count ?? detail.members?.length ?? 0} members · {detail.organization.project_count} projects{detail.organization.is_default ? ' · Default organization' : ''}</CardDescription></CardHeader><CardContent>
         <form key={`${detail.organization.name}:${detail.organization.logo_url}`} className="flex max-w-xl flex-col gap-4" onSubmit={event => { event.preventDefault(); const values = Object.fromEntries(new FormData(event.currentTarget)); void save('', { name: values.name, logo_url: values.logo_url || null }) }}>
           <Field><FieldLabel htmlFor="detail-org-name">Organization name</FieldLabel><Input id="detail-org-name" name="name" maxLength={80} defaultValue={detail.organization.name} required disabled={busy} /></Field>
           <Field><FieldLabel htmlFor="detail-org-logo">Logo URL</FieldLabel><Input id="detail-org-logo" name="logo_url" type="url" maxLength={2048} defaultValue={detail.organization.logo_url ?? ''} disabled={busy} /></Field>
           <p className="text-sm text-muted-foreground">Created {new Date(detail.organization.created_at).toLocaleString()}. Changes require recent identity verification in Security.</p>
           <Button className="self-start" disabled={busy}>{busy ? 'Saving…' : 'Save organization'}</Button>
         </form>
-      </CardContent></Card></TabsContent>
-      <TabsContent value="members"><DataTable label="Organization members" data={detail.members} columns={[
+      </CardContent></Card><OrganizationPolicy path={`${base}/policy`} canEdit={true} refreshVersion={refreshVersion + version} /></TabsContent>
+      <TabsContent value="members"><PagedTable<Member> label="Organization members" path={`${base}/members`} roles refreshVersion={refreshVersion + version} columns={[
         { id: 'name', label: 'Member', value: member => `${member.name} ${member.email}`, cell: member => <div><p>{member.name}</p><p className="text-xs text-muted-foreground">{member.email}</p></div> },
         { id: 'role', label: 'Role', value: member => member.role }, { id: 'status', label: 'Status', cell: member => <Badge variant="outline">{member.banned ? 'Banned' : 'Active'}</Badge> },
         { id: 'actions', label: 'Actions', cell: member => <div className="flex flex-wrap gap-2"><Button variant="outline" disabled={busy || member.banned} onClick={() => open({ kind: 'role', member })} aria-label={`Change role for ${member.email}`}>Change role</Button><Button variant="outline" disabled={busy || (member.id === identity.user_id && organizationId === identity.organization_id)} onClick={() => open({ kind: 'remove', member })} aria-label={`Remove ${member.email}`}>Remove</Button></div> },
       ]} /></TabsContent>
-      <TabsContent value="invitations" className="space-y-4"><p className="text-sm text-muted-foreground">Pending invitations expire after two days. Sending and regenerating attempt email delivery using Platform Settings.</p><Button disabled={busy} onClick={() => open({ kind: 'invite' })}>Invite member</Button><DataTable label="Organization invitations" data={detail.invitations} columns={[
-        { id: 'email', label: 'Email', value: invite => invite.email }, { id: 'role', label: 'Role', value: invite => invite.role }, { id: 'expires', label: 'Expires', cell: invite => <time dateTime={invite.expires_at}>{new Date(invite.expires_at).toLocaleString()}</time> },
-        { id: 'actions', label: 'Actions', cell: invitation => <div className="flex flex-wrap gap-2"><Button variant="outline" disabled={busy} onClick={() => open({ kind: 'renew', invitation })}>Regenerate</Button><Button variant="outline" disabled={busy} onClick={() => open({ kind: 'revoke', invitation })}>Cancel invitation</Button></div> },
+      <TabsContent value="invitations" className="space-y-4"><p className="text-sm text-muted-foreground">Invitation history includes accepted, expired, cancelled and rejected invitations. Pending tokens expire after two days. Sending and regenerating attempt email delivery using Platform Settings.</p><Button disabled={busy} onClick={() => open({ kind: 'invite' })}>Invite member</Button><PagedTable<Invitation> label="Organization invitations" path={`${base}/invitations`} roles statuses refreshVersion={refreshVersion + version} columns={[
+        { id: 'email', label: 'Email', value: invite => invite.email }, { id: 'status', label: 'Status', cell: invite => invite.status ?? 'pending' }, { id: 'inviter', label: 'Invited by', cell: invite => invite.inviter_name ?? 'Unknown' }, { id: 'delivery', label: 'Email delivery', cell: invite => invite.delivery_status ?? 'unknown' }, { id: 'role', label: 'Role', value: invite => invite.role }, { id: 'expires', label: 'Expires', cell: invite => <time dateTime={invite.expires_at}>{new Date(invite.expires_at).toLocaleString()}</time> },
+        { id: 'actions', label: 'Actions', cell: invitation => <div className="flex flex-wrap gap-2"><Button variant="outline" disabled={busy || (!!invitation.status && !['pending','expired'].includes(invitation.status))} onClick={() => open({ kind: 'renew', invitation })}>Regenerate</Button><Button variant="outline" disabled={busy || (!!invitation.status && invitation.status !== 'pending')} onClick={() => open({ kind: 'revoke', invitation })}>Cancel invitation</Button></div> },
       ]} /></TabsContent>
       <TabsContent value="activity"><ActivityPage key={organizationId} identity={identity} organizationId={organizationId} refreshVersion={refreshVersion + version} /></TabsContent>
     </Tabs>}

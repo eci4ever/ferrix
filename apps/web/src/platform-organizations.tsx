@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import type { FormEvent } from 'react'
 import { request } from '@/lib/api'
-import { DataTable } from '@/components/data-table'
+import { PagedTable } from '@/components/paged-table'
 import { FormDialog } from '@/components/form-dialog'
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert'
 import { Button } from '@/components/ui/button'
@@ -14,15 +14,9 @@ import { DialogFooter } from '@/components/ui/dialog'
 type Organization = { id: string; name: string; logo_url: string | null; is_default: boolean; member_count: number; project_count: number }
 type Operation = { kind: 'create' } | { kind: 'edit' | 'delete'; org: Organization }
 export function PlatformOrganizations({ admin, activeOrganization, refreshVersion, refresh }: { admin: boolean; activeOrganization: string; refreshVersion: number; refresh: () => Promise<void> }) {
-  const [items, setItems] = useState<Organization[]>([]), [loading, setLoading] = useState(true), [error, setError] = useState(''), [dialogError, setDialogError] = useState(''), [message, setMessage] = useState('')
-  const [operation, setOperation] = useState<Operation | null>(null), [busy, setBusy] = useState(false), [retry, setRetry] = useState(0)
-  useEffect(() => {
-    if (!admin) return
-    const abort = new AbortController()
-    setLoading(true); setError('')
-    request<Organization[]>('/auth/admin/organizations', { signal: abort.signal }).then(value => { if (!abort.signal.aborted) { setItems(value); setLoading(false) } }).catch(reason => { if (!abort.signal.aborted) { setError(reason.message); setLoading(false) } })
-    return () => abort.abort()
-  }, [admin, refreshVersion, retry])
+  const [version,setVersion] = useState(0)
+  const [dialogError,setDialogError] = useState(''), [message,setMessage] = useState('')
+  const [operation,setOperation] = useState<Operation | null>(null), [busy,setBusy] = useState(false)
   function open(value: Operation) { setDialogError(''); setOperation(value) }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -32,7 +26,7 @@ export function PlatformOrganizations({ admin, activeOrganization, refreshVersio
     setBusy(true); setDialogError(''); setMessage('')
     try {
       await request(`/auth/admin/organizations${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(operation.kind === 'edit' ? { name: input.name, logo_url: input.logo_url || null } : input) })
-      setOperation(null); setMessage('Organization updated.'); await refresh()
+      setOperation(null); setMessage('Organization updated.'); setVersion(value => value + 1); await refresh()
     } catch (reason) { setDialogError(reason instanceof Error ? reason.message : 'Could not update organization.') }
     finally { setBusy(false) }
   }
@@ -40,8 +34,7 @@ export function PlatformOrganizations({ admin, activeOrganization, refreshVersio
   return <div className="flex min-w-0 flex-col gap-6">
     <div className="flex flex-wrap items-start justify-between gap-3"><div className="space-y-1"><h1 className="text-2xl font-semibold">Organizations</h1><p className="text-sm text-muted-foreground">Manage every organization on this Ferrix installation.</p></div><Button disabled={busy} onClick={() => open({ kind: 'create' })}>Create organization</Button></div>
     {message ? <Alert role="status"><AlertTitle>{message}</AlertTitle></Alert> : null}
-    {error ? <Alert variant="destructive"><AlertTitle>Organizations unavailable</AlertTitle><AlertDescription>{error}<Button variant="outline" onClick={() => setRetry(value => value + 1)}>Retry organizations</Button></AlertDescription></Alert> : null}
-    <DataTable label="Platform organizations" data={items} loading={loading} columns={[
+    <PagedTable<Organization> label="Platform organizations" path="/auth/admin/organizations/search" refreshVersion={refreshVersion + version} columns={[
       { id: 'name', label: 'Organization', value: org => org.name, cell: org => <div className="flex flex-wrap items-center gap-2"><Link className="break-words font-medium underline underline-offset-4" to="/platform/organizations/$organizationId" params={{ organizationId: org.id }}>{org.name}</Link>{org.is_default ? <Badge variant="secondary">Default</Badge> : null}{org.id === activeOrganization ? <Badge variant="outline">Current</Badge> : null}</div> },
       { id: 'members', label: 'Members', cell: org => org.member_count },
       { id: 'projects', label: 'Projects', cell: org => org.project_count },

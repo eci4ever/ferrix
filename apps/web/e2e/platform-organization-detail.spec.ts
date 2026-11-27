@@ -2,7 +2,7 @@ import { test, expect, type Page } from '@playwright/test'
 async function fixture(page: Page, system = 'admin', role = 'member') {
   let name = 'Target lab'
   let members = [{ id: 'owner', name: 'Org owner', email: 'owner@example.com', role: 'owner', banned: false }, { id: 'member', name: 'Org member', email: 'member@example.com', role: 'member', banned: false }]
-  let invitations: { id: string; email: string; role: string; expires_at: string }[] = []
+  let invitations: { id: string; email: string; role: string; expires_at: string; status?: string }[] = []
   const writes: { path: string; body: Record<string, string> }[] = [], activity: URLSearchParams[] = []
   await page.route('**/api/v1/**', route => {
     const url = new URL(route.request().url()), path = url.pathname.replace('/api/v1', '')
@@ -14,7 +14,7 @@ async function fixture(page: Page, system = 'admin', role = 'member') {
       if (path.endsWith('/members/member/remove')) members = members.filter(member => member.id !== 'member')
       if (path.endsWith('/invitations')) { invitations = [{ id: 'invite', email: body.email, role: body.role, expires_at: '2030-01-01T00:00:00Z' }]; return route.fulfill({ json: { token: 'created-token', email_delivery: 'not_configured' } }) }
       if (path.endsWith('/renew')) return route.fulfill({ json: { token: 'renewed-token', email_delivery: 'failed' } })
-      if (path.endsWith('/revoke')) invitations = []
+      if (path.endsWith('/revoke')) invitations = invitations.map(invite => ({ ...invite, status: 'cancelled' }))
       return route.fulfill({ status: 204 })
     }
     if (path === '/auth/activity') { activity.push(url.searchParams); return route.fulfill({ json: { items: [], total: 0, users: [], organizations: [] } }) }
@@ -23,9 +23,12 @@ async function fixture(page: Page, system = 'admin', role = 'member') {
       '/auth/profile': { avatar: 'initials' }, '/auth/setup': { setup_required: false }, '/auth/organizations': [{ id: 'active', name: 'Active lab', role }],
       '/status': { database: true, docker: true, version: 'test' }, '/server-time': { unix_ms: Date.now(), timezone: 'UTC', utc_offset: 'UTC+00:00' },
       '/auth/admin/organizations': [{ id: 'target', name, logo_url: null, is_default: false, member_count: members.length, project_count: 0 }],
+      '/auth/admin/organizations/target/members': { items: members, total: members.length },
+      '/auth/admin/organizations/target/invitations': { items: invitations, total: invitations.length },
+      '/auth/admin/organizations/target/policy': { member_limit: null, invitation_limit: null },
       '/auth/admin/organizations/target': { organization: { id: 'target', name, logo_url: null, is_default: false, project_count: 0, created_at: '2026-11-27T00:00:00Z' }, members, invitations },
     }
-    return route.fulfill({ json: bodies[path] ?? {} })
+    return route.fulfill({ json: bodies[path.replace(/\/search$/, '')] ?? {} })
   })
   return { writes, activity }
 }
@@ -65,7 +68,8 @@ test('Platform admin manages target organization without switching membership co
   await expect(token).toContainText('renewed-token')
   await page.getByRole('button', { name: 'Cancel invitation', exact: true }).click()
   await page.getByRole('dialog').getByRole('button', { name: 'Confirm', exact: true }).click()
-  await expect(page.getByRole('table', { name: 'Organization invitations', exact: true })).not.toContainText('invited@example.com')
+  await expect(page.getByRole('table', { name: 'Organization invitations', exact: true })).toContainText('cancelled')
+  await expect(page.getByRole('button', { name: 'Regenerate', exact: true })).toBeDisabled()
   await page.getByRole('tab', { name: 'Activity', exact: true }).click()
   await expect.poll(() => activity.length).toBeGreaterThan(0)
   await page.getByLabel('Search Activity', { exact: true }).fill('platform.')
