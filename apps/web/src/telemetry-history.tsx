@@ -1,4 +1,7 @@
-import {useId,useState} from 'react'
+import { retainedChartData } from '@/lib/monitoring-chart-data'
+import type { RetainedHistory } from '@/lib/monitoring-chart-data'
+import {Skeleton} from '@/components/ui/skeleton'
+import {lazy,Suspense,useState} from 'react'
 import {request} from '@/lib/api'
 import {CardContent} from '@/components/ui/card'
 import {TelemetryCard} from '@/components/telemetry-card'
@@ -9,20 +12,19 @@ import {NativeSelect,NativeSelectOption} from '@/components/ui/native-select'
 import {Alert,AlertTitle,AlertDescription} from '@/components/ui/alert'
 import {DataTable} from '@/components/data-table'
 import {formatBytes} from '@/lib/format-bytes'
-type Point={id:number;deployment_id:string|null;container_id:string|null;image_id:string|null;collected_at:string;error:boolean;marker:boolean;data:Record<string,number|string|boolean|null>}
-type History={samples:Point[];sample_seconds:number;retention_days:number;downsample_after_minutes:number;downsample_seconds:number;truncated:boolean;gaps_note:string;scope:string}
+type History = RetainedHistory
+const MonitoringChart = lazy(() => import('@/components/monitoring-chart').then(module => ({ default: module.MonitoringChart })))
 type LogLine={id:number;deployment_id:string|null;container_id:string;emitted_at:string|null;collected_at:string;message:string;truncated:boolean}
 type Logs={lines:LogLine[];next_before:number|null;collection_note:string}
 const local=(date:Date)=>new Date(date.getTime()-date.getTimezoneOffset()*60_000).toISOString().slice(0,16)
-const num=(point:Point,key:string)=>typeof point.data[key]==='number'?point.data[key] as number:null
-function Chart({history,metric}:{history:History;metric:string}){
- const id=useId(),samples=history.samples,start=Date.parse(samples[0]?.collected_at??'')||Date.now()-3600000,end=Date.parse(samples.at(-1)?.collected_at??'')||Date.now()
- const values=samples.map((p,i)=>{const old=samples[i-1],dt=old?(Date.parse(p.collected_at)-Date.parse(old.collected_at))/1000:0;const rate=(key:string)=>{const now=num(p,key),before=old?num(old,key):null;return now!==null&&before!==null&&now>=before&&dt>0&&old.container_id===p.container_id?(now-before)/dt:null};let a:number|null=null,b:number|null=null
- if(!p.error){if(metric==='percent'){a=num(p,'cpu_percent_of_limit')??num(p,'cpu');b=num(p,'memory_percent_of_limit')??(num(p,'memory_total')?num(p,'memory_used')!/num(p,'memory_total')!*100:null)}else if(metric==='network'){a=num(p,'receive_bps')??rate('network_rx_bytes');b=num(p,'transmit_bps')??rate('network_tx_bytes')}else{a=num(p,'read_bps')??rate('disk_read_bytes');b=num(p,'write_bps')??rate('disk_write_bytes')}}return{p,a,b}})
- const max=Math.max(metric==='percent'?100:1,...values.flatMap(v=>[v.a??0,v.b??0]));const x=(p:Point)=>48+(Date.parse(p.collected_at)-start)/Math.max(1,end-start)*620,y=(v:number)=>160-v/max*140
- const paths=(key:'a'|'b')=>{let path='',previous:Point|null=null;for(const v of values){const value=v[key];const cadence=Date.now()-Date.parse(v.p.collected_at)>history.downsample_after_minutes*60000?history.downsample_seconds:history.sample_seconds;const gap=previous&&(Date.parse(v.p.collected_at)-Date.parse(previous.collected_at)>cadence*3000||v.p.container_id!==previous.container_id);if(value===null){previous=null;continue}path+=`${previous&&!gap?'L':'M'}${x(v.p)},${y(value)} `;previous=v.p}return path}
- const labels=metric==='percent'?['CPU %','RAM %']:metric==='network'?['Received / s','Sent / s']:['Read / s','Written / s']
- return samples.length?<div className="flex flex-col gap-2"><svg viewBox="0 0 700 195" role="img" aria-labelledby={id} className="w-full"><title id={id}>Retained {metric} history. Breaks in lines indicate unavailable samples, restarts or collection gaps.</title><path d="M48 15V160H668" fill="none" stroke="var(--border)"/>{[0,0.5,1].map(n=><text key={n} x="42" y={y(n*max)+4} textAnchor="end" className="fill-muted-foreground text-[9px]">{metric==='percent'?`${Math.round(n*max)}%`:formatBytes(n*max)}</text>)}<path d={paths('a')} fill="none" stroke="var(--series-primary)" strokeWidth="2"/><path d={paths('b')} fill="none" stroke="var(--series-secondary)" strokeWidth="2" strokeDasharray="5 3"/>{samples.filter(p=>p.marker).map(p=><line key={p.id} x1={x(p)} x2={x(p)} y1="20" y2="160" stroke="var(--muted-foreground)" strokeDasharray="2 6" opacity="0.4"/>)}<text x="48" y="184" className="fill-muted-foreground text-[10px]">{new Date(start).toLocaleString()}</text><text x="668" y="184" textAnchor="end" className="fill-muted-foreground text-[10px]">{new Date(end).toLocaleString()}</text></svg><p className="text-xs text-muted-foreground">Solid: {labels[0]} · Dashed: {labels[1]}. Vertical markers show deployment, health or restart changes. Gaps are unknown values.</p></div>:<p className="text-sm text-muted-foreground">No retained samples in this range. Collection may not have started, or retention has removed older data.</p>
+function Chart({history,metric}:{history:History;metric:string}) {
+ const { rows, chartRows, markers } = retainedChartData(history, metric)
+ const labels = metric === 'percent' ? ['CPU %', 'RAM %'] : metric === 'network' ? ['Received / s', 'Sent / s'] : ['Read / s', 'Written / s']
+ const format = (value: number | null) => value === null ? 'Unavailable' : metric === 'percent' ? `${value.toFixed(1)}%` : `${formatBytes(value)}/s`
+ if (!rows.length) return <p className="text-sm text-muted-foreground">No retained samples in this range. Collection may not have started, or retention has removed older data.</p>
+ const start = rows[0].at, end = rows.at(-1)!.at
+ return <div className="flex min-w-0 flex-col gap-3"><Suspense fallback={<Skeleton className="h-56 w-full" />}><MonitoringChart rows={chartRows} series={[{ key: 'a', name: labels[0], color: 'var(--series-primary)' }, { key: 'b', name: labels[1], color: 'var(--series-secondary)', dash: '5 3' }]} label={`Retained ${metric} history. Gaps indicate unavailable samples, restarts or collection gaps.`} domain={[start, Math.max(start + 1000, end)]} maximum={metric === 'percent' ? Math.max(100, ...rows.flatMap(row => [row.a ?? 0, row.b ?? 0])) : undefined} format={format} markers={markers} /></Suspense><p className="text-xs text-muted-foreground">Solid: {labels[0]} · Dashed: {labels[1]}. Vertical markers show deployment, health or restart changes. Gaps are unknown values.</p>
+ <details className="text-xs text-muted-foreground"><summary className="w-fit cursor-pointer rounded-sm focus-visible:outline-2">View exact retained readings</summary><div className="mt-3"><DataTable label={`${metric} retained readings`} data={rows} columns={[{ id:'at', label:'Time', value: row => row.at, numeric:true, cell: row => new Date(row.at).toLocaleString() }, { id:'a',label:labels[0],value:row=>row.a,numeric:true,cell:row=>format(row.a) }, { id:'b',label:labels[1],value:row=>row.b,numeric:true,cell:row=>format(row.b) }]} /></div></details></div>
 }
 export function TelemetryHistory({serviceId,collapsible=false}:{serviceId?:string;collapsible?:boolean}){
  const [open,setOpen]=useState(false),[from,setFrom]=useState(()=>local(new Date(Date.now()-3600000))),[to,setTo]=useState(()=>local(new Date(Date.now()+60000))),[metric,setMetric]=useState('percent'),[history,setHistory]=useState<History|null>(null),[logs,setLogs]=useState<Logs|null>(null),[query,setQuery]=useState(''),[error,setError]=useState(''),[busy,setBusy]=useState(false)

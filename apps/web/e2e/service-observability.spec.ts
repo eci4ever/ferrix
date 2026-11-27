@@ -198,7 +198,11 @@ test('Service logs search and follow safely, and monitoring compares usage with 
     }),
   ).toBeVisible()
   await page.getByRole('button',{name:'View history',exact:true}).click()
-  await expect(page.getByRole('img',{name:/Retained percent history/})).toBeVisible()
+  const retainedChart = page.getByRole('group',{name:/Retained percent history/})
+  await expect(retainedChart).toBeVisible()
+  await expect(retainedChart.locator('linearGradient')).toHaveCount(2)
+  await page.getByText('View exact retained readings',{exact:true}).click()
+  await expect(page.getByRole('table',{name:'percent retained readings',exact:true})).toBeVisible()
   await expect(page.getByText('previous-deploy',{exact:true})).toBeVisible()
   await expect(page.getByText('retained <script>bad</script> log',{exact:true})).toBeVisible()
   await page.getByLabel('Search retained logs',{exact:true}).fill('retained')
