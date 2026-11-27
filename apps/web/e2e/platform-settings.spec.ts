@@ -89,7 +89,7 @@ test('Platform settings saves timezone and configuration without exposing saved 
   await expect(page.getByText('Current effective timezone: Asia/Kuala_Lumpur', { exact: true })).toBeVisible()
   await expect(page.getByLabel('Server time · Asia/Kuala_Lumpur · UTC+08:00')).toBeVisible()
   await page.getByRole('tab', { name: 'Email', exact: true }).click()
-  await expect(page.getByText(/no email is sent yet/)).toBeVisible()
+  await expect(page.getByText(/to send new and regenerated invitations/)).toBeVisible()
   await page.getByLabel('SMTP host', { exact: true }).fill('smtp.example.com')
   await page.getByLabel('SMTP password', { exact: true }).fill('disposable-secret')
   await page.getByRole('button', { name: 'Save email settings', exact: true }).click()

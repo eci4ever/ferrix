@@ -1,4 +1,4 @@
-//! Installation-scoped configuration. Email delivery and OAuth remain inactive.
+//! Installation-scoped configuration. OAuth remains inactive.
 use super::*;
 use axum::{
     Json,
@@ -70,25 +70,25 @@ fn smtp_security() -> String {
 }
 #[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-struct Email {
+pub(super) struct Email {
     #[serde(default = "smtp_provider")]
-    provider: String,
+    pub(super) provider: String,
     #[serde(default)]
-    host: String,
+    pub(super) host: String,
     #[serde(default = "smtp_port")]
-    port: u16,
+    pub(super) port: u16,
     #[serde(default = "smtp_security")]
-    security: String,
+    pub(super) security: String,
     #[serde(default)]
-    username: String,
+    pub(super) username: String,
     #[serde(default)]
-    from_address: String,
+    pub(super) from_address: String,
     #[serde(default)]
-    from_name: String,
+    pub(super) from_name: String,
     #[serde(default)]
-    password: Option<String>,
+    pub(super) password: Option<String>,
     #[serde(default)]
-    resend_api_key: Option<String>,
+    pub(super) resend_api_key: Option<String>,
 }
 #[derive(Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -129,6 +129,10 @@ async fn read(state: &AppState, section: &str) -> Result<(i64, Value), ApiError>
     let (revision, bytes) = row.unwrap_or((0, None));
     Ok((revision, decode(state, section, bytes)?))
 }
+pub(super) async fn email(state: &AppState) -> Result<Email, ApiError> {
+    let (_, value) = read(state, "email").await?;
+    serde_json::from_value(value).map_err(|_| internal())
+}
 pub(crate) async fn timezone(state: &AppState) -> Result<Option<chrono_tz::Tz>, ApiError> {
     let (_, value) = read(state, "timezone").await?;
     let name = value["timezone"].as_str().unwrap_or("");
@@ -158,7 +162,7 @@ pub(crate) async fn get(
     id: Identity,
 ) -> Result<impl axum::response::IntoResponse, ApiError> {
     id.admin()?;
-    let mut result = json!({"email_delivery_available":false,"social_login_available":false,"timezones":chrono_tz::TZ_VARIANTS.iter().map(|zone|zone.name()).collect::<Vec<_>>()});
+    let mut result = json!({"email_delivery_available":true,"social_login_available":false,"timezones":chrono_tz::TZ_VARIANTS.iter().map(|zone|zone.name()).collect::<Vec<_>>()});
     for section in ["timezone", "email", "social"] {
         let (revision, value) = read(&state, section).await?;
         result[section] = public(value, revision);
