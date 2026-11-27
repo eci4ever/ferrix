@@ -1,3 +1,4 @@
+import { LoadingButton } from '@/components/loading-button'
 import { useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { request } from '@/lib/api'
@@ -42,7 +43,7 @@ export function ProfilePage({ profile, refresh }: { profile: Profile; refresh: (
             {['initials','🌿','🚀','🐱','🌊','⭐'].map((value, index) => <label key={value} className="flex items-center gap-2 rounded-md border p-3"><RadioGroupItem value={value} aria-label={['Use initials','Leaf','Rocket','Cat','Wave','Star'][index]} /><span>{value === 'initials' ? 'Initials' : value}</span></label>)}
           </RadioGroup>
         </fieldset>
-        <Button disabled={busy}>{busy ? 'Saving…' : 'Save profile'}</Button>
+        <LoadingButton loading={busy} loadingText="Saving…" disabled={busy}>{busy ? 'Saving…' : 'Save profile'}</LoadingButton>
       </form>
     </section>
     <section className={panel}><h2 className="font-semibold">Account security</h2><p className="text-sm text-muted-foreground">Manage your password, two-factor authentication and signed-in sessions.</p><Button asChild variant="outline"><Link to="/security">Manage security and sessions</Link></Button></section>
