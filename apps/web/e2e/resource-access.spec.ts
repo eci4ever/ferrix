@@ -32,6 +32,7 @@ async function workspace(page: Page, member = false) {
 test('Organization admins configure classroom restriction and service assignments', async ({ page }) => {
   await workspace(page)
   await page.goto('/organization')
+  await page.getByRole('tab',{name:'Access',exact:true}).click()
   await page.getByRole('button',{name:'Configure member visibility'}).click()
   await page.getByRole('checkbox',{name:'Restrict members to assigned projects and services'}).check()
   await page.getByRole('button',{name:'Save member visibility'}).click()

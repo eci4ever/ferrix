@@ -13,6 +13,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem } from '@/components/ui/dropdown-menu'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 
 type Refresh = () => Promise<unknown>
@@ -102,6 +103,8 @@ export function AdminPage({ identity, refresh, refreshVersion }: { identity: Ide
 
 export function TeamPage({ identity, members, invitations, refresh, refreshVersion }: { identity: Identity; members: Member[]; invitations: Invitation[]; refresh: Refresh; refreshVersion: number }) {
   const manager = identity.role === 'owner' || identity.role === 'admin'
+  const [tab, setTab] = useState('general')
+  useEffect(() => { if (!manager && tab === 'invitations') setTab('members') }, [manager, tab])
   const [profile, setProfile] = useState<OrgProfile | null>(null); const [profileError, setProfileError] = useState(''); const [version, setVersion] = useState(0)
   const [token, setToken] = useState(''); const [invitationRole, setInvitationRole] = useState('member'); const [transferTo, setTransferTo] = useState('')
   const [inviting, setInviting] = useState(false)
@@ -116,21 +119,36 @@ export function TeamPage({ identity, members, invitations, refresh, refreshVersi
   }, [identity.organization_id, version, refreshVersion])
   // A regenerated token is shown only in this browser until explicitly dismissed.
   const open = (value: Operation) => { setMessage(''); setOperation(value) }
-  return <div className="flex flex-col gap-6"><h1 className="text-2xl font-semibold">Organization</h1>{!inviting && !operation ? <Notice message={message} /> : null}
-    <ClassroomAccess canManage={manager} />
+  return <div className="flex min-w-0 flex-col gap-6">
+    <div className="space-y-1"><h1 className="text-2xl font-semibold">Organization</h1><p className="text-sm text-muted-foreground">Manage your organization, team and access settings.</p></div>
+    {!inviting && !operation ? <Notice message={message} /> : null}
+    <Tabs value={tab} onValueChange={setTab} className="min-w-0 gap-6">
+      <div className="min-w-0 overflow-x-auto pb-1">
+        <TabsList aria-label="Organization sections" className="h-auto min-h-10 w-full sm:w-auto">
+          <TabsTrigger value="general" className="min-h-9 px-3">General</TabsTrigger>
+          <TabsTrigger value="members" className="min-h-9 px-3">Members</TabsTrigger>
+          {manager ? <TabsTrigger value="invitations" className="min-h-9 px-3">Invitations</TabsTrigger> : null}
+          <TabsTrigger value="access" className="min-h-9 px-3">Access</TabsTrigger>
+        </TabsList>
+      </div>
+      <TabsContent value="general" forceMount className={tab === 'general' ? 'min-w-0' : 'hidden'}>
     <Section title="Organization profile" description="Owners and organization admins can update the name and logo.">
       {profileError ? <><Notice message={profileError} /><Button variant="outline" onClick={() => setVersion(value => value + 1)}>Retry organization</Button></> : null}
       {!profile ? !profileError ? <p role="status">Loading organization…</p> : null : <>
         {profile.logo_url ? <img src={profile.logo_url} alt={`${profile.name} logo`} className="size-12 object-contain" referrerPolicy="no-referrer" /> : null}
-        {manager ? <form key={`${profile.id}:${profile.name}:${profile.logo_url}`} onSubmit={async event => { const input = values(event); await action('organizations/current', { name: input.name, logo_url: input.logo_url.trim() || null }) }} className="flex flex-col gap-4"><fieldset disabled={busy}><FieldGroup><Text name="name" label="Organization name" maxLength={80} defaultValue={profile.name} /><Text name="logo_url" label="Logo URL" type="url" maxLength={2048} required={false} defaultValue={profile.logo_url ?? ''} /><FieldDescription>Optional HTTPS image URL. The image provider receives requests from your browser.</FieldDescription></FieldGroup></fieldset><Button type="submit" disabled={busy}>Save organization</Button></form> : <p>{profile.name}</p>}
+        {manager ? <form key={`${profile.id}:${profile.name}:${profile.logo_url}`} onSubmit={async event => { const input = values(event); await action('organizations/current', { name: input.name, logo_url: input.logo_url.trim() || null }) }} className="flex max-w-xl flex-col gap-4"><fieldset disabled={busy}><FieldGroup><Text name="name" label="Organization name" maxLength={80} defaultValue={profile.name} /><Text name="logo_url" label="Logo URL" type="url" maxLength={2048} required={false} defaultValue={profile.logo_url ?? ''} /><FieldDescription>Optional HTTPS image URL. The image provider receives requests from your browser.</FieldDescription></FieldGroup></fieldset><Button type="submit" className="self-start" disabled={busy}>Save organization</Button></form> : <p>{profile.name}</p>}
       </>}
     </Section>
-    <Section title="Members" description="Organization roles remain owner, admin and member."><DataTable label="Members" data={members} columns={[
+      </TabsContent>
+      <TabsContent value="members" forceMount className={tab === 'members' ? 'min-w-0' : 'hidden'}>
+    <Section title="Members" description="Manage membership and organization roles. Platform roles are managed in Users."><DataTable label="Members" data={members} columns={[
       { id: 'name', label: 'Member', value: member => `${member.name} ${member.email}`, cell: member => <div><p>{member.name}{member.id === identity.user_id ? ' (you)' : ''}</p><p className="text-xs text-muted-foreground">{member.email}</p></div> },
       { id: 'role', label: 'Role', value: member => member.role },
       ...(manager ? [{ id: 'actions', label: 'Actions', cell: (member: Member) => <div className="flex flex-wrap gap-2">{identity.role === 'owner' ? ['owner', 'admin', 'member'].filter(role => role !== member.role).map(role => <Button key={role} variant="outline" disabled={busy} onClick={() => open({ title: `Change ${member.name} to ${role}?`, description: 'The last owner is protected. Platform access is unchanged.', path: `members/${member.id}/role`, kind: 'confirm', body: { role } })}>Make {role}</Button>) : null}{member.id !== identity.user_id && (identity.role === 'owner' || member.role === 'member') ? <Button variant="outline" disabled={busy} onClick={() => open({ title: `Remove ${member.name}?`, description: 'Removes membership and sessions active in this organization. Other memberships remain.', path: `members/${member.id}/remove`, kind: 'confirm' })}>Remove</Button> : null}</div> }] : []),
     ]} /></Section>
-    {manager ? <Section title="Invitations" description="Tokens are bound to an email and expire after two days. Share generated tokens privately; email delivery is not configured.">
+      </TabsContent>
+      {manager ? <TabsContent value="invitations" forceMount className={tab === 'invitations' ? 'min-w-0' : 'hidden'}>
+    <Section title="Invitations" description="Tokens are bound to an email and expire after two days. Share generated tokens privately; email delivery is not configured.">
       <FormDialog open={inviting} onOpenChange={open => { setInviting(open); setMessage(''); if (open) setInvitationRole('member') }} title={invitationToken ? 'Save invitation token' : 'Invite member'} description={invitationToken ? 'Share this token privately with the invited person. It expires after two days.' : 'Invite a member to this organization. Email delivery is not configured.'} busy={busy || !!invitationToken} trigger={<Button className="self-start" disabled={busy}>Invite member</Button>}>
         <Notice message={message} />
         {invitationToken ? <><code className="break-all select-all rounded-md bg-muted p-3" aria-label="New invitation token">{invitationToken}</code><Button autoFocus onClick={() => { setInvitationToken(''); setInviting(false) }}>I saved the invitation token</Button></> : <form className="flex flex-col gap-4" onSubmit={async event => { const input = values(event); const result = await action('invitations', { ...input, role: invitationRole }); if (result?.token) setInvitationToken(result.token) }}>
@@ -143,7 +161,10 @@ export function TeamPage({ identity, members, invitations, refresh, refreshVersi
         { id: 'email', label: 'Email', value: invite => invite.email }, { id: 'role', label: 'Role', value: invite => invite.role }, { id: 'expires', label: 'Expires', value: invite => invite.expires_at, cell: invite => <time dateTime={invite.expires_at}>{new Date(invite.expires_at).toLocaleString()}</time> },
         { id: 'actions', label: 'Actions', cell: invite => <div className="flex flex-wrap gap-2">{invite.role === 'member' || identity.role === 'owner' ? <Button variant="outline" disabled={busy} onClick={() => open({ title: `Regenerate invitation for ${invite.email}?`, description: 'Invalidates the old token and creates a new token valid for two days.', path: `invitations/${invite.id}/renew`, kind: 'confirm' })}>Regenerate</Button> : null}<Button variant="outline" disabled={busy || (invite.role === 'admin' && identity.role !== 'owner')} onClick={() => open({ title: `Cancel invitation for ${invite.email}?`, description: 'The invitation token will stop working.', path: `invitations/${invite.id}/revoke`, kind: 'confirm' })}>Cancel invitation</Button></div> },
       ]} />
-    </Section> : null}
+    </Section>
+      </TabsContent> : null}
+      <TabsContent value="access" forceMount className={tab === 'access' ? 'flex min-w-0 flex-col gap-6' : 'hidden'}>
+        <ClassroomAccess canManage={manager} />
     {identity.role === 'owner' ? <Section title="Transfer ownership" description="Promotes another active member to owner and changes your organization role to admin.">
       <Choice label="New owner" value={transferTo} onChange={setTransferTo} disabled={busy} options={[[ '', 'Select a member' ], ...members.filter(member => member.id !== identity.user_id).map(member => [member.id, `${member.name} (${member.email})`] as [string, string])]} />
       <Button variant="outline" disabled={busy || !members.some(member => member.id === transferTo && member.id !== identity.user_id)} onClick={() => open({ title: 'Transfer organization ownership?', description: `Make ${members.find(member => member.id === transferTo)?.email} an owner. Your role becomes admin.`, path: 'organizations/transfer', kind: 'confirm', body: { user_id: transferTo } })}>Transfer ownership</Button>
@@ -153,6 +174,8 @@ export function TeamPage({ identity, members, invitations, refresh, refreshVersi
       {identity.role === 'owner' ? <Button variant="destructive" disabled={busy || !profile || profile.is_default} title={profile?.is_default ? 'The default organization cannot be deleted' : undefined} onClick={() => open({ title: 'Delete organization?', description: 'Permanently deletes this organization, its memberships and invitations. All projects must be deleted first. User accounts are retained. Your session switches to another organization you belong to, preferring the default, or signs out if none remains.', path: 'organizations/delete', kind: 'delete', confirmation: profile?.name })}>Delete organization</Button> : null}</div>
       {profile?.is_default ? <p className="text-sm text-muted-foreground">The default organization cannot be deleted.</p> : null}
     </Section>
+      </TabsContent>
+    </Tabs>
     <OperationDialog operation={operation} busy={busy} message={message} close={() => setOperation(null)} submit={async body => { if (!operation) return; const result = await action(operation.path, body); if (result) { if (result.token) setToken(result.token); setOperation(null) } }} />
   </div>
 }
