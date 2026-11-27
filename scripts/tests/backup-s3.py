@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise PostgreSQL/MariaDB/Application S3 backup and restore using disposable RustFS."""
+import argparse
 import os
 import getpass
 import importlib.util
@@ -10,6 +11,9 @@ import subprocess
 import time
 import urllib.request
 import uuid
+parser=argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--logical-only',action='store_true',help='Audit shared MariaDB logical S3 backup, restore and independent retention only.')
+args=parser.parse_args()
 root=Path(__file__).resolve().parents[2]
 profile={}
 for line in (root/'.env').read_text().splitlines():
@@ -40,10 +44,13 @@ try:
         except (OSError,AssertionError):
             if attempt==59:raise RuntimeError('Disposable RustFS did not become ready.')
             time.sleep(1)
-    subprocess.run(['cargo','test','--test','s3_live','--','--include-ignored'],env=env,cwd=root,check=True)
-    subprocess.run(['python3',str(root/'scripts/tests/database-backup-restore-live.py'),'--s3'],env=env,cwd=root,check=True)
-    subprocess.run(['cargo','test','--test','deployment','--','--include-ignored'],env=env,cwd=root,check=True)
-    subprocess.run(['cargo','test','--lib','application_volume_s3_roundtrip_without_local_backup_storage','--','--include-ignored'],env=env,cwd=root,check=True)
+    subprocess.run(['cargo','test','--test','s3_live','prepare_disposable_s3_bucket','--','--include-ignored'],env=env,cwd=root,check=True)
+    if args.logical_only:
+        subprocess.run(['python3',str(root/'scripts/tests/logical-backup-schedules-live.py'),'--s3'],env=env,cwd=root,check=True)
+    else:
+        subprocess.run(['python3',str(root/'scripts/tests/database-backup-restore-live.py'),'--s3'],env=env,cwd=root,check=True)
+        subprocess.run(['cargo','test','--test','deployment','--','--include-ignored'],env=env,cwd=root,check=True)
+        subprocess.run(['cargo','test','--lib','application_volume_s3_roundtrip_without_local_backup_storage','--','--include-ignored'],env=env,cwd=root,check=True)
 finally:
     owned=subprocess.run(['docker','inspect','--format','{{ index .Config.Labels "io.ferrix.test" }}',name],env=env,cwd=root,capture_output=True,text=True)
     if owned.returncode==0 and owned.stdout.strip()==identifier:
@@ -51,4 +58,4 @@ finally:
 assert live.snapshot()==before, 'Existing organization/project/service/assignment metadata changed'
 assert running <= set(live.command(['docker','ps','-q','--no-trunc']).split()), 'An existing container stopped'
 print('Existing metadata and running containers preserved.')
-print('PostgreSQL, MariaDB and Application volumes restored from S3 after local backup storage removal; disposable S3 removed.')
+print('Shared MariaDB logical S3 restore/retention passed; disposable S3 removed.' if args.logical_only else 'PostgreSQL, MariaDB and Application volumes restored from S3 after local backup storage removal; disposable S3 removed.')
