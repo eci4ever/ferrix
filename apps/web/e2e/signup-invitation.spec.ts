@@ -21,3 +21,23 @@ for (const setup of [false, true]) test(`Signup hides social actions and preserv
     await expect(page.getByRole('button', { name: 'Continue with GitHub', exact: true })).toBeVisible()
   }
 })
+
+test('Recipient declines with email and invitation token without entering account credentials', async ({ page }) => {
+  const proofs: unknown[] = []
+  await page.route('**/api/v1/**', route => {
+    const path = new URL(route.request().url()).pathname
+    if (path.endsWith('/auth/session')) return route.fulfill({ status: 401, json: { error: 'Not signed in' } })
+    if (path.endsWith('/auth/decline-invitation')) { proofs.push(route.request().postDataJSON()); return route.fulfill({ status: 204 }) }
+    return route.fulfill({ json: path.endsWith('/auth/setup') ? { setup_required: false } : {} })
+  })
+  await page.goto('/signup')
+  await page.getByRole('button', { name: 'Decline invitation', exact: true }).click()
+  await expect(page.getByRole('alert')).toContainText('Enter your email and invitation token')
+  expect(proofs).toEqual([])
+  await page.getByLabel('Email', { exact: true }).fill('recipient@example.com')
+  await page.getByLabel('Invitation token', { exact: true }).fill('private-token')
+  await page.getByRole('button', { name: 'Decline invitation', exact: true }).click()
+  await expect(page.getByRole('alert')).toContainText('Invitation declined')
+  expect(proofs).toEqual([{ email: 'recipient@example.com', token: 'private-token' }])
+  await expect(page.getByLabel('Password', { exact: true })).toHaveValue('')
+})

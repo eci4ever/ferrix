@@ -17,7 +17,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { ActionNotice } from '@/components/action-notice'
 import { load, request } from '@/lib/api'
 import type { Project, SystemStatus, HomeSummary } from '@/lib/api'
-import type { Identity, Security, Session, Audit, Organization, Member, Invitation } from './auth'
+import type { Identity, Security, Session, Audit, Organization } from './auth'
 import { Notifications } from './notifications'
 import { ServerClock } from '@/components/server-clock'
 import { WorkspaceSkeleton } from '@/components/workspace-skeleton'
@@ -31,6 +31,7 @@ import { Card, CardHeader, CardTitle, CardDescription, CardAction, CardContent }
 import './index.css'
 import { Toaster } from '@/components/ui/sonner'
 
+const PlatformOrganizationDetail = lazy(() => import('./platform-organization-detail').then(module => ({ default: module.PlatformOrganizationDetail })))
 const ActivityPage = lazy(() => import('./activity').then(module => ({ default: module.ActivityPage })))
 const ProfilePage = lazy(() => import('./profile').then(module => ({ default: module.ProfilePage })))
 const LoginPage = lazy(() => import('./auth').then(module => ({ default: module.LoginPage })))
@@ -98,7 +99,7 @@ function Shell() {
     <AppSidebar identity={account.data} organizations={organizations.data ?? []} theme={theme} busy={accountBusy} onSwitch={id => accountAction('organizations/switch', { organization_id: id })} onSignOut={() => accountAction('sign-out')} onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} version={status.data?.version} />
     <SidebarInset id="main" tabIndex={-1}>
       <header className="flex min-h-16 shrink-0 flex-wrap items-center justify-between gap-2 px-4 py-2 sm:flex-nowrap transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12 motion-reduce:transition-none">
-        <div className="flex min-w-0 max-w-full items-center gap-2"><SidebarTrigger className="-ml-1" /><Separator orientation="vertical" className="mr-2 data-vertical:h-4 data-vertical:self-center" /><Breadcrumb><BreadcrumbList className="min-w-0 flex-wrap"><BreadcrumbItem className="hidden md:block"><BreadcrumbLink asChild><Link to="/organization">{account.data.organization_name}</Link></BreadcrumbLink></BreadcrumbItem><BreadcrumbSeparator className="hidden md:block" /><BreadcrumbItem><BreadcrumbPage className="max-w-40 truncate sm:max-w-none">{pageNames[pathname] ?? (pathname.startsWith('/projects/') ? 'Projects' : 'Page not found')}</BreadcrumbPage></BreadcrumbItem></BreadcrumbList></Breadcrumb></div>
+        <div className="flex min-w-0 max-w-full items-center gap-2"><SidebarTrigger className="-ml-1" /><Separator orientation="vertical" className="mr-2 data-vertical:h-4 data-vertical:self-center" /><Breadcrumb><BreadcrumbList className="min-w-0 flex-wrap"><BreadcrumbItem className="hidden md:block"><BreadcrumbLink asChild><Link to="/organization">{account.data.organization_name}</Link></BreadcrumbLink></BreadcrumbItem><BreadcrumbSeparator className="hidden md:block" /><BreadcrumbItem><BreadcrumbPage className="max-w-40 truncate sm:max-w-none">{pageNames[pathname] ?? (pathname.startsWith('/platform/organizations/') ? 'Organization detail' : pathname.startsWith('/projects/') ? 'Projects' : 'Page not found')}</BreadcrumbPage></BreadcrumbItem></BreadcrumbList></Breadcrumb></div>
         <div className="ml-auto flex shrink-0 items-center gap-2"><WorkspaceCommand key={`command:${account.data.organization_id}`} identity={account.data} /><ServerClock refreshVersion={refreshVersion} /><Notifications key={account.data.organization_id} /><Tooltip><TooltipTrigger asChild><Button variant="outline" size="icon" onClick={refresh} disabled={refreshing} aria-label="Refresh workspace" aria-busy={refreshing}><RefreshCw aria-hidden="true" className={refreshing ? 'animate-spin motion-reduce:animate-none' : undefined} /></Button></TooltipTrigger><TooltipContent side="bottom">{refreshing ? 'Refreshing workspace data…' : 'Refresh current page data'}</TooltipContent></Tooltip></div>
       </header>
       <div className="flex min-w-0 flex-1 flex-col gap-6 p-4 pt-2 md:p-6 md:pt-2">
@@ -220,41 +221,16 @@ const profileRoute = createRoute({
 const securityRoute = createRoute({ getParentRoute: () => rootRoute, path: '/security', loader: async () => {
   const [sessions, security, audit] = await Promise.all([load<Session[]>('/auth/sessions'), load<Security>('/auth/security'), load<Audit[]>('/auth/audit')]); return { sessions, security, audit }
 }, component: function AccountSecurity() { const { sessions, security, audit } = securityRoute.useLoaderData(); const router = useRouter(); return sessions.data && security.data ? <SecurityPage sessions={sessions.data} security={security.data} audit={audit.data ?? []} refresh={() => router.invalidate({ sync: true })} /> : <ErrorNotice message={sessions.error ?? security.error ?? 'Could not load security settings.'} /> } })
-const teamRoute = createRoute({ getParentRoute: () => rootRoute, path: '/organization', loader: async () => {
-  const [organizations, members, invitations] = await Promise.all([load<Organization[]>('/auth/organizations'), load<Member[]>('/auth/members'), load<Invitation[]>('/auth/invitations')]); return { organizations, members, invitations }
-},
-  component: function OrganizationSettings() {
-    const { organizations, members, invitations } = teamRoute.useLoaderData()
-    const { account } = rootRoute.useLoaderData()
-    const router = useRouter()
-    const refreshVersion = useContext(WorkspaceRefresh)
-    if (!account.data || !organizations.data || !members.data) {
-      return <ErrorNotice message="Could not load organization settings." />
-    }
-    return <TeamPage key={account.data.organization_id} identity={account.data}
-      members={members.data} invitations={invitations.data ?? []}
-      refreshVersion={refreshVersion} refresh={() => router.invalidate()} />
-  },
-})
-const organizationLoader = async () => {
-  const [members, invitations] = await Promise.all([load<Member[]>('/auth/members'), load<Invitation[]>('/auth/invitations')])
-  return { members, invitations }
-}
-function OrganizationView({ members, invitations, view }: { members: Member[]; invitations: Invitation[]; view: 'settings' | 'team' | 'invitations' }) {
+function OrganizationView({ view = 'all' }: { view?: 'all' | 'settings' | 'team' }) {
   const { account } = rootRoute.useLoaderData()
   const router = useRouter()
   const refreshVersion = useContext(WorkspaceRefresh)
-  return account.data ? <TeamPage key={`${account.data.organization_id}:${view}`} view={view} identity={account.data} members={members} invitations={invitations} refreshVersion={refreshVersion} refresh={() => router.invalidate()} /> : null
+  return account.data ? <TeamPage key={`${account.data.organization_id}:${view}`} view={view} identity={account.data} refreshVersion={refreshVersion} refresh={() => router.invalidate()} /> : null
 }
-const organizationMembersRoute = createRoute({ getParentRoute: () => rootRoute, path: '/organization/members', loader: organizationLoader, component: function OrganizationMembers() {
-  const { members, invitations } = organizationMembersRoute.useLoaderData()
-  return members.data ? <OrganizationView view="team" members={members.data} invitations={invitations.data ?? []} /> : <ErrorNotice message={members.error ?? 'Could not load members.'} />
-} })
+const teamRoute = createRoute({ getParentRoute: () => rootRoute, path: '/organization', component: () => <OrganizationView /> })
+const organizationMembersRoute = createRoute({ getParentRoute: () => rootRoute, path: '/organization/members', component: () => <OrganizationView view="team" /> })
 const organizationInvitationsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/organization/invitations', component: () => <Navigate to="/organization/members" replace /> })
-const organizationSettingsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/organization/settings', loader: organizationLoader, component: function OrganizationConfiguration() {
-  const { members, invitations } = organizationSettingsRoute.useLoaderData()
-  return members.data ? <OrganizationView view="settings" members={members.data} invitations={invitations.data ?? []} /> : <ErrorNotice message={members.error ?? 'Could not load settings.'} />
-} })
+const organizationSettingsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/organization/settings', component: () => <OrganizationView view="settings" /> })
 const platformOrganizationsRoute = createRoute({ getParentRoute: () => rootRoute, path: '/platform/organizations', component: function InstallationOrganizations() {
   const { account } = rootRoute.useLoaderData()
   const refreshVersion = useContext(WorkspaceRefresh)
@@ -279,8 +255,9 @@ const adminRoute = createRoute({
       refreshVersion={refreshVersion} refresh={() => router.invalidate()} /> : null
   },
 })
-const activityRoute = createRoute({ getParentRoute: () => rootRoute, path: '/activity', component: function Activity() { const { account } = rootRoute.useLoaderData(); const version = useContext(WorkspaceRefresh); return account.data ? <ActivityPage key={account.data.organization_id} identity={account.data} refreshVersion={version} /> : null } })
-const router = createRouter({ routeTree: rootRoute.addChildren([activityRoute, landingRoute, loginRoute, signupRoute, homeRoute, projectsRoute, projectRoute, applicationRoute, serviceRoute, monitoringRoute, containersRoute, profileRoute, securityRoute, teamRoute, organizationMembersRoute, organizationInvitationsRoute, organizationSettingsRoute, platformSettingsRoute, platformOrganizationsRoute, apiKeysRoute, adminRoute]), defaultPendingComponent: Pending, defaultPendingMs: 150, defaultPendingMinMs: 200 })
+const platformOrganizationDetailRoute = createRoute({ getParentRoute: () => rootRoute, path: '/platform/organizations/$organizationId', component: function Detail() { const { organizationId } = platformOrganizationDetailRoute.useParams(); const { account } = rootRoute.useLoaderData(); const version = useContext(WorkspaceRefresh); const refresh = useContext(WorkspaceReload); return account.data ? <PlatformOrganizationDetail key={organizationId} organizationId={organizationId} identity={account.data} refreshVersion={version} refresh={refresh} /> : null } })
+const activityRoute = createRoute({ getParentRoute: () => rootRoute, path: '/activity', validateSearch: (search: Record<string, unknown>) => ({ user_id: typeof search.user_id === 'string' ? search.user_id : undefined }), component: function Activity() { const { account } = rootRoute.useLoaderData(); const version = useContext(WorkspaceRefresh); const { user_id } = activityRoute.useSearch(); return account.data ? <ActivityPage key={`${account.data.organization_id}:${user_id}`} initialUserId={user_id} identity={account.data} refreshVersion={version} /> : null } })
+const router = createRouter({ routeTree: rootRoute.addChildren([platformOrganizationDetailRoute, activityRoute, landingRoute, loginRoute, signupRoute, homeRoute, projectsRoute, projectRoute, applicationRoute, serviceRoute, monitoringRoute, containersRoute, profileRoute, securityRoute, teamRoute, organizationMembersRoute, organizationInvitationsRoute, organizationSettingsRoute, platformSettingsRoute, platformOrganizationsRoute, apiKeysRoute, adminRoute]), defaultPendingComponent: Pending, defaultPendingMs: 150, defaultPendingMinMs: 200 })
 declare module '@tanstack/react-router' { interface Register { router: typeof router } }
 
 createRoot(document.getElementById('root')!).render(<StrictMode><Suspense fallback={<Pending />}><RouterProvider router={router} /></Suspense><Toaster /></StrictMode>)

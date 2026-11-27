@@ -19,7 +19,7 @@ test('workspace refresh and Organization tabs preserve data, drafts and keyboard
       '/api/v1/auth/members': [],
       '/api/v1/auth/invitations': [],
     }
-    return route.fulfill({ json: responses[path] ?? {} })
+    return route.fulfill({ json: responses[path.replace(/\/search$/, '')] ?? {} })
   })
   await page.goto('/admin')
   await expect(page.getByRole('table', { name: 'Users', exact: true })).toContainText('Original user')

@@ -21,7 +21,7 @@ for (const outcome of ['sent', 'failed', 'not_configured']) test(`Invitation ema
       '/status': { database: true, docker: true, version: 'test' }, '/server-time': { unix_ms: Date.now(), timezone: 'UTC', utc_offset: 'UTC+00:00' },
       '/auth/members': [], '/auth/invitations': invitations, '/auth/organizations/current': { id: 'org', name: 'Lab', logo_url: null, is_default: true },
     }
-    return route.fulfill({ json: responses[path] ?? {} })
+    return route.fulfill({ json: responses[path.replace(/\/search$/, '')] ?? {} })
   })
   await page.goto('/organization/members')
   await page.getByRole('tab', { name: 'Invitations', exact: true }).click()

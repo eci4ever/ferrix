@@ -110,13 +110,15 @@ pub async fn invite(
     if input.role == "admin" && live_role != "owner" {
         return Err(forbidden());
     }
-    sqlx::query("UPDATE auth_invitations SET expires_at=now() WHERE organization_id=$1 AND email=$2 AND accepted_at IS NULL").bind(id.organization_id).bind(&email).execute(&mut *tx).await?;
+    sqlx::query("UPDATE auth_invitations SET expires_at=now(),cancelled_at=now() WHERE organization_id=$1 AND email=$2 AND accepted_at IS NULL AND cancelled_at IS NULL AND rejected_at IS NULL AND expires_at>now()").bind(id.organization_id).bind(&email).execute(&mut *tx).await?;
+    organization_lists::capacity(&mut tx, id.organization_id, true, None).await?;
     sqlx::query("INSERT INTO auth_invitations(id,organization_id,email,role,token_hash,invited_by) VALUES($1,$2,$3,$4,$5,$6)").bind(invite).bind(id.organization_id).bind(&email).bind(&input.role).bind(digest(&token)).bind(id.user_id).execute(&mut *tx).await?;
-    log(
+    log_target(
         &mut tx,
         id.user_id,
         id.organization_id,
         "invitation.created",
+        invite,
     )
     .await?;
     tx.commit().await?;
@@ -138,7 +140,7 @@ pub async fn invitations(
     id: Identity,
 ) -> Result<Json<Vec<Value>>, ApiError> {
     id.manager()?;
-    let rows:Vec<(Uuid,String,String,chrono::DateTime<chrono::Utc>)>=sqlx::query_as("SELECT id,email,role,expires_at FROM auth_invitations WHERE organization_id=$1 AND accepted_at IS NULL AND expires_at>now() ORDER BY created_at DESC,id").bind(id.organization_id).fetch_all(&state.pool).await?;
+    let rows:Vec<(Uuid,String,String,chrono::DateTime<chrono::Utc>)>=sqlx::query_as("SELECT id,email,role,expires_at FROM auth_invitations WHERE organization_id=$1 AND accepted_at IS NULL AND cancelled_at IS NULL AND rejected_at IS NULL AND expires_at>now() ORDER BY created_at DESC,id").bind(id.organization_id).fetch_all(&state.pool).await?;
     Ok(Json(rows.into_iter().map(|(id,email,role,expires_at)|json!({"id":id,"email":email,"role":role,"expires_at":expires_at})).collect()))
 }
 pub async fn revoke_invite(
@@ -149,24 +151,31 @@ pub async fn revoke_invite(
     let mut tx = state.pool.begin().await?;
     let live_role = management::authorize(&mut tx, &id, "manager").await?;
     let invited_role: Option<String> =
-        sqlx::query_scalar("SELECT role FROM auth_invitations WHERE id=$1 AND organization_id=$2")
+        sqlx::query_scalar("SELECT role FROM auth_invitations WHERE id=$1 AND organization_id=$2 AND accepted_at IS NULL AND cancelled_at IS NULL AND rejected_at IS NULL AND expires_at>now()")
             .bind(invite)
             .bind(id.organization_id)
             .fetch_optional(&mut *tx)
             .await?;
+    if invited_role.is_none() {
+        return Err(ApiError(
+            StatusCode::NOT_FOUND,
+            "Pending invitation not found.",
+        ));
+    }
     if live_role != "owner" && invited_role.as_deref() != Some("member") {
         return Err(forbidden());
     }
-    sqlx::query("UPDATE auth_invitations SET expires_at=now() WHERE id=$1 AND organization_id=$2")
+    sqlx::query("UPDATE auth_invitations SET expires_at=now(),cancelled_at=now() WHERE id=$1 AND organization_id=$2 AND accepted_at IS NULL AND cancelled_at IS NULL AND rejected_at IS NULL AND expires_at>now()")
         .bind(invite)
         .bind(id.organization_id)
         .execute(&mut *tx)
         .await?;
-    log(
+    log_target(
         &mut tx,
         id.user_id,
         id.organization_id,
         "invitation.revoked",
+        invite,
     )
     .await?;
     tx.commit().await?;
@@ -202,7 +211,7 @@ pub async fn accept(
     };
     let mut tx = state.pool.begin().await?;
     management::lock(&mut tx).await?;
-    let invitation:Option<(Uuid,Uuid,String)>=sqlx::query_as("SELECT id,organization_id,role FROM auth_invitations WHERE token_hash=$1 AND email=$2 AND accepted_at IS NULL AND expires_at>now() FOR UPDATE").bind(digest(&input.token)).bind(&email).fetch_optional(&mut *tx).await?;
+    let invitation:Option<(Uuid,Uuid,String)>=sqlx::query_as("SELECT id,organization_id,role FROM auth_invitations WHERE token_hash=$1 AND email=$2 AND accepted_at IS NULL AND cancelled_at IS NULL AND rejected_at IS NULL AND expires_at>now() FOR UPDATE").bind(digest(&input.token)).bind(&email).fetch_optional(&mut *tx).await?;
     let (invite, org, role) = invitation.ok_or_else(invalid)?;
     let user = if let Some((user, _, _)) = existing {
         let current: Option<(String, bool)> =
@@ -227,13 +236,14 @@ pub async fn accept(
         user
     };
     // Existing membership is never overwritten by an invitation with a weaker role.
+    organization_lists::capacity(&mut tx, org, false, Some(user)).await?;
     sqlx::query("INSERT INTO auth_members(organization_id,user_id,role) VALUES($1,$2,$3) ON CONFLICT DO NOTHING").bind(org).bind(user).bind(role).execute(&mut *tx).await?;
     sqlx::query("UPDATE auth_invitations SET accepted_at=now() WHERE id=$1")
         .bind(invite)
         .execute(&mut *tx)
         .await?;
     let token = sessions::issue(&mut tx, user, org, &headers).await?;
-    log(&mut tx, user, org, "invitation.accepted").await?;
+    log_target(&mut tx, user, org, "invitation.accepted", invite).await?;
     tx.commit().await?;
     Ok(sessions::signed_in(&state, &token))
 }
@@ -318,7 +328,7 @@ async fn lock_org(tx: &mut sqlx::PgConnection, org: Uuid) -> Result<(), ApiError
         .await?;
     Ok(())
 }
-async fn preserve_owner(
+pub(super) async fn preserve_owner(
     tx: &mut sqlx::PgConnection,
     org: Uuid,
     target: Uuid,

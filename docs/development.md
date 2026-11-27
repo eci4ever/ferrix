@@ -533,3 +533,81 @@ Migration 0039 adds immutable actor/organization references and name snapshots t
 preserve new activity when user/organization foreign keys are cleared on deletion.
 It adds indexes without changing shared historical migrations. Audit records are
 not removed by auth housekeeping; no retention/deletion endpoint is introduced.
+
+### Platform Organization Detail
+
+Platform Organizations links to `/platform/organizations/<organization UUID>` with
+Overview, Members, Invitations and Activity tabs. The detail API reads a consistent
+snapshot of metadata and aggregate counts. Members and invitation history load through separate bounded list endpoints. The platform administrator
+can edit metadata, change an existing member's organization role, remove a member,
+and create/regenerate/cancel invitations without joining the organization or
+switching their active browser session. Organization deletion remains available on
+the existing list page with its existing protections.
+
+Organization owners/admins and ordinary members cannot access these platform
+endpoints. Each write rechecks live platform authority and recent identity under
+the shared administrative transaction lock. Member changes preserve the last owner;
+promotion requires an active, non-banned member. Removal preserves platform-admin
+access, removes only that organization's membership/keys and sessions, and cannot
+remove the requesting administrator from their own active organization through this
+page. Memberships/sessions in other organizations stay intact.
+
+The endpoint family is `/api/v1/auth/admin/organizations/{id}`: GET returns detail;
+existing POST edits metadata. POST to `/members/{target}/role`,
+`/members/{target}/remove`, `/invitations`, `/invitations/{invite}/renew` or
+`/invitations/{invite}/revoke` always scopes the target to the explicit organization.
+No global user role, password, ban or MFA is changed here. Those remain in Users.
+
+Mutations record `platform.member_role_changed`, `platform.member_removed` and
+`platform.invitation_created/renewed/revoked` transactionally under the target
+organization, with actor and target UUIDs. Overview edits retain
+`platform.organization_updated`. Activity fixes its organization filter to the
+viewed organization even when the admin clears text/user filters. These platform
+audit events retain the existing platform-only visibility rule.
+
+Invitations use the existing provider configuration, two-day expiry, 30-attempt
+throttle and post-commit email fallback. Browser send/renew requests allow 30 seconds
+for the bounded delivery attempt. Invitation tokens are shown only in the current
+page until dismissed. The detail lists invitation history and uses the bounded server list APIs described
+below.
+
+
+### Users and organization lifecycle
+
+Migration 0040 adds last-sign-in and membership-joined timestamps, invitation
+history/delivery metadata, and nullable organization limits. Older sign-in/joined
+dates stay unknown; they are not guessed from creation dates. Actual successful
+session issuance records sign-in time. Platform User Detail shows these dates,
+MFA enabled status, active/revoked/expired API-key counts, and a filtered Activity
+link. Authentication secrets and API-key hashes are never included.
+
+`GET /auth/members/search`, `/auth/invitations/search` and
+`/auth/admin/organizations/search` support literal substring `q` (120 characters),
+zero-based `page` (25 rows), and applicable `role`/`status` filters. Platform detail
+uses `GET /auth/admin/organizations/{id}/members` and `/invitations` with the same
+query contract. Responses contain `items` and `total`, computed in one database
+statement. Legacy list APIs remain available; management tables use the bounded
+APIs. Member lists are scoped to the active organization, invitation history
+requires owner/admin, and platform lists require a platform administrator.
+
+Invitation history contains pending, accepted, expired, cancelled and rejected
+records, inviter-name snapshots and last delivery outcome/attempt time. Auth
+housekeeping no longer deletes invitations. Deleting the inviter cancels pending
+invitations and clears its FK while preserving the name and history. Deleting the
+organization still removes its invitations. Records purged before this migration
+cannot be recovered. Renewing rotates the existing token and resets delivery
+metadata; accepted, rejected and cancelled invitations cannot be renewed.
+`POST /auth/decline-invitation` accepts the recipient email and valid pending token,
+with throttling; it signs nobody in and invalidates the token. Signup exposes this
+action without requiring a password. Invitation actions record target UUIDs in
+audit events, including `invitation.rejected` for recipient rejection.
+
+Owners can save member and pending-invitation caps at
+`GET/POST /auth/organizations/policy`; organization admins can read them. Platform
+admins can read/write `/auth/admin/organizations/{id}/policy`. Writes require
+recent verification and record organization-targeted audit events. Blank/null is
+unlimited; numeric caps are 1–100000 and cannot be below current usage. Creation,
+renewal and acceptance check capacity while holding the shared administrative
+transaction lock; failed acceptance leaves no new account or membership. Existing
+members can accept without consuming another membership. Required MFA is deferred;
+this change does not introduce an organization MFA requirement.

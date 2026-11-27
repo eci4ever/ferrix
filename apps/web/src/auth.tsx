@@ -20,9 +20,9 @@ import { toast } from 'sonner'
 
 export type Identity = { session_id: string; user_id: string; name: string; email: string; system_role: string; organization_id: string; organization_name: string; role: string }
 export type Session = { id: string; created_at: string; expires_at: string; user_agent: string; ip_address: string; current: boolean }
-export type Member = { id: string; name: string; email: string; role: string }
-export type Organization = { id: string; name: string; role: string; logo_url?: string | null }
-export type Invitation = { id: string; email: string; role: string; expires_at: string }
+export type Member = { id: string; name: string; email: string; role: string; joined_at?: string | null }
+export type Organization = { id: string; name: string; role: string; logo_url?: string | null; joined_at?: string | null }
+export type Invitation = { id: string; email: string; role: string; expires_at: string; status?: string; inviter_name?: string | null; delivery_status?: string }
 export type User = { id: string; name: string; email: string; system_role: string; banned: boolean }
 export type Security = { two_factor_enabled: boolean; recovery_codes_remaining: number; fresh_until: string }
 export type Audit = { id: string; action: string; created_at: string }
@@ -139,6 +139,13 @@ export function LoginPage({ setupRequired, refresh, initialMode = 'login' }: { s
           {invitation || reset ? <TextField name="token" label={reset ? 'Password reset token' : 'Invitation token'} type="password" autoComplete="off" /> : null}
           {!setupRequired && (invitation || reset) ? <Collapsible open={showCode} onOpenChange={setShowCode}><CollapsibleTrigger asChild><Button type="button" variant="link">{showCode ? 'Hide verification code' : 'Use two-factor authentication'}</Button></CollapsibleTrigger><CollapsibleContent className="pt-4"><TextField name="code" label="Authenticator or recovery code" required={false} autoComplete="one-time-code" /></CollapsibleContent></Collapsible> : null}
         </FieldGroup></fieldset>
+        {invitation ? <Button type="button" variant="outline" disabled={busy} onClick={async event => {
+          const form = event.currentTarget.form; if (!form) return
+          const fields = new FormData(form), email = String(fields.get('email') ?? ''), token = String(fields.get('token') ?? '')
+          if (!email || !token) { setMessage('Enter your email and invitation token to decline.'); return }
+          setBusy(true); setMessage('')
+          try { await request('/auth/decline-invitation', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email, token }) }); setMessage('Invitation declined. The token can no longer be used.') } catch (error) { setMessage(errorText(error)) } finally { setBusy(false) }
+        }}>Decline invitation</Button> : null}
         <Button type="submit" className="w-full" disabled={busy}>{busy ? 'Please wait…' : setupRequired ? 'Create account' : reset ? 'Reset password' : invitation ? 'Accept invitation' : 'Login'}</Button>
       </form>}
       {!challenge && reset ? <Button variant="link" disabled={busy} onClick={() => {setReset(false);setShowCode(false);setMessage('')}}>Back to sign in</Button> : null}

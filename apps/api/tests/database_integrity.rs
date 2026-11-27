@@ -211,11 +211,11 @@ async fn housekeeping_deletes_only_expired_records_skips_renewals_and_bounds_wor
         let audit_before:i64=sqlx::query_scalar("SELECT count(*) FROM auth_audit").fetch_one(&pool).await.unwrap();
         let mut renewal=pool.begin().await.unwrap();
         sqlx::query("SELECT key FROM auth_throttles WHERE key='locked' FOR UPDATE").execute(&mut *renewal).await.unwrap();
-        assert_eq!(housekeeping::run_once(&pool).await.unwrap(),9);
+        assert_eq!(housekeeping::run_once(&pool).await.unwrap(),7);
         sqlx::query("UPDATE auth_throttles SET reset_at=now()+interval '1 hour' WHERE key='locked'").execute(&mut *renewal).await.unwrap();
         renewal.commit().await.unwrap();
         assert_eq!(housekeeping::run_once(&pool).await.unwrap(),0);
-        for (table,expected) in [("auth_api_key_requests",1),("auth_login_challenges",1),("auth_users",3),("auth_sessions",1),("auth_invitations",1),("auth_password_resets",1),("auth_mfa",2),("auth_throttles",2),("auth_audit",audit_before),("auth_recovery_codes",1),("applications",1),("deployments",1)] {
+        for (table,expected) in [("auth_api_key_requests",1),("auth_login_challenges",1),("auth_users",3),("auth_sessions",1),("auth_invitations",3),("auth_password_resets",1),("auth_mfa",2),("auth_throttles",2),("auth_audit",audit_before),("auth_recovery_codes",1),("applications",1),("deployments",1)] {
             let count:i64=sqlx::query_scalar(&format!("SELECT count(*) FROM {table}")).fetch_one(&pool).await.unwrap();assert_eq!(count,expected,"{table}");
         }
         sqlx::query("INSERT INTO auth_throttles(key,attempts,reset_at) SELECT 'bulk-' || n,1,now()-interval '1 hour' FROM generate_series(1,10005) n").execute(&pool).await.unwrap();

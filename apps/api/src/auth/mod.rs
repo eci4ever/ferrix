@@ -4,8 +4,10 @@ pub(crate) mod api_keys;
 mod invitation_email;
 mod login;
 mod management;
+mod organization_lists;
 mod organizations;
 pub(crate) mod permissions;
+mod platform_organization;
 pub(crate) mod platform_settings;
 mod security;
 pub(crate) mod sessions;
@@ -46,6 +48,25 @@ pub fn routes(state: AppState) -> Router<AppState> {
         )
         .route("/organizations/switch", post(organizations::switch))
         .route("/members", get(organizations::members))
+        .route("/members/search", get(organization_lists::members))
+        .route("/invitations/search", get(organization_lists::invitations))
+        .route(
+            "/organizations/policy",
+            get(organization_lists::get_limits).post(organization_lists::update_limits),
+        )
+        .route(
+            "/admin/organizations/search",
+            get(organization_lists::organizations),
+        )
+        .route(
+            "/admin/organizations/{id}/members",
+            get(organization_lists::platform_members),
+        )
+        .route(
+            "/admin/organizations/{id}/policy",
+            get(organization_lists::platform_limits)
+                .post(organization_lists::update_platform_limits),
+        )
         .route("/members/{id}/role", post(organizations::role))
         .route("/members/{id}/remove", post(organizations::remove))
         .route(
@@ -62,11 +83,31 @@ pub fn routes(state: AppState) -> Router<AppState> {
         )
         .route(
             "/admin/organizations/{id}",
-            post(management::platform_update_organization),
+            get(platform_organization::detail).post(management::platform_update_organization),
         )
         .route(
             "/admin/organizations/{id}/delete",
             post(management::platform_delete_organization),
+        )
+        .route(
+            "/admin/organizations/{id}/members/{target}/role",
+            post(platform_organization::role),
+        )
+        .route(
+            "/admin/organizations/{id}/members/{target}/remove",
+            post(platform_organization::remove),
+        )
+        .route(
+            "/admin/organizations/{id}/invitations",
+            get(organization_lists::platform_invitations).post(platform_organization::invite),
+        )
+        .route(
+            "/admin/organizations/{id}/invitations/{invite}/renew",
+            post(platform_organization::renew),
+        )
+        .route(
+            "/admin/organizations/{id}/invitations/{invite}/revoke",
+            post(platform_organization::revoke),
         )
         .route("/admin/users", get(management::users))
         .route(
@@ -115,6 +156,7 @@ pub fn routes(state: AppState) -> Router<AppState> {
         .route("/sign-in/cancel", post(login::cancel))
         .route("/reset-password", post(accounts::reset_password))
         .route("/accept-invitation", post(organizations::accept))
+        .route("/decline-invitation", post(organization_lists::decline))
         .layer(DefaultBodyLimit::max(16 * 1024))
 }
 
