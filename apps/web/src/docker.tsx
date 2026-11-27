@@ -1,5 +1,6 @@
+import { DataTableFilter } from '@/components/data-table-filter'
 import { useEffect, useState } from 'react'
-import { RefreshCw } from 'lucide-react'
+import { RefreshCw, X } from 'lucide-react'
 import { DataTable } from '@/components/data-table'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -66,14 +67,11 @@ function Inventory({ section, refreshVersion }: { section: Section; refreshVersi
         <Button variant="outline" onClick={() => setRefresh(previous => previous + 1)} disabled={!data && !error}>
           <RefreshCw aria-hidden="true" /> Refresh {section.label.toLowerCase()}
         </Button>
-        {section.id === 'containers' && states.length > 0 && <select aria-label="Container state" value={state} onChange={event => setState(event.target.value)} className="h-9 rounded-md border bg-background px-2 text-sm">
-          <option value="">All states</option>
-          {states.map(option => <option key={option}>{option}</option>)}
-        </select>}
+
       </div>
       {error && <Alert variant="destructive" role="alert"><AlertTitle>{section.label} unavailable</AlertTitle><AlertDescription>{error} Use Refresh to retry.</AlertDescription></Alert>}
       {!data && !error && <p role="status" className="text-sm text-muted-foreground">Loading {section.label.toLowerCase()}…</p>}
-      {Array.isArray(data) && <DataTable<DockerRecord> label={section.label} data={filtered} columns={section.columns.map(([key, label]) => ({
+      {Array.isArray(data) && <DataTable<DockerRecord> label={section.label} data={filtered} filterKey={state} toolbar={section.id === 'containers' ? <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Container filters"><DataTableFilter label="Status" value={state} onChange={setState} options={[[ '', 'All states' ], ...Array.from(new Set([...states, ...(state ? [state] : [])])).map(value => [value, value] as [string, string])]} />{state ? <Button variant="ghost" size="sm" className="h-8" onClick={() => setState('')}><X aria-hidden="true" />Reset filters</Button> : null}</div> : undefined} columns={section.columns.map(([key, label]) => ({
         id: key, label, value: row => formatValue(key, row[key]),
         cell: row => key === 'state' ? <Badge variant="secondary">{formatValue(key, row[key])}</Badge> : <span className="block min-w-24 max-w-80 whitespace-normal break-all">{formatValue(key, row[key])}</span>,
       }))} />}
