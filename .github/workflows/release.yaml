@@ -43,6 +43,12 @@ jobs:
           else
             echo 'stable=true' >> "$GITHUB_OUTPUT"
           fi
+  checks:
+    name: Full release CI
+    needs: source
+    uses: ./.github/workflows/ci.yaml
+    with:
+      source_ref: ${{ needs.source.outputs.commit }}
   verify:
     needs: source
     runs-on: ubuntu-24.04
@@ -59,7 +65,7 @@ jobs:
       - name: Production HTTPS and authentication smoke test
         run: python3 scripts/tests/production.py ferrix:production-test
   image:
-    needs: [source, verify]
+    needs: [source, checks, verify]
     runs-on: ubuntu-24.04
     permissions:
       contents: read

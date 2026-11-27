@@ -69,38 +69,35 @@ after a version change; installed releases need the corrected image.
 
 ### Checks
 
-The `CI` GitHub Actions workflow runs on every pull request, including updates,
-on pushes to `main`, and can also be started manually. A small change-detection
-job selects the existing build jobs from the complete Git diff:
+The `CI` GitHub Actions workflow does not run automatically on pull requests or
+pushes to `main`. Run relevant checks locally while developing. GitHub CI runs
+when preparing a release, and remains available through **Actions → CI → Run
+workflow** for an optional manual check of the selected branch/ref.
 
-| Changed files | Checks selected |
-| --- | --- |
-| `apps/web/**` (including npm lockfile, vendor and assets) | Frontend |
-| `apps/api/**`, `Cargo.toml`, `Cargo.lock`, `.cargo/**`, Rust toolchain/lint config | Rust and PostgreSQL |
-| Workflow files, scripts, Dockerfile/Compose configuration or unrecognized shared paths | Both |
-| Only `docs/**`, root Markdown files or license files | Neither build job |
-| Manual run, unavailable diff or failed detection | Both |
+The release workflow resolves and validates the immutable release-tag commit,
+then passes that exact SHA to the reusable CI workflow. Every checkout in the
+called workflow uses that SHA, including manual releases of older tags. Both
+Rust/PostgreSQL and frontend checks always run; file-based skipping is not used.
+The release's production-image/installer/updater/HTTPS smoke tests run in parallel
+with CI. Image publication requires both full CI and production verification to
+succeed. A failed or cancelled check prevents the image job from publishing.
 
-PRs use the merge-base (three-dot) diff; pushes compare the complete before/after
-range. Renames include both source and destination, and deletions are included.
-The workflow itself always starts and preserves the required check names:
-`Frontend build` and `Rust checks and PostgreSQL tests`. Unneeded jobs are skipped
-at job level, avoiding pending checks caused by workflow-level path filters.
-Detection tests run on every invocation; a failed detector cannot skip builds.
+Checks include Cargo formatting, Clippy with warnings denied, Rust tests including
+ignored PostgreSQL integration tests, archive/updater/agent regressions, frontend
+security tests and its production build. Each Rust run uses a disposable
+PostgreSQL 17 service/database. No developer `.env` or credentials are used.
 
-Selected jobs check Rust formatting, Clippy with warnings denied, all Rust tests
-(including ignored PostgreSQL integration tests), and the frontend production
-build. Rust uses the stable toolchain; the frontend uses Node.js 24 and npm
-12.2.2 with the committed lockfile. To test the CI scripts locally (Python 3.11 or newer):
+When enabling this policy on GitHub, remove the old required PR status checks
+`Frontend build` and `Rust checks and PostgreSQL tests` from the `main` branch
+protection configuration. Keep the PR/review rules and other protections intact.
+Otherwise PRs will remain blocked waiting for checks that intentionally do not
+run. The workflow file change does not modify GitHub branch protection itself.
+
+Test CI helper scripts locally with Python 3.11 or newer:
 
 ```sh
 python3 -m unittest discover -s scripts/ci -p 'test_*.py' -v
 ```
-
-Each Rust job gets a temporary PostgreSQL 17 service and its own `ferrix_ci`
-database. No developer `.env`, external database or repository secrets are needed.
-The integration test applies migrations in an isolated schema. New commits cancel
-an older CI run for the same pull request.
 
 ### Docker Swarm inventory
 
