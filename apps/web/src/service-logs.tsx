@@ -12,6 +12,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import { Switch } from '@/components/ui/switch'
 import { Field, FieldLabel } from '@/components/ui/field'
 import {
@@ -45,7 +46,7 @@ export function ServiceLogs({
   const [containerChanged, setContainerChanged] = useState(false)
   const loadedSource = useRef('')
   const previousContainer = useRef<string | null>(null)
-  const viewport = useRef<HTMLPreElement>(null)
+  const viewport = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const controller = new AbortController()
     let inFlight = false
@@ -215,14 +216,8 @@ export function ServiceLogs({
             Output exceeds the buffer limit. Showing the newest 64 KiB.
           </p>
         ) : null}
-        <pre
-          ref={viewport}
-          role="region"
-          aria-label="Container log output"
-          aria-busy={busy}
-          tabIndex={0}
-          className="max-h-[32rem] min-h-32 overflow-auto whitespace-pre-wrap break-all rounded-md border bg-muted/30 p-4 text-xs"
-        >
+        <ScrollArea className="h-[min(32rem,60dvh)] min-h-32 min-w-0 rounded-md border bg-muted/30" viewportProps={{ ref: viewport, role: 'region', 'aria-label': 'Container log output', 'aria-busy': busy, tabIndex: 0 }}>
+          <pre className="min-w-0 whitespace-pre-wrap break-all p-4 text-xs">
           <code>
             {data === null
               ? error
@@ -231,7 +226,8 @@ export function ServiceLogs({
               : filtered ||
                 (query ? 'No matching log lines.' : 'No output yet.')}
           </code>
-        </pre>
+          </pre>
+        </ScrollArea>
         <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
           {query ? (
             <span>{matching.filter(Boolean).length} matching lines</span>
