@@ -3,13 +3,18 @@ import { test, expect } from '@playwright/test'
 for (const outcome of ['sent', 'failed', 'not_configured']) test(`Invitation email ${outcome} preserves create and regenerate tokens`, async ({ page }) => {
   let invitations: object[] = []
   let responseOutcome = outcome
-  await page.route('**/api/v1/**', route => {
+  let delayed = outcome === 'failed'
+  await page.route('**/api/v1/**', async route => {
     const path = new URL(route.request().url()).pathname.replace('/api/v1', '')
     if (path === '/auth/invitations' && route.request().method() === 'POST') {
+      if (delayed) await new Promise(resolve => setTimeout(resolve, 11_000))
       invitations = [{ id: 'invite', email: 'invited@example.com', role: 'member', expires_at: '2030-01-01T00:00:00Z' }]
       return route.fulfill({ json: { token: 'created-token', email_delivery: responseOutcome } })
     }
-    if (path === '/auth/invitations/invite/renew') return route.fulfill({ json: { token: 'renewed-token', email_delivery: responseOutcome } })
+    if (path === '/auth/invitations/invite/renew') {
+      if (delayed) await new Promise(resolve => setTimeout(resolve, 11_000))
+      return route.fulfill({ json: { token: 'renewed-token', email_delivery: responseOutcome } })
+    }
     const responses: Record<string, unknown> = {
       '/auth/session': { user_id: 'owner', name: 'Owner', email: 'owner@example.com', system_role: 'user', role: 'owner', organization_id: 'org', organization_name: 'Lab' },
       '/auth/profile': { avatar: 'initials' }, '/auth/organizations': [], '/auth/setup': { setup_required: false },
@@ -32,6 +37,7 @@ for (const outcome of ['sent', 'failed', 'not_configured']) test(`Invitation ema
   const alert = page.getByRole('alert').filter({ hasText: 'Invitation token' })
   await expect(alert).toContainText(message)
   await expect(alert.locator('code')).toHaveText('renewed-token')
+  delayed = false
   responseOutcome = outcome === 'sent' ? 'failed' : 'sent'
   await page.getByRole('button', { name: 'Invite member', exact: true }).click()
   await page.getByLabel('Invitation email', { exact: true }).fill('another@example.com')

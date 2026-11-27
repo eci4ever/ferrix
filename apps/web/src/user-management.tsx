@@ -34,7 +34,7 @@ function useActions(refresh: Refresh) {
   const [busy, setBusy] = useState(false); const [message, setMessage] = useState('')
   async function action(path: string, body = {}): Promise<ActionResult | null> {
     setBusy(true); setMessage('')
-    try { const result = await request<ActionResult | undefined>(`/auth/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); try { await refresh() } catch { setMessage('Saved, but workspace data could not be refreshed. Refresh workspace to try again.') }; return result ?? {} }
+    try { const result = await request<ActionResult | undefined>(`/auth/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: path === 'invitations' || /^invitations\/[^/]+\/renew$/.test(path) ? AbortSignal.timeout(30_000) : undefined }); try { await refresh() } catch { setMessage('Saved, but workspace data could not be refreshed. Refresh workspace to try again.') }; return result ?? {} }
     catch (error) { setMessage(error instanceof Error ? error.message : 'The action could not be completed.'); return null }
     finally { setBusy(false) }
   }
