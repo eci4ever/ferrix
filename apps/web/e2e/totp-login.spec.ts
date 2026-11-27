@@ -23,6 +23,7 @@ test('Scan QR, confirm TOTP, then sign in through a separate MFA challenge', asy
   await signInAdmin(page)
   await page.setViewportSize({ width: 390, height: 844 })
   await page.goto('/security')
+  await page.getByRole('tab', { name: 'Two-factor', exact: true }).click()
   await page.getByRole('button', { name: 'Set up authenticator', exact: true }).click()
   let dialog = page.getByRole('dialog')
   await expect(dialog).toBeVisible()

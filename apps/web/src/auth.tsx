@@ -12,6 +12,7 @@ import { Badge } from '@/components/ui/badge'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { Separator } from '@/components/ui/separator'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger } from '@/components/ui/dialog'
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { DataTable } from '@/components/data-table'
 import { ApiRequestError, request } from '@/lib/api'
 import { QRCodeSVG } from 'qrcode.react'
@@ -150,6 +151,9 @@ export function LoginPage({ setupRequired, refresh, initialMode = 'login' }: { s
 }
 
 export function SecurityPage({ sessions, security, audit, refresh }: { sessions: Session[]; security: Security; audit: Audit[]; refresh: Refresh }) {
+  const [tab, setTab] = useState('verification')
+  const tabClass = (value: string) => tab === value ? 'min-w-0' : 'hidden'
+  const formClass = 'flex max-w-xl flex-col gap-4'
   const [message, setMessage] = useState(''); const [busy, setBusy] = useState(false)
   const [enrollment, setEnrollment] = useState<{ secret: string; otpauth_url: string } | null>(null)
   const [codes, setCodes] = useState<string[]>([])
@@ -179,21 +183,38 @@ export function SecurityPage({ sessions, security, audit, refresh }: { sessions:
   }
   async function enroll(event: FormEvent<HTMLFormElement>) { const values = data(event); const result = await action('mfa/enroll', values); if (result) setEnrollment(result as { secret: string; otpauth_url: string }) }
   async function confirm(event: FormEvent<HTMLFormElement>) { const result = await action('mfa/confirm', data(event)); if (result) { setCodes((result as { recovery_codes: string[] }).recovery_codes); setEnrollment(null) } }
-  return <div className="flex flex-col gap-6"><h1 className="text-2xl font-semibold">Security and sessions</h1><Message message={message} />
-    <section className={panel}><h2 className="font-semibold">Verify your identity</h2><p className="text-sm text-muted-foreground">Sensitive actions need a password verification within the last 15 minutes. Authenticator codes can be used only once per time step.</p><form className="flex flex-col gap-4" onSubmit={async e => { await action('reauthenticate', data(e)) }}><FieldGroup><TextField name="password" label="Current password" type="password" autoComplete="current-password" /><TextField name="code" label="Authenticator or recovery code (if enabled)" required={false} autoComplete="one-time-code" /></FieldGroup><Button type="submit" disabled={busy}>Verify identity</Button></form></section>
-    <section className={panel}><h2 className="font-semibold">Active sessions</h2><p className="text-sm text-muted-foreground">Sessions expire after three days of inactivity, with an absolute limit of 30 days.</p><p className="text-sm text-muted-foreground">Revoke other sessions signs out your other devices and keeps this session active. Verify your identity above within 15 minutes before using it.</p><DataTable label="Sessions" data={sessions} columns={[
+  return <div className="flex min-w-0 flex-col gap-6">
+    <div className="space-y-1"><h1 className="text-2xl font-semibold">Security</h1><p className="text-sm text-muted-foreground">Protect your account, manage signed-in devices and review security activity.</p></div>
+    <Message message={message} />
+    <Tabs value={tab} onValueChange={setTab} className="min-w-0 gap-6">
+      <div className="min-w-0 overflow-x-auto pb-1">
+        <TabsList aria-label="Security sections" className="h-auto min-h-10 w-max sm:w-auto">
+          <TabsTrigger value="verification" className="min-h-9 px-3">Verification</TabsTrigger>
+          <TabsTrigger value="sessions" className="min-h-9 px-3">Sessions</TabsTrigger>
+          <TabsTrigger value="two-factor" className="min-h-9 px-3">Two-factor</TabsTrigger>
+          <TabsTrigger value="password" className="min-h-9 px-3">Password</TabsTrigger>
+          <TabsTrigger value="activity" className="min-h-9 px-3">Activity</TabsTrigger>
+        </TabsList>
+      </div>
+      <TabsContent value="verification" forceMount className={tabClass('verification')}>
+    <section className={panel}><h2 className="font-semibold">Verify your identity</h2><p className="text-sm text-muted-foreground">Sensitive actions need a password verification within the last 15 minutes. Authenticator codes can be used only once per time step.</p><form className={formClass} onSubmit={async e => { await action('reauthenticate', data(e)) }}><FieldGroup><TextField name="password" label="Current password" type="password" autoComplete="current-password" /><TextField name="code" label="Authenticator or recovery code (if enabled)" required={false} autoComplete="one-time-code" /></FieldGroup><Button type="submit" className="self-start" disabled={busy}>Verify identity</Button></form></section>
+      </TabsContent>
+      <TabsContent value="sessions" forceMount className={tabClass('sessions')}>
+    <section className={panel}><h2 className="font-semibold">Active sessions</h2><p className="text-sm text-muted-foreground">Sessions expire after three days of inactivity, with an absolute limit of 30 days.</p><p className="text-sm text-muted-foreground">Revoke other sessions signs out your other devices and keeps this session active. Verify your identity in the Verification tab within 15 minutes before using it.</p><DataTable label="Sessions" data={sessions} columns={[
       { id: 'device', label: 'Device', value: session => `${session.user_agent} ${session.ip_address} ${session.current ? 'Current' : ''}`, cell: session => <div className="flex flex-col gap-1"><p className="max-w-sm truncate" title={session.user_agent}>{session.user_agent || 'Unknown device'}</p><span className="text-xs text-muted-foreground">{session.ip_address}</span>{session.current ? <Badge variant="secondary" className="self-start">Current</Badge> : null}</div> },
       { id: 'expires', label: 'Expires', value: session => session.expires_at, cell: session => <time dateTime={session.expires_at}>{new Date(session.expires_at).toLocaleString()}</time> },
       { id: 'actions', label: 'Action', cell: session => session.current ? <Badge variant="outline" title="Use Sign out to end your current session">Protected</Badge> : <Button variant="outline" disabled={busy} onClick={() => action(`sessions/${session.id}/revoke`)}>Revoke</Button> },
-    ]} /><Button variant="outline" disabled={busy} onClick={() => action('sessions/revoke-others')}>Revoke other sessions</Button></section>
+    ]} /><Button variant="outline" className="self-start" disabled={busy} onClick={() => action('sessions/revoke-others')}>Revoke other sessions</Button></section>
+      </TabsContent>
+      <TabsContent value="two-factor" forceMount className={tabClass('two-factor')}>
     <section className={panel}><h2 ref={mfaHeading} tabIndex={-1} className="font-semibold">Two-factor authentication</h2><p className="text-sm text-muted-foreground">{security.two_factor_enabled ? `Enabled. ${security.recovery_codes_remaining} recovery codes remain.` : 'Add an authenticator app to protect your account.'}</p>
-      {security.two_factor_enabled ? <form className="flex flex-col gap-4" onSubmit={async e => { await action('mfa/disable', data(e)) }}><FieldGroup><TextField name="password" label="Confirm password" type="password" autoComplete="current-password" /><TextField name="code" label="Authenticator or recovery code" autoComplete="one-time-code" /></FieldGroup><Button type="submit" variant="outline" disabled={busy}>Disable two-factor authentication</Button></form> : null}
+      {security.two_factor_enabled ? <form className={formClass} onSubmit={async e => { await action('mfa/disable', data(e)) }}><FieldGroup><TextField name="password" label="Confirm password" type="password" autoComplete="current-password" /><TextField name="code" label="Authenticator or recovery code" autoComplete="one-time-code" /></FieldGroup><Button type="submit" variant="outline" className="self-start" disabled={busy}>Disable two-factor authentication</Button></form> : null}
       <Dialog open={setupOpen} onOpenChange={open => {
         if (busy || codes.length) return
         setSetupOpen(open); setMessage('')
         if (!open) setEnrollment(null)
       }}>
-        {!security.two_factor_enabled ? <DialogTrigger asChild><Button variant="outline" disabled={busy}>Set up authenticator</Button></DialogTrigger> : null}
+        {!security.two_factor_enabled ? <DialogTrigger asChild><Button variant="outline" className="self-start" disabled={busy}>Set up authenticator</Button></DialogTrigger> : null}
         <DialogContent className="max-h-[calc(100svh-2rem)] overflow-y-auto" showCloseButton={!busy && !codes.length}
           onEscapeKeyDown={event => { if (busy || codes.length) event.preventDefault() }}
           onInteractOutside={event => { if (busy || codes.length) event.preventDefault() }}
@@ -214,7 +235,15 @@ export function SecurityPage({ sessions, security, audit, refresh }: { sessions:
         </DialogContent>
       </Dialog>
     </section>
-    <section className={panel}><h2 className="font-semibold">Change password</h2><p className="text-sm text-muted-foreground">Use at least 12 characters. Changing your password signs out every session, including this one.</p><form onSubmit={async e => { await action('change-password', data(e)) }} className="flex flex-col gap-4"><FieldGroup><TextField name="password" label="Existing password" type="password" autoComplete="current-password" /><TextField name="new_password" label="New password" type="password" autoComplete="new-password" /><TextField name="code" label="Authenticator or recovery code (if enabled)" required={false} autoComplete="one-time-code" /></FieldGroup><Button disabled={busy} type="submit">Change password and sign out</Button></form></section>
-    {audit.length ? <section className={panel}><h2 className="font-semibold">Organization security activity</h2>{audit.map(item => <p key={item.id} className="text-sm">{new Date(item.created_at).toLocaleString()} — {item.action}</p>)}</section> : null}
+      </TabsContent>
+      <TabsContent value="password" forceMount className={tabClass('password')}>
+    <section className={panel}><h2 className="font-semibold">Change password</h2><p className="text-sm text-muted-foreground">Use at least 12 characters. Changing your password signs out every session, including this one.</p><form onSubmit={async e => { await action('change-password', data(e)) }} className={formClass}><FieldGroup><TextField name="password" label="Existing password" type="password" autoComplete="current-password" /><TextField name="new_password" label="New password" type="password" autoComplete="new-password" /><TextField name="code" label="Authenticator or recovery code (if enabled)" required={false} autoComplete="one-time-code" /></FieldGroup><Button className="self-start" disabled={busy} type="submit">Change password and sign out</Button></form></section>
+      </TabsContent>
+      <TabsContent value="activity" forceMount className={tabClass('activity')}>
+        <section className={panel}><h2 className="font-semibold">Organization security activity</h2><p className="text-sm text-muted-foreground">Recent security events for your current organization.</p>
+          {audit.length ? <ul className="space-y-3">{audit.map(item => <li key={item.id} className="flex min-w-0 flex-col gap-1 border-b pb-3 last:border-0 last:pb-0"><span className="break-words text-sm">{item.action}</span><time className="text-xs text-muted-foreground" dateTime={item.created_at}>{new Date(item.created_at).toLocaleString()}</time></li>)}</ul> : <p className="text-sm text-muted-foreground">No security activity yet.</p>}
+        </section>
+      </TabsContent>
+    </Tabs>
   </div>
 }
