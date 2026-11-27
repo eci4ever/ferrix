@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { LoadingButton } from '@/components/loading-button'
+import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { request } from '@/lib/api'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
@@ -15,6 +16,7 @@ export function ServiceNotes({ serviceId, canManage }: { serviceId: string; canM
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const [busy, setBusy] = useState(false)
+  const submitLock = useRef(false)
   const [reload, setReload] = useState(0)
   useEffect(() => {
     const controller = new AbortController()
@@ -28,17 +30,18 @@ export function ServiceNotes({ serviceId, canManage }: { serviceId: string; canM
   const dirty = saved !== null && draft !== saved.notes
   async function save(event: FormEvent) {
     event.preventDefault()
-    if (!saved || busy || bytes > 32768) return
+    if (!saved || busy || submitLock.current || !dirty || bytes > 32768) return
+    submitLock.current = true
     setBusy(true); setError(''); setNotice('')
     try {
       const value = await request<Notes>(`/services/${serviceId}/notes`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ notes: draft, revision: saved.revision }) })
       setSaved(value); setDraft(value.notes); setNotice('Notes saved. No deployment needed.')
     } catch (e) { setError(e instanceof Error ? e.message : 'Could not save notes.') }
-    finally { setBusy(false) }
+    finally { submitLock.current = false; setBusy(false) }
   }
   return <Card><CardHeader><CardTitle><h2>Service notes</h2></CardTitle><CardDescription>Keep setup instructions, useful links and reminders for your team. Notes are shared with organization members. Do not store passwords or API keys here.</CardDescription></CardHeader><CardContent className="flex flex-col gap-4">
     {error ? <Alert variant="destructive"><AlertTitle>Unable to continue</AlertTitle><AlertDescription><p>{error}</p><Button type="button" variant="outline" disabled={busy} onClick={() => setReload(value => value + 1)}>{dirty ? 'Discard draft and load saved notes' : 'Retry loading notes'}</Button></AlertDescription></Alert> : null}
-    {saved ? <form onSubmit={save} className="flex flex-col gap-4"><FieldGroup><Field data-invalid={bytes > 32768 || undefined}><FieldLabel htmlFor="service-notes">Notes</FieldLabel><Textarea id="service-notes" value={draft} readOnly={!canManage} disabled={busy} onChange={event => { setDraft(event.target.value); setNotice('') }} aria-invalid={bytes > 32768} aria-describedby="service-notes-help" rows={12} maxLength={32768} placeholder={canManage ? 'Add notes about this service…' : 'No notes yet.'} /><FieldDescription id="service-notes-help">Plain text · {bytes.toLocaleString()} / 32,768 bytes{!canManage ? ' · Only authorized application developers and organization managers can edit.' : dirty ? ' · Unsaved changes' : ''}</FieldDescription></Field></FieldGroup>{bytes > 32768 ? <p role="alert" className="text-sm text-destructive">Notes exceed the 32 KiB limit.</p> : null}{canManage ? <Button className="self-end" disabled={busy || !dirty || bytes > 32768}>{busy ? 'Saving…' : 'Save notes'}</Button> : null}</form> : !error ? <p role="status" className="text-sm text-muted-foreground">Loading notes…</p> : null}
+    {saved ? <form onSubmit={save} className="flex flex-col gap-4"><FieldGroup><Field data-invalid={bytes > 32768 || undefined}><FieldLabel htmlFor="service-notes">Notes</FieldLabel><Textarea id="service-notes" value={draft} readOnly={!canManage} disabled={busy} onChange={event => { setDraft(event.target.value); setNotice('') }} aria-invalid={bytes > 32768} aria-describedby="service-notes-help" rows={12} maxLength={32768} placeholder={canManage ? 'Add notes about this service…' : 'No notes yet.'} /><FieldDescription id="service-notes-help">Plain text · {bytes.toLocaleString()} / 32,768 bytes{!canManage ? ' · Only authorized application developers and organization managers can edit.' : dirty ? ' · Unsaved changes' : ''}</FieldDescription></Field></FieldGroup>{bytes > 32768 ? <p role="alert" className="text-sm text-destructive">Notes exceed the 32 KiB limit.</p> : null}{canManage ? <LoadingButton loading={busy} loadingText="Saving…" className="self-end" disabled={busy || !dirty || bytes > 32768}>{busy ? 'Saving…' : 'Save notes'}</LoadingButton> : null}</form> : !error ? <p role="status" className="text-sm text-muted-foreground">Loading notes…</p> : null}
     <ActionNotice message={notice} onDismiss={() => setNotice('')} />
   </CardContent></Card>
 }
