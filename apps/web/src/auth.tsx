@@ -160,10 +160,19 @@ export function SecurityPage({ sessions, security, audit, refresh }: { sessions:
     try {
       const result = await request<unknown>(`/auth/${path}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-        notifyOnError: path === 'reauthenticate',
+        notifyOnError: true,
       })
       if (path === 'reauthenticate') toast.success('Identity verified', { description: 'Sensitive actions are available for the next 15 minutes.' })
-      await refresh()
+      else if (path === 'sessions/revoke-others') toast.success('Other sessions revoked', { description: 'Your current session stays signed in.' })
+      else if (path.startsWith('sessions/')) toast.success('Session revoked')
+      else if (path === 'mfa/confirm') toast.success('Two-factor authentication enabled', { description: 'Save your recovery codes before closing this dialog.' })
+      else if (path === 'mfa/disable') toast.success('Two-factor authentication disabled')
+      else if (path === 'change-password') toast.success('Password changed', { description: 'Sign in again with your new password.' })
+      try { await refresh() } catch {
+        const notice = 'Action completed, but security settings could not be refreshed. Refresh the page to see the latest status.'
+        setMessage(notice)
+        toast.error(notice)
+      }
       return result
     } catch (error) { setMessage(errorText(error)); return null }
     finally { setBusy(false) }
@@ -172,7 +181,7 @@ export function SecurityPage({ sessions, security, audit, refresh }: { sessions:
   async function confirm(event: FormEvent<HTMLFormElement>) { const result = await action('mfa/confirm', data(event)); if (result) { setCodes((result as { recovery_codes: string[] }).recovery_codes); setEnrollment(null) } }
   return <div className="flex flex-col gap-6"><h1 className="text-2xl font-semibold">Security and sessions</h1><Message message={message} />
     <section className={panel}><h2 className="font-semibold">Verify your identity</h2><p className="text-sm text-muted-foreground">Sensitive actions need a password verification within the last 15 minutes. Authenticator codes can be used only once per time step.</p><form className="flex flex-col gap-4" onSubmit={async e => { await action('reauthenticate', data(e)) }}><FieldGroup><TextField name="password" label="Current password" type="password" autoComplete="current-password" /><TextField name="code" label="Authenticator or recovery code (if enabled)" required={false} autoComplete="one-time-code" /></FieldGroup><Button type="submit" disabled={busy}>Verify identity</Button></form></section>
-    <section className={panel}><h2 className="font-semibold">Active sessions</h2><p className="text-sm text-muted-foreground">Sessions expire after three days of inactivity, with an absolute limit of 30 days.</p><DataTable label="Sessions" data={sessions} columns={[
+    <section className={panel}><h2 className="font-semibold">Active sessions</h2><p className="text-sm text-muted-foreground">Sessions expire after three days of inactivity, with an absolute limit of 30 days.</p><p className="text-sm text-muted-foreground">Revoke other sessions signs out your other devices and keeps this session active. Verify your identity above within 15 minutes before using it.</p><DataTable label="Sessions" data={sessions} columns={[
       { id: 'device', label: 'Device', value: session => `${session.user_agent} ${session.ip_address} ${session.current ? 'Current' : ''}`, cell: session => <div className="flex flex-col gap-1"><p className="max-w-sm truncate" title={session.user_agent}>{session.user_agent || 'Unknown device'}</p><span className="text-xs text-muted-foreground">{session.ip_address}</span>{session.current ? <Badge variant="secondary" className="self-start">Current</Badge> : null}</div> },
       { id: 'expires', label: 'Expires', value: session => session.expires_at, cell: session => <time dateTime={session.expires_at}>{new Date(session.expires_at).toLocaleString()}</time> },
       { id: 'actions', label: 'Action', cell: session => session.current ? <Badge variant="outline" title="Use Sign out to end your current session">Protected</Badge> : <Button variant="outline" disabled={busy} onClick={() => action(`sessions/${session.id}/revoke`)}>Revoke</Button> },
