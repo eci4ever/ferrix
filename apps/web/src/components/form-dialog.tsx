@@ -3,7 +3,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, Di
 import { cn } from '@/lib/utils'
 
 /** A focused form task. Keep drafts/errors mounted until dismissal or successful submission. */
-export function FormDialog({ open, onOpenChange, title, description, busy = false, trigger, children, className, onCloseAutoFocus }: {
+export function FormDialog({ open, onOpenChange, title, description, busy = false, trigger, children, className, onCloseAutoFocus, onEscapeKeyDown }: {
   open: boolean
   onOpenChange: (open: boolean) => void
   title: string
@@ -13,11 +13,12 @@ export function FormDialog({ open, onOpenChange, title, description, busy = fals
   children: ReactNode
   className?: string
   onCloseAutoFocus?: ComponentProps<typeof DialogContent>['onCloseAutoFocus']
+  onEscapeKeyDown?: ComponentProps<typeof DialogContent>['onEscapeKeyDown']
 }) {
   return <Dialog open={open} onOpenChange={next => { if (!busy) onOpenChange(next) }}>
     {trigger ? <DialogTrigger asChild>{trigger}</DialogTrigger> : null}
     <DialogContent className={cn('sm:max-w-lg', className)} showCloseButton={!busy}
-      onEscapeKeyDown={event => { if (busy) event.preventDefault() }}
+      onEscapeKeyDown={event => { if (busy) event.preventDefault(); onEscapeKeyDown?.(event) }}
       onInteractOutside={event => { if (busy) event.preventDefault() }}
       onCloseAutoFocus={onCloseAutoFocus}>
       <DialogHeader><DialogTitle>{title}</DialogTitle><DialogDescription>{description}</DialogDescription></DialogHeader>
