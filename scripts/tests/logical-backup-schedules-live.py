@@ -77,6 +77,10 @@ def scenario(origin):
         manager.request('POST', base+'/backup-policy', dict(policy, enabled=False), expected=204)
     print('PASS: real cron automatically backed up A and B on the same service, sequentially, without duplicate jobs.', flush=True)
     first = next(j for j in scheduled if j['managed_database_id'] == records[0]['id'])
+    manager.request('POST', bases[0]+f'/backups/{first["id"]}/restore', {'database_name': 'wrong'}, expected=422)
+    manager.request('POST', bases[1]+f'/backups/{first["id"]}/restore', {'database_name': records[1]['database_name']}, expected=404)
+    student.request('POST', bases[0]+f'/backups/{first["id"]}/restore', {'database_name': records[0]['database_name']}, expected=404)
+    print('PASS: wrong confirmation, backup ID substituted across A/B and student restore requests are rejected before import.', flush=True)
     shared.account_sql(container, connections[0], "UPDATE isolation SET value='changedA';")
     shared.account_sql(container, connections[1], "UPDATE isolation SET value='preserveB';")
     restore = manager.request('POST', bases[0]+f'/backups/{first["id"]}/restore', {'database_name': records[0]['database_name']}, expected=202)
@@ -84,6 +88,7 @@ def scenario(origin):
     assert shared.account_sql(container, connections[0], 'SELECT value FROM isolation;') == 'studentA'
     assert shared.account_sql(container, connections[1], 'SELECT value FROM isolation;') == 'preserveB'
     shared.account_sql(container, connections[0], f'SELECT * FROM `{records[1]["database_name"]}`.isolation;', allowed=False)
+    shared.account_sql(container, connections[1], f'SELECT * FROM `{records[0]["database_name"]}`.isolation;', allowed=False)
     print('PASS: restore of scheduled A backup restores A data; B changed data/account/connectivity preserved; A/B SQL isolation intact.', flush=True)
     # Independent retention also covers manual backups; preserve B history.
     manager.request('POST', bases[0]+'/backup-policy', dict(policy, enabled=False, keep_last=1), expected=204)
