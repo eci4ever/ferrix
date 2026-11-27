@@ -12,7 +12,9 @@ import time
 import urllib.request
 import uuid
 parser=argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--logical-only',action='store_true',help='Audit shared MariaDB logical S3 backup, restore and independent retention only.')
+mode=parser.add_mutually_exclusive_group()
+mode.add_argument('--logical-only',action='store_true',help='Audit shared MariaDB logical S3 backup, restore and independent retention only.')
+mode.add_argument('--failures-only',action='store_true',help='Audit S3 outage, backup/restore retries and retention recovery on shared MariaDB.')
 args=parser.parse_args()
 root=Path(__file__).resolve().parents[2]
 profile={}
@@ -33,7 +35,7 @@ with socket.socket() as sock:
 identifier=uuid.uuid4().hex
 name=f'ferrix-{user}-test-s3-'+identifier
 key='test'+secrets.token_hex(12);secret=secrets.token_hex(24)
-env|={'RUSTFS_ACCESS_KEY':key,'RUSTFS_SECRET_KEY':secret,'FERRIX_TEST_DATABASE_URL':profile['DATABASE_URL'],'FERRIX_TEST_S3_ENDPOINT':f'http://127.0.0.1:{port}','FERRIX_TEST_S3_BUCKET':'ferrix-test-'+identifier,'FERRIX_TEST_S3_ACCESS_KEY':key,'FERRIX_TEST_S3_SECRET_KEY':secret,'FERRIX_TEST_S3_DISPOSABLE':'1'}
+env|={'RUSTFS_ACCESS_KEY':key,'RUSTFS_SECRET_KEY':secret,'FERRIX_TEST_DATABASE_URL':profile['DATABASE_URL'],'FERRIX_TEST_S3_ENDPOINT':f'http://127.0.0.1:{port}','FERRIX_TEST_S3_BUCKET':'ferrix-test-'+identifier,'FERRIX_TEST_S3_ACCESS_KEY':key,'FERRIX_TEST_S3_SECRET_KEY':secret,'FERRIX_TEST_S3_DISPOSABLE':'1','FERRIX_TEST_S3_CONTAINER':name,'FERRIX_TEST_S3_IDENTIFIER':identifier}
 try:
     subprocess.run(['docker','run','-d','--name',name,'--label','io.ferrix.test='+identifier,'-p',f'127.0.0.1:{port}:9000','-e','RUSTFS_ACCESS_KEY','-e','RUSTFS_SECRET_KEY','rustfs/rustfs:latest','/data'],env=env,cwd=root,check=True,stdout=subprocess.DEVNULL)
     for attempt in range(60):
@@ -45,7 +47,9 @@ try:
             if attempt==59:raise RuntimeError('Disposable RustFS did not become ready.')
             time.sleep(1)
     subprocess.run(['cargo','test','--test','s3_live','prepare_disposable_s3_bucket','--','--include-ignored'],env=env,cwd=root,check=True)
-    if args.logical_only:
+    if args.failures_only:
+        subprocess.run(['python3',str(root/'scripts/tests/s3-failure-recovery-live.py')],env=env,cwd=root,check=True)
+    elif args.logical_only:
         subprocess.run(['python3',str(root/'scripts/tests/logical-backup-schedules-live.py'),'--s3'],env=env,cwd=root,check=True)
     else:
         subprocess.run(['python3',str(root/'scripts/tests/database-backup-restore-live.py'),'--s3'],env=env,cwd=root,check=True)
@@ -58,4 +62,4 @@ finally:
 assert live.snapshot()==before, 'Existing organization/project/service/assignment metadata changed'
 assert running <= set(live.command(['docker','ps','-q','--no-trunc']).split()), 'An existing container stopped'
 print('Existing metadata and running containers preserved.')
-print('Shared MariaDB logical S3 restore/retention passed; disposable S3 removed.' if args.logical_only else 'PostgreSQL, MariaDB and Application volumes restored from S3 after local backup storage removal; disposable S3 removed.')
+print('S3 outage and retry/recovery audit passed; disposable S3 removed.' if args.failures_only else 'Shared MariaDB logical S3 restore/retention passed; disposable S3 removed.' if args.logical_only else 'PostgreSQL, MariaDB and Application volumes restored from S3 after local backup storage removal; disposable S3 removed.')

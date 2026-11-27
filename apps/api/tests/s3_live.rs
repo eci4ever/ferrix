@@ -72,6 +72,17 @@ async fn verify_disposable_s3_objects() {
     )
     .unwrap()
     .with_path_style();
+    if let Ok(prefix) = std::env::var("FERRIX_TEST_S3_NO_MULTIPART_PREFIX") {
+        assert!(prefix.starts_with("logical-audit/ferrix/"));
+        let pages = bucket
+            .list_multiparts_uploads(Some(&prefix), None)
+            .await
+            .unwrap();
+        assert!(
+            pages.iter().all(|page| page.uploads.is_empty()),
+            "Interrupted upload left incomplete multipart data"
+        );
+    }
     let cases: Vec<(String, Option<String>)> = serde_json::from_str(&objects).unwrap();
     assert!(!cases.is_empty());
     for (key, checksum) in cases {
