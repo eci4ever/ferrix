@@ -1,3 +1,4 @@
+import { DataTable } from '@/components/data-table'
 import { formatBytes as bytes } from '@/lib/format-bytes'
 import { TelemetryHistory } from './telemetry-history'
 import { TelemetrySettings } from './telemetry-settings'
@@ -41,7 +42,10 @@ function History({ samples, series, max, format = bytes }: { samples: Sample[]; 
       <text x="66" y="184" fontSize="11" fill="var(--muted-foreground)">{time(start)}</text><text x="680" y="184" textAnchor="end" fontSize="11" fill="var(--muted-foreground)">{time(end)}</text>
     </svg>
     <div className="flex flex-wrap justify-center gap-4 text-xs text-muted-foreground">{series.map(s => <span key={s.key} className="flex items-center gap-2"><svg width="20" height="8" aria-hidden="true"><line x1="0" x2="20" y1="4" y2="4" stroke={s.color} strokeWidth="2" strokeDasharray={s.dash} /></svg>{s.name}</span>)}</div>
-    <details className="mt-4 text-xs text-muted-foreground"><summary className="w-fit cursor-pointer rounded-sm focus-visible:outline-2">View exact readings</summary><div className="mt-2 max-h-48 overflow-auto"><table className="w-full text-left tabular-nums"><caption className="sr-only">Recorded readings</caption><thead><tr><th className="p-1">Time</th>{series.map(s => <th className="p-1" key={s.key}>{s.name}</th>)}</tr></thead><tbody>{samples.map(s => <tr key={s.at}><td className="p-1">{time(s.at)}</td>{series.map(line => <td className="p-1" key={line.key}>{format(s[line.key])}</td>)}</tr>)}</tbody></table></div></details>
+    <details className="mt-4 text-xs text-muted-foreground"><summary className="w-fit cursor-pointer rounded-sm focus-visible:outline-2">View exact readings</summary><div className="mt-3"><DataTable label={`${series.map(s => s.name).join(' and ')} readings`} data={samples.map(sample => ({ ...sample, id: String(sample.at) }))} columns={[
+      { id: 'at', label: 'Time', value: sample => sample.at, numeric: true, cell: sample => time(sample.at) },
+      ...series.map(line => ({ id: line.key, label: line.name, value: (sample: Sample) => sample[line.key], numeric: true, cell: (sample: Sample) => format(sample[line.key]) })),
+    ]} /></div></details>
   </>
 }
 function DockerStorage({ storage }: { storage: Storage }) {
