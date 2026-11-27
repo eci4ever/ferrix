@@ -1,3 +1,4 @@
+import { CirclePlus, X } from 'lucide-react'
 import { LoadingButton } from '@/components/loading-button'
 import { ClassroomAccess } from './resource-access'
 import { useEffect, useId, useState } from 'react'
@@ -13,7 +14,7 @@ import { Badge } from '@/components/ui/badge'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog'
-import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem } from '@/components/ui/dropdown-menu'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuLabel, DropdownMenuSeparator } from '@/components/ui/dropdown-menu'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
 
@@ -26,6 +27,10 @@ function Notice({ message }: { message: string }) { return message ? <Alert><Ale
 function Section({ title, description, children }: { title: string; description?: string; children: ReactNode }) { return <Card><CardHeader><CardTitle><h2>{title}</h2></CardTitle>{description ? <CardDescription>{description}</CardDescription> : null}</CardHeader><CardContent className="flex flex-col gap-4">{children}</CardContent></Card> }
 function Text({ name, label, type = 'text', required = true, maxLength = 254, defaultValue = '' }: { name: string; label: string; type?: string; required?: boolean; maxLength?: number; defaultValue?: string }) { const id = useId(); return <Field><FieldLabel htmlFor={id}>{label}</FieldLabel><Input id={id} name={name} type={type} required={required} maxLength={maxLength} defaultValue={defaultValue} /></Field> }
 function Choice({ label, value, onChange, options, disabled }: { label: string; value: string; onChange: (value: string) => void; options: [string, string][]; disabled?: boolean }) { const id = useId(); return <Field><FieldLabel htmlFor={id}>{label}</FieldLabel><NativeSelect id={id} value={value} onChange={event => onChange(event.target.value)} disabled={disabled}>{options.map(([value, label]) => <NativeSelectOption key={value} value={value}>{label}</NativeSelectOption>)}</NativeSelect></Field> }
+function UserFilter({ label, value, onChange, options }: { label: string; value: string; onChange: (value: string) => void; options: [string, string][] }) {
+  const selected = options.find(([key]) => key === value)?.[1]
+  return <DropdownMenu><DropdownMenuTrigger asChild><Button variant="outline" size="sm" className="h-8 gap-2 border-dashed" aria-label={`Filter ${label.toLowerCase()}: ${selected}`}><CirclePlus aria-hidden="true" /><span>{label}</span>{value ? <Badge variant="secondary" className="rounded-sm px-1.5 text-xs">{selected}</Badge> : null}</Button></DropdownMenuTrigger><DropdownMenuContent align="start"><DropdownMenuLabel>{label}</DropdownMenuLabel><DropdownMenuSeparator /><DropdownMenuRadioGroup value={value} onValueChange={onChange}>{options.map(([key, text]) => <DropdownMenuRadioItem key={key} value={key}>{text}</DropdownMenuRadioItem>)}</DropdownMenuRadioGroup></DropdownMenuContent></DropdownMenu>
+}
 type ActionResult = { token?: string; email_delivery?: 'sent' | 'failed' | 'not_configured' }
 function deliveryMessage(result: ActionResult) {
   return result.email_delivery === 'sent' ? 'Email accepted by the provider. The token is also available below.' : result.email_delivery === 'failed' ? 'Email delivery could not be confirmed. The invitation is valid; share the token privately or regenerate to send another email.' : 'Email is not configured. Share the invitation token privately.'
@@ -78,9 +83,9 @@ export function AdminPage({ identity, refresh, refreshVersion }: { identity: Ide
   return <div className="flex flex-col gap-6"><h1 className="text-2xl font-semibold">Users</h1><Notice message={message} />
     {token ? <Alert><AlertTitle>Password reset token</AlertTitle><AlertDescription><p>Share privately with the account owner. Expires in 15 minutes; MFA remains required.</p><code className="break-all select-all">{token}</code><Button variant="outline" onClick={() => setToken('')}>Dismiss token</Button></AlertDescription></Alert> : null}
     <Section title="Platform users" description="Manage platform access separately from organization membership. Sensitive actions require recent identity verification from Security.">
-      <div className="flex flex-wrap gap-4"><Choice label="Platform role" value={role} onChange={value => { setRole(value); setPage(0) }} options={[[ '', 'All roles' ], ['admin', 'Admin'], ['user', 'User']]} /><Choice label="Account status" value={status} onChange={value => { setStatus(value); setPage(0) }} options={[[ '', 'All statuses' ], ['active', 'Active'], ['banned', 'Banned']]} /></div>
+
       {loadError ? <><Notice message={loadError} /><Button variant="outline" onClick={() => setVersion(value => value + 1)}>Retry users</Button></> : null}
-      <DataTable label="Users" loading={loading} data={result?.items ?? []} server={{ total: result?.total ?? 0, pageIndex: page, pageSize: 10, search, onSearchChange: value => { setSearch(value); setPage(0) }, onPageChange: setPage }} columns={[
+      <DataTable label="Users" toolbar={<div className="flex flex-wrap items-center gap-2" role="group" aria-label="User filters"><UserFilter label="Role" value={role} onChange={value => { setRole(value); setPage(0) }} options={[[ '', 'All roles' ], ['admin', 'Admin'], ['user', 'User']]} /><UserFilter label="Status" value={status} onChange={value => { setStatus(value); setPage(0) }} options={[[ '', 'All statuses' ], ['active', 'Active'], ['banned', 'Banned']]} />{role || status ? <Button variant="ghost" size="sm" className="h-8" onClick={() => { setRole(''); setStatus(''); setPage(0) }}><X aria-hidden="true" />Reset filters</Button> : null}</div>} loading={loading} data={result?.items ?? []} server={{ total: result?.total ?? 0, pageIndex: page, pageSize: 10, search, onSearchChange: value => { setSearch(value); setPage(0) }, onPageChange: setPage }} columns={[
         { id: 'user', label: 'User', value: user => `${user.name} ${user.email}`, cell: user => <div><p>{user.name}{user.id === identity.user_id ? ' (you)' : ''}</p><p className="text-xs text-muted-foreground">{user.email}</p></div> },
         { id: 'role', label: 'Platform role', value: user => user.system_role },
         { id: 'status', label: 'Status', cell: user => <div className="flex flex-col gap-1"><Badge variant={user.banned ? 'destructive' : 'outline'}>{user.banned ? 'Banned' : 'Active'}</Badge>{user.banned && user.ban_reason ? <p className="max-w-xs break-words text-xs text-muted-foreground">{user.ban_reason}</p> : null}{user.banned && user.ban_expires_at ? <time className="text-xs text-muted-foreground">Until {new Date(user.ban_expires_at).toLocaleString()}</time> : null}</div> },
