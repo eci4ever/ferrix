@@ -26,7 +26,7 @@ export default defineConfig(() => {
         manualChunks(id) {
           if (!id.includes('node_modules')) return
           if (id.includes('@tanstack/')) return 'router'
-          if (id.includes('radix-ui') || id.includes('@radix-ui/')) return 'ui'
+          if (id.includes('radix-ui') || id.includes('@radix-ui/') || id.includes('@base-ui/')) return 'ui'
           if (id.includes('/react/') || id.includes('/react-dom/') || id.includes('/scheduler/')) return 'react'
         },
       },

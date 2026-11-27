@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { toast } from 'sonner'
 import { request } from '@/lib/api'
 import { FormDialog } from '@/components/form-dialog'
@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { Field, FieldLabel } from '@/components/ui/field'
 import { NativeSelect, NativeSelectOption } from '@/components/ui/native-select'
+import { Combobox, ComboboxInput, ComboboxContent, ComboboxList, ComboboxItem, ComboboxEmpty } from '@/components/ui/combobox'
 import { Checkbox } from '@/components/ui/checkbox'
 type Member = { id: string; name: string; email: string; role: string }
 type Grant = { user_id: string; permission: string }
@@ -14,6 +15,7 @@ const post = (body: unknown) => ({ method: 'POST', headers: { 'Content-Type': 'a
 function Failure({ error }: { error: string }) { return error ? <Alert variant="destructive" role="alert"><AlertTitle>Access could not be updated</AlertTitle><AlertDescription>{error}</AlertDescription></Alert> : null }
 
 export function ResourceAccess({ resource, canManage }: { resource: string; canManage: boolean }) {
+  const memberPopup = useRef<HTMLDivElement>(null)
   const [open, setOpen] = useState(false), [busy, setBusy] = useState(false), [error, setError] = useState('')
   const [members, setMembers] = useState<Member[]>([]), [grants, setGrants] = useState<Grant[]>([])
   const [member, setMember] = useState(''), [permission, setPermission] = useState('viewer'), [loaded, setLoaded] = useState(false)
@@ -28,8 +30,8 @@ export function ResourceAccess({ resource, canManage }: { resource: string; canM
     <FormDialog open={open} onOpenChange={value => { setOpen(value); if (value) { setMember(''); setPermission('viewer'); void load() } }} title="Manage resource access" description="Assign only members of this organization. Revoking a direct assignment does not remove inherited project access or legacy organization visibility." busy={busy} trigger={<Button variant="outline">Manage access</Button>}>
       <Failure error={error} />
       {!loaded && !busy ? <Button variant="outline" onClick={() => void load()}>Retry access</Button> : null}
-      {loaded ? <form className="flex flex-col gap-4" onSubmit={async event => { event.preventDefault(); setBusy(true); setError(''); try { await request(`${resource}/assignments`, post({ user_id: member, permission: permission === 'none' ? null : permission })); const result = await request<{ assignments: Grant[] }>(`${resource}/assignments`); setGrants(result.assignments); toast.success('Resource access saved.') } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not save access.') } finally { setBusy(false) } }}>
-        <Field><FieldLabel htmlFor="assignment-member">Organization member</FieldLabel><NativeSelect id="assignment-member" value={member} disabled={busy} required onChange={event => { const value = event.target.value; setMember(value); setPermission(grants.find(grant => grant.user_id === value)?.permission ?? 'none') }}><NativeSelectOption value="">Select a member</NativeSelectOption>{members.map(person => <NativeSelectOption key={person.id} value={person.id}>{person.name} ({person.email}) · {person.role}</NativeSelectOption>)}</NativeSelect></Field>
+      {loaded ? <form className="flex flex-col gap-4" onSubmit={async event => { event.preventDefault(); if (busy || !member) return; setBusy(true); setError(''); try { await request(`${resource}/assignments`, post({ user_id: member, permission: permission === 'none' ? null : permission })); const result = await request<{ assignments: Grant[] }>(`${resource}/assignments`); setGrants(result.assignments); toast.success('Resource access saved.') } catch (reason) { setError(reason instanceof Error ? reason.message : 'Could not save access.') } finally { setBusy(false) } }}>
+        <Field><FieldLabel htmlFor="assignment-member">Organization member</FieldLabel><div ref={memberPopup} className="min-w-0"><Combobox items={members} value={members.find(person => person.id === member) ?? null} itemToStringLabel={person => `${person.name} (${person.email}) · ${person.role}`} disabled={busy} onValueChange={person => { const value = person?.id ?? ''; setMember(value); setPermission(grants.find(grant => grant.user_id === value)?.permission ?? 'none') }}><ComboboxInput id="assignment-member" placeholder="Search members by name or email…" className="w-full min-w-0" showClear /><ComboboxContent container={memberPopup} className="min-w-0"><ComboboxEmpty>No matching members.</ComboboxEmpty><ComboboxList>{(person: Member) => <ComboboxItem key={person.id} value={person} className="items-start py-2"><span className="min-w-0 break-words"><span className="block font-medium">{person.name}</span><span className="block text-xs text-muted-foreground">{person.email} · {person.role}</span></span></ComboboxItem>}</ComboboxList></ComboboxContent></Combobox></div></Field>
         <Field><FieldLabel htmlFor="assignment-permission">Resource permission</FieldLabel><NativeSelect id="assignment-permission" value={permission} onChange={event => setPermission(event.target.value)} disabled={busy}><NativeSelectOption value="none">No direct assignment</NativeSelectOption><NativeSelectOption value="viewer">Viewer</NativeSelectOption><NativeSelectOption value="developer">Developer</NativeSelectOption></NativeSelect></Field>
         <p className="text-sm text-muted-foreground">Organization owners and admins retain management access. Project and service grants combine; the stronger grant applies. Database credentials and terminals remain manager-only.</p>
         <div className="flex justify-end gap-2"><Button type="button" variant="outline" disabled={busy} onClick={() => setOpen(false)}>Close</Button><Button disabled={busy || !member}>{busy ? 'Saving…' : 'Save access'}</Button></div>

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Pause, Play, RefreshCw, Search } from 'lucide-react'
+import { RefreshCw, Search } from 'lucide-react'
 import { ApiRequestError, request } from '@/lib/api'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
@@ -12,7 +12,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
-import { Checkbox } from '@/components/ui/checkbox'
+import { Switch } from '@/components/ui/switch'
 import { Field, FieldLabel } from '@/components/ui/field'
 import {
   InputGroup,
@@ -182,18 +182,7 @@ export function ServiceLogs({
           </Field>
         </div>
         <div className="flex flex-wrap items-center gap-3">
-          <Button
-            aria-pressed={live}
-            variant={live ? 'secondary' : 'outline'}
-            onClick={() => setLive((value) => !value)}
-          >
-            {live ? (
-              <Pause data-icon="inline-start" />
-            ) : (
-              <Play data-icon="inline-start" />
-            )}
-            {live ? 'Pause live tail' : 'Start live tail'}
-          </Button>
+          <Field orientation="horizontal" className="w-auto"><Switch id="service-log-live" checked={live} onCheckedChange={setLive} /><FieldLabel htmlFor="service-log-live">Live tail</FieldLabel></Field>
           <Button
             variant="outline"
             disabled={busy}
@@ -203,9 +192,9 @@ export function ServiceLogs({
             Refresh logs
           </Button>
           <label className="flex cursor-pointer items-center gap-2 text-sm">
-            <Checkbox
+            <Switch
               checked={autoScroll}
-              onCheckedChange={(value) => setAutoScroll(value === true)}
+              onCheckedChange={setAutoScroll}
             />
             Auto-scroll
           </label>
