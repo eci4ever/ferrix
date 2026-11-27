@@ -1718,7 +1718,18 @@ async fn check_management(app: &axum::Router, pool: &sqlx::PgPool) {
     );
     // A temporary ban immediately revokes sessions and expires without a worker sweep.
     let ban_path = format!("{detail_path}/ban");
-    assert_eq!(post(app,&ban_path,json!({"banned":true,"reason":"Testing temporary ban","expires_at":(chrono::Utc::now()+chrono::Duration::hours(1)).to_rfc3339()}),&owner).await.0,StatusCode::NO_CONTENT);
+    assert_eq!(
+        post(
+            app,
+            &ban_path,
+            json!({"banned":true,"reason":"界".repeat(501)}),
+            &owner
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    assert_eq!(post(app,&ban_path,json!({"banned":true,"reason":"界".repeat(500),"expires_at":(chrono::Utc::now()+chrono::Duration::hours(1)).to_rfc3339()}),&owner).await.0,StatusCode::NO_CONTENT);
     assert_eq!(
         get(app, "/api/v1/auth/session", &member_cookie).await.0,
         StatusCode::UNAUTHORIZED
@@ -1897,6 +1908,30 @@ async fn check_management(app: &axum::Router, pool: &sqlx::PgPool) {
         .0,
         StatusCode::UNPROCESSABLE_ENTITY
     );
+    // Preserve deployment history even when its requesting user is deleted.
+    let history_project = Uuid::new_v4();
+    let history_environment = Uuid::new_v4();
+    let history_service = Uuid::new_v4();
+    let history_deployment = Uuid::new_v4();
+    let queued_deployment = Uuid::new_v4();
+    sqlx::query("INSERT INTO projects(id,name,organization_id) VALUES($1,'History',$2)")
+        .bind(history_project)
+        .bind(Uuid::parse_str(org).unwrap())
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO environments(id,project_id,name) VALUES($1,$2,'production')")
+        .bind(history_environment)
+        .bind(history_project)
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO applications(id,environment_id,name,image,container_port) VALUES($1,$2,'History','nginx',80)")
+        .bind(history_service).bind(history_environment).execute(pool).await.unwrap();
+    sqlx::query("INSERT INTO deployments(id,application_id,requested_by,image,container_port,status) VALUES($1,$2,$3,'nginx',80,'succeeded')")
+        .bind(history_deployment).bind(history_service).bind(member).execute(pool).await.unwrap();
+    sqlx::query("INSERT INTO deployments(id,application_id,requested_by,image,container_port) VALUES($1,$2,$3,'nginx',80)")
+        .bind(queued_deployment).bind(history_service).bind(member).execute(pool).await.unwrap();
     // Transfer back so deletion can exercise its complete FK cleanup.
     assert_eq!(
         post(
@@ -1927,6 +1962,27 @@ async fn check_management(app: &axum::Router, pool: &sqlx::PgPool) {
         .0,
         StatusCode::UNPROCESSABLE_ENTITY
     );
+    sqlx::query("UPDATE deployments SET status='running' WHERE id=$1")
+        .bind(queued_deployment)
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        post(
+            app,
+            &format!("{detail_path}/delete"),
+            json!({"confirmation":"member-management@example.com"}),
+            &owner
+        )
+        .await
+        .0,
+        StatusCode::UNPROCESSABLE_ENTITY
+    );
+    sqlx::query("UPDATE deployments SET status='queued' WHERE id=$1")
+        .bind(queued_deployment)
+        .execute(pool)
+        .await
+        .unwrap();
     assert_eq!(
         post(
             app,
@@ -1948,6 +2004,28 @@ async fn check_management(app: &axum::Router, pool: &sqlx::PgPool) {
             .1["name"],
         "Managed organization"
     );
+    let actor: Option<Uuid> =
+        sqlx::query_scalar("SELECT requested_by FROM deployments WHERE id=$1")
+            .bind(history_deployment)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert!(actor.is_none());
+    let (queued_actor, queued_status, finished): (Option<Uuid>, String, bool) = sqlx::query_as(
+        "SELECT requested_by,status,finished_at IS NOT NULL FROM deployments WHERE id=$1",
+    )
+    .bind(queued_deployment)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert!(queued_actor.is_none());
+    assert_eq!(queued_status, "failed");
+    assert!(finished);
+    sqlx::query("DELETE FROM projects WHERE id=$1")
+        .bind(history_project)
+        .execute(pool)
+        .await
+        .unwrap();
     // Deletion preserves only the requesting session and returns it to the
     // default organization, without extending its verification or lifetime.
     let preserved_project = post(
