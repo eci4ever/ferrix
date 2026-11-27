@@ -39,18 +39,19 @@ function formatValue(key: string, value: DockerRecord[string]) {
 function Inventory({ section, refreshVersion }: { section: Section; refreshVersion: number }) {
   const [data, setData] = useState<DockerRecord | DockerRecord[] | null>(null)
   const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
   const [refresh, setRefresh] = useState(0)
   const [state, setState] = useState('')
   useEffect(() => {
     const controller = new AbortController()
     setError('')
-    setData(null)
+    setLoading(true)
     const path = section.id === 'containers' ? '/containers' : '/docker/' + section.id
     request<DockerRecord | DockerRecord[]>(path, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(8000)]) })
       .then(result => { if (!controller.signal.aborted) setData(result) })
       .catch((reason: unknown) => {
         if (!controller.signal.aborted) setError(reason instanceof Error ? reason.message : 'Docker inventory unavailable.')
-      })
+      }).finally(() => { if (!controller.signal.aborted) setLoading(false) })
     return () => controller.abort()
   }, [section.id, refresh, refreshVersion])
 
@@ -64,14 +65,14 @@ function Inventory({ section, refreshVersion }: { section: Section; refreshVersi
     </CardHeader>
     <CardContent className="flex min-w-0 flex-col gap-4">
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="outline" onClick={() => setRefresh(previous => previous + 1)} disabled={!data && !error}>
+        <Button variant="outline" onClick={() => setRefresh(previous => previous + 1)} disabled={loading}>
           <RefreshCw aria-hidden="true" /> Refresh {section.label.toLowerCase()}
         </Button>
 
       </div>
       {error && <Alert variant="destructive" role="alert"><AlertTitle>{section.label} unavailable</AlertTitle><AlertDescription>{error} Use Refresh to retry.</AlertDescription></Alert>}
       {!data && !error && <p role="status" className="text-sm text-muted-foreground">Loading {section.label.toLowerCase()}…</p>}
-      {Array.isArray(data) && <DataTable<DockerRecord> label={section.label} data={filtered} filterKey={state} toolbar={section.id === 'containers' ? <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Container filters"><DataTableFilter label="Status" value={state} onChange={setState} options={[[ '', 'All states' ], ...Array.from(new Set([...states, ...(state ? [state] : [])])).map(value => [value, value] as [string, string])]} />{state ? <Button variant="ghost" size="sm" className="h-8" onClick={() => setState('')}><X aria-hidden="true" />Reset filters</Button> : null}</div> : undefined} columns={section.columns.map(([key, label]) => ({
+      {Array.isArray(data) && <DataTable<DockerRecord> label={section.label} loading={loading} data={filtered} filterKey={state} toolbar={section.id === 'containers' ? <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Container filters"><DataTableFilter label="Status" value={state} onChange={setState} options={[[ '', 'All states' ], ...Array.from(new Set([...states, ...(state ? [state] : [])])).map(value => [value, value] as [string, string])]} />{state ? <Button variant="ghost" size="sm" className="h-8" onClick={() => setState('')}><X aria-hidden="true" />Reset filters</Button> : null}</div> : undefined} columns={section.columns.map(([key, label]) => ({
         id: key, label, value: row => formatValue(key, row[key]),
         cell: row => key === 'state' ? <Badge variant="secondary">{formatValue(key, row[key])}</Badge> : <span className="block min-w-24 max-w-80 whitespace-normal break-all">{formatValue(key, row[key])}</span>,
       }))} />}
