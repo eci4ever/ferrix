@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test'
 
-test('workspace refresh reloads Users, user details and the organization profile', async ({ page }) => {
+test('workspace refresh and Organization tabs preserve data, drafts and keyboard navigation', async ({ page }) => {
   let userName = 'Original user'
   let orgName = 'Original organization'
   await page.route('**/api/v1/**', route => {
@@ -34,4 +34,24 @@ test('workspace refresh reloads Users, user details and the organization profile
   orgName = 'Refreshed organization'
   await page.getByRole('button', { name: 'Refresh workspace' }).click()
   await expect(page.getByLabel('Organization name', { exact: true })).toHaveValue(orgName)
+  const name = page.getByLabel('Organization name', { exact: true })
+  await name.fill('Unsaved organization draft')
+  await page.getByRole('tab', { name: 'Members', exact: true }).click()
+  await expect(page.getByRole('table', { name: 'Members', exact: true })).toBeVisible()
+  await expect(name).toBeHidden()
+  await page.getByRole('tab', { name: 'Invitations', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Invite member', exact: true })).toBeVisible()
+  await page.getByRole('tab', { name: 'Access', exact: true }).click()
+  await expect(page.getByRole('button', { name: 'Delete organization', exact: true })).toBeDisabled()
+  await page.getByRole('button', { name: 'Refresh workspace', exact: true }).click()
+  await expect(page.getByRole('tab', { name: 'Access', exact: true })).toHaveAttribute('aria-selected', 'true')
+  await page.getByRole('tab', { name: 'General', exact: true }).click()
+  await expect(name).toHaveValue('Unsaved organization draft')
+  await page.getByRole('tab', { name: 'General', exact: true }).press('ArrowRight')
+  await expect(page.getByRole('tab', { name: 'Members', exact: true })).toBeFocused()
+  for (const width of [320, 390, 1440]) {
+    await page.setViewportSize({ width, height: 900 })
+    await expect(page.getByRole('tab', { name: 'Access', exact: true })).toBeVisible()
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
+  }
 })
