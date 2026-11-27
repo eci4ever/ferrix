@@ -45,7 +45,7 @@ function OperationDialog({ operation, busy, message, close, submit }: { operatio
   </DialogContent></Dialog>
 }
 
-export function AdminPage({ identity, refresh }: { identity: Identity; refresh: Refresh }) {
+export function AdminPage({ identity, refresh, refreshVersion }: { identity: Identity; refresh: Refresh; refreshVersion: number }) {
   const [search, setSearch] = useState(''); const [role, setRole] = useState(''); const [status, setStatus] = useState(''); const [page, setPage] = useState(0); const [version, setVersion] = useState(0)
   const [result, setResult] = useState<{ items: User[]; total: number } | null>(null); const [loading, setLoading] = useState(true); const [loadError, setLoadError] = useState('')
   const [detail, setDetail] = useState<UserDetail | null>(null); const [detailId, setDetailId] = useState<string | null>(null); const [detailError, setDetailError] = useState('')
@@ -60,13 +60,13 @@ export function AdminPage({ identity, refresh }: { identity: Identity; refresh: 
       setResult(data); setLoading(false)
     }).catch(error => { if (!abort.signal.aborted) { setLoadError(error.message); setLoading(false) } }) }, 250)
     return () => { clearTimeout(timer); abort.abort() }
-  }, [search, role, status, page, version, identity.system_role])
+  }, [search, role, status, page, version, refreshVersion, identity.system_role])
   useEffect(() => {
     setDetail(null); setDetailError(''); if (!detailId) return
     const abort = new AbortController()
     request<UserDetail>(`/auth/admin/users/${detailId}`, { signal: abort.signal }).then(value => { if (!abort.signal.aborted) setDetail(value) }).catch(error => { if (!abort.signal.aborted) setDetailError(error.message) })
     return () => abort.abort()
-  }, [detailId, version])
+  }, [detailId, version, refreshVersion])
   if (identity.system_role !== 'admin') return <Notice message="Platform administrator access is required." />
   const open = (value: Operation) => { setMessage(''); setOperation(value) }
   return <div className="flex flex-col gap-6"><h1 className="text-2xl font-semibold">Users</h1><Notice message={message} />
@@ -100,7 +100,7 @@ export function AdminPage({ identity, refresh }: { identity: Identity; refresh: 
   </div>
 }
 
-export function TeamPage({ identity, members, invitations, refresh }: { identity: Identity; members: Member[]; invitations: Invitation[]; refresh: Refresh }) {
+export function TeamPage({ identity, members, invitations, refresh, refreshVersion }: { identity: Identity; members: Member[]; invitations: Invitation[]; refresh: Refresh; refreshVersion: number }) {
   const manager = identity.role === 'owner' || identity.role === 'admin'
   const [profile, setProfile] = useState<OrgProfile | null>(null); const [profileError, setProfileError] = useState(''); const [version, setVersion] = useState(0)
   const [token, setToken] = useState(''); const [invitationRole, setInvitationRole] = useState('member'); const [transferTo, setTransferTo] = useState('')
@@ -113,7 +113,7 @@ export function TeamPage({ identity, members, invitations, refresh }: { identity
     const abort = new AbortController(); setProfileError('')
     request<OrgProfile>('/auth/organizations/current', { signal: abort.signal }).then(value => { if (!abort.signal.aborted) setProfile(value) }).catch(error => { if (!abort.signal.aborted) setProfileError(error.message) })
     return () => abort.abort()
-  }, [identity.organization_id, version])
+  }, [identity.organization_id, version, refreshVersion])
   // A regenerated token is shown only in this browser until explicitly dismissed.
   const open = (value: Operation) => { setMessage(''); setOperation(value) }
   return <div className="flex flex-col gap-6"><h1 className="text-2xl font-semibold">Organization</h1>{!inviting && !operation ? <Notice message={message} /> : null}

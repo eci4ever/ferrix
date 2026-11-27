@@ -141,7 +141,7 @@ pub async fn ban(
         return Err(bad("You cannot ban your own account."));
     }
     if (input.banned && input.reason.trim().is_empty())
-        || input.reason.len() > 500
+        || input.reason.chars().count() > 500
         || input.expires_at.is_some_and(|expiry| {
             expiry <= Utc::now() || expiry > Utc::now() + chrono::Duration::days(365)
         })

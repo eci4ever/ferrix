@@ -208,9 +208,32 @@ const securityRoute = createRoute({ getParentRoute: () => rootRoute, path: '/sec
 }, component: function AccountSecurity() { const { sessions, security, audit } = securityRoute.useLoaderData(); const router = useRouter(); return sessions.data && security.data ? <SecurityPage sessions={sessions.data} security={security.data} audit={audit.data ?? []} refresh={() => router.invalidate({ sync: true })} /> : <ErrorNotice message={sessions.error ?? security.error ?? 'Could not load security settings.'} /> } })
 const teamRoute = createRoute({ getParentRoute: () => rootRoute, path: '/organization', loader: async () => {
   const [organizations, members, invitations] = await Promise.all([load<Organization[]>('/auth/organizations'), load<Member[]>('/auth/members'), load<Invitation[]>('/auth/invitations')]); return { organizations, members, invitations }
-}, component: function OrganizationSettings() { const { organizations, members, invitations } = teamRoute.useLoaderData(); const { account } = rootRoute.useLoaderData(); const router = useRouter(); return account.data && organizations.data && members.data ? <TeamPage key={account.data.organization_id} identity={account.data} members={members.data} invitations={invitations.data ?? []} refresh={() => router.invalidate()} /> : <ErrorNotice message="Could not load organization settings." /> } })
+},
+  component: function OrganizationSettings() {
+    const { organizations, members, invitations } = teamRoute.useLoaderData()
+    const { account } = rootRoute.useLoaderData()
+    const router = useRouter()
+    const refreshVersion = useContext(WorkspaceRefresh)
+    if (!account.data || !organizations.data || !members.data) {
+      return <ErrorNotice message="Could not load organization settings." />
+    }
+    return <TeamPage key={account.data.organization_id} identity={account.data}
+      members={members.data} invitations={invitations.data ?? []}
+      refreshVersion={refreshVersion} refresh={() => router.invalidate()} />
+  },
+})
 const apiKeysRoute = createRoute({ getParentRoute: () => rootRoute, path: '/api-keys', component: function Keys() { const { account } = rootRoute.useLoaderData(); return account.data ? <ApiKeysPage key={account.data.organization_id} identity={account.data} /> : null } })
-const adminRoute = createRoute({ getParentRoute: () => rootRoute, path: '/admin', component: function UserAdministration() { const { account } = rootRoute.useLoaderData(); const router = useRouter(); return account.data ? <AdminPage identity={account.data} refresh={() => router.invalidate()} /> : null } })
+const adminRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin',
+  component: function UserAdministration() {
+    const { account } = rootRoute.useLoaderData()
+    const router = useRouter()
+    const refreshVersion = useContext(WorkspaceRefresh)
+    return account.data ? <AdminPage identity={account.data}
+      refreshVersion={refreshVersion} refresh={() => router.invalidate()} /> : null
+  },
+})
 const router = createRouter({ routeTree: rootRoute.addChildren([landingRoute, loginRoute, signupRoute, homeRoute, projectsRoute, projectRoute, applicationRoute, serviceRoute, monitoringRoute, containersRoute, profileRoute, securityRoute, teamRoute, apiKeysRoute, adminRoute]), defaultPendingMs: 150, defaultPendingMinMs: 200 })
 declare module '@tanstack/react-router' { interface Register { router: typeof router } }
 
