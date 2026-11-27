@@ -1,3 +1,4 @@
+import { LoadingButton } from '@/components/loading-button'
 import { ClassroomAccess } from './resource-access'
 import { useEffect, useId, useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
@@ -137,7 +138,7 @@ export function TeamPage({ identity, members, invitations, refresh, refreshVersi
       {profileError ? <><Notice message={profileError} /><Button variant="outline" onClick={() => setVersion(value => value + 1)}>Retry organization</Button></> : null}
       {!profile ? !profileError ? <p role="status">Loading organization…</p> : null : <>
         {profile.logo_url ? <img src={profile.logo_url} alt={`${profile.name} logo`} className="size-12 object-contain" referrerPolicy="no-referrer" /> : null}
-        {manager ? <form key={`${profile.id}:${profile.name}:${profile.logo_url}`} onSubmit={async event => { const input = values(event); await action('organizations/current', { name: input.name, logo_url: input.logo_url.trim() || null }) }} className="flex max-w-xl flex-col gap-4"><fieldset disabled={busy}><FieldGroup><Text name="name" label="Organization name" maxLength={80} defaultValue={profile.name} /><Text name="logo_url" label="Logo URL" type="url" maxLength={2048} required={false} defaultValue={profile.logo_url ?? ''} /><FieldDescription>Optional HTTPS image URL. The image provider receives requests from your browser.</FieldDescription></FieldGroup></fieldset><Button type="submit" className="self-start" disabled={busy}>Save organization</Button></form> : <p>{profile.name}</p>}
+        {manager ? <form key={`${profile.id}:${profile.name}:${profile.logo_url}`} onSubmit={async event => { const input = values(event); await action('organizations/current', { name: input.name, logo_url: input.logo_url.trim() || null }) }} className="flex max-w-xl flex-col gap-4"><fieldset disabled={busy}><FieldGroup><Text name="name" label="Organization name" maxLength={80} defaultValue={profile.name} /><Text name="logo_url" label="Logo URL" type="url" maxLength={2048} required={false} defaultValue={profile.logo_url ?? ''} /><FieldDescription>Optional HTTPS image URL. The image provider receives requests from your browser.</FieldDescription></FieldGroup></fieldset><LoadingButton loading={busy} loadingText="Saving…" type="submit" className="self-start" disabled={busy}>Save organization</LoadingButton></form> : <p>{profile.name}</p>}
       </>}
     </Section>
       </TabsContent>

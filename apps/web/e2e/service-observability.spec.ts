@@ -111,7 +111,7 @@ test('Service logs search and follow safely, and monitoring compares usage with 
   await page.getByRole('button', { name: 'Clear search', exact: true }).click()
   logText = 'INFO ready\nINFO first live update\n'
   await page
-    .getByRole('button', { name: 'Start live tail', exact: true })
+    .getByRole('switch', { name: 'Live tail', exact: true })
     .click()
   await expect(output).toContainText('first live update')
   logText = 'INFO second live update\n'
@@ -119,7 +119,7 @@ test('Service logs search and follow safely, and monitoring compares usage with 
   await expect(output).toContainText('second live update')
   await expect(output).not.toContainText('first live update')
   await page
-    .getByRole('button', { name: 'Pause live tail', exact: true })
+    .getByRole('switch', { name: 'Live tail', exact: true })
     .click()
   const pausedRequests = logRequests
   await page.clock.fastForward(6000)
@@ -155,12 +155,12 @@ test('Service logs search and follow safely, and monitoring compares usage with 
   })
   logDenied = true
   await page
-    .getByRole('button', { name: 'Start live tail', exact: true })
+    .getByRole('switch', { name: 'Live tail', exact: true })
     .click()
   await expect(output).toHaveText('Logs unavailable.')
   await expect(
-    page.getByRole('button', { name: 'Start live tail', exact: true }),
-  ).toBeVisible()
+    page.getByRole('switch', { name: 'Live tail', exact: true }),
+  ).not.toBeChecked()
   await page.getByRole('tab', { name: 'Monitoring', exact: true }).click()
   await expect(
     page.getByRole('meter', { name: 'CPU limit usage', exact: true }),

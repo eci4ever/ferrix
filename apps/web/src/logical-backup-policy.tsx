@@ -1,3 +1,4 @@
+import { LoadingButton } from '@/components/loading-button'
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import { request } from '@/lib/api'
@@ -37,7 +38,7 @@ export function LogicalBackupPolicy({ serviceId, databaseId }: { serviceId: stri
     }}><fieldset disabled={busy} className="grid gap-4">
       <div className="flex items-center gap-2"><Checkbox id={`logical-enabled-${databaseId}`} checked={enabled} onCheckedChange={value => setEnabled(value === true)} /><Label htmlFor={`logical-enabled-${databaseId}`}>Enable automatic backups for this database</Label></div>
       <div className="grid gap-4 md:grid-cols-3"><div className="grid gap-2"><Label htmlFor={`logical-cron-${databaseId}`}>Cron expression</Label><Input id={`logical-cron-${databaseId}`} name="cron" defaultValue={policy.cron} maxLength={128} required /><p className="text-sm text-muted-foreground">Five fields. 0 2 * * * runs daily at 02:00.</p></div><div className="grid gap-2"><Label htmlFor={`logical-zone-${databaseId}`}>Timezone</Label><Input id={`logical-zone-${databaseId}`} name="timezone" defaultValue={policy.timezone} required placeholder="Asia/Kuala_Lumpur" /></div><div className="grid gap-2"><Label htmlFor={`logical-keep-${databaseId}`}>Successful backups to keep</Label><Input id={`logical-keep-${databaseId}`} name="keep_last" type="number" min={1} max={365} defaultValue={policy.keep_last} required /></div></div>
-      <Button className="justify-self-start" disabled={busy}>{busy ? 'Saving…' : 'Save schedule'}</Button>
+      <LoadingButton loading={busy} loadingText="Saving…" className="justify-self-start" disabled={busy}>{busy ? 'Saving…' : 'Save schedule'}</LoadingButton>
     </fieldset><p role="status" className="text-sm text-muted-foreground">Next run: {policy.enabled && policy.next_run_at ? new Date(policy.next_run_at).toLocaleString() : 'Schedule disabled'}{policy.last_run_at ? ` · Last checked: ${new Date(policy.last_run_at).toLocaleString()}` : ''}{policy.last_message ? ` · ${policy.last_message}` : ''}</p></form>}
   </CollapsibleContent></Collapsible>
 }

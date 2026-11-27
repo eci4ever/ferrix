@@ -1,3 +1,4 @@
+import { LoadingButton } from '@/components/loading-button'
 import { useEffect, useState } from 'react'
 import { Link } from '@tanstack/react-router'
 import { toast } from 'sonner'
@@ -54,7 +55,7 @@ export function PhpTemplate({ environmentId, projectId, onCreated }: { environme
       <ApplicationSource serviceId={record.application_id} canManage onSaved={async () => {}} />
       <p className="text-sm text-muted-foreground">Keep the starter, or import Git/ZIP through the existing Source controls. Choose the PHP template build explicitly to retain your Dockerfile. Only public/ is served. Provisioning saves DB_HOST, DB_PORT, DB_DATABASE, DB_USERNAME and DB_PASSWORD on the server; it preserves unrelated environment values.</p>
       <Button variant="outline" disabled={busy} onClick={() => void action(async () => { setRecord(await request<Record>(`/services/${record.application_id}/php-template/provision`, post())); toast.success('Database provisioned and connection settings saved') })}>Provision database and connection settings</Button>
-      <Button disabled={busy || record.status !== 'ready' || created} onClick={() => void action(async () => { await request(`/services/${record.application_id}/deploy`, post()); setCreated(true); toast.success('PHP application deployment queued') })}>Deploy PHP application</Button>
+      <LoadingButton loading={busy} loadingText="Deploying…" disabled={busy || record.status !== 'ready' || created} onClick={() => void action(async () => { await request(`/services/${record.application_id}/deploy`, post()); setCreated(true); toast.success('PHP application deployment queued') })}>Deploy PHP application</LoadingButton>
       <Button variant="outline" asChild><Link to="/projects/$projectId/services/$serviceId" params={{ projectId, serviceId: record.application_id }}>Open application and deployment progress</Link></Button>
       <p className="text-sm text-muted-foreground">Public and LAN URLs are managed in the application's Domains tab. LAN ingress needs school DNS/hosts and the internal CA trusted on each device. Generating a hostname does not configure your router or certificates.</p>
     </div>}
