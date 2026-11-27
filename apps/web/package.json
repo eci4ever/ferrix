@@ -8,7 +8,8 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview --host 127.0.0.1",
     "test:e2e": "playwright test",
-    "test:security": "node --test tests/picomatch-security.test.cjs tests/dev-origin.test.mjs"
+    "test:security": "node --test tests/picomatch-security.test.cjs tests/dev-origin.test.mjs",
+    "test:bundle": "npm run build && node --test tests/bundle-budget.test.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

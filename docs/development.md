@@ -471,3 +471,22 @@ organization, organizations with projects, and organizations whose deletion woul
 leave a platform administrator without membership. User accounts are retained.
 The endpoints under `/api/v1/auth/admin/organizations` recheck platform authority
 inside the administrative transaction lock for every write.
+
+### Frontend loading budget
+
+Page components use deferred imports so service, Docker, monitoring, account and
+platform editors are downloaded when visited. Suspense at the workspace outlet
+keeps the sidebar available while a page chunk loads; the existing workspace
+loading state covers initial authentication and landing loads. Shared React,
+router and UI vendor chunks remain reusable across pages.
+
+Run `npm run test:bundle` in `apps/web` to build production assets and check the
+Vite manifest: the entry must stay below 200 kB, its complete static JavaScript
+import graph below 850 kB, and every JavaScript chunk below 500 kB (uncompressed).
+The check prints raw and gzip totals; these are transfer-size indicators, not
+measurements of browser execution time. CSS and fonts are outside this JS budget.
+
+`e2e/bundle-loading.spec.ts` targets production preview assets. Set
+`FERRIX_E2E_PRODUCTION=1` and `FERRIX_E2E_URL` to a temporary Vite preview to verify
+that page chunks are deferred and navigation stays visible during a delayed
+chunk load. It mocks API responses and does not change live development data.

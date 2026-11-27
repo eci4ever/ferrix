@@ -1,8 +1,7 @@
 import { FormDialog } from '@/components/form-dialog'
 import { DialogFooter } from '@/components/ui/dialog'
-import { ProfilePage } from './profile'
 import type { Profile } from './profile'
-import { createContext, useContext, StrictMode, useEffect, useRef, useState } from 'react'
+import { createContext, useContext, StrictMode, lazy, Suspense, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createRootRoute, createRoute, createRouter, RouterProvider, Outlet, Link, Navigate, useRouter, useRouterState } from '@tanstack/react-router'
@@ -18,9 +17,6 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { ActionNotice } from '@/components/action-notice'
 import { load, request } from '@/lib/api'
 import type { Project, SystemStatus, HomeSummary } from '@/lib/api'
-import { LoginPage, SecurityPage } from './auth'
-import { TeamPage, AdminPage } from './user-management'
-import { ApiKeysPage } from './api-keys'
 import type { Identity, Security, Session, Audit, Organization, Member, Invitation } from './auth'
 import { Notifications } from './notifications'
 import { ServerClock } from '@/components/server-clock'
@@ -32,15 +28,23 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { Breadcrumb, BreadcrumbList, BreadcrumbItem, BreadcrumbLink, BreadcrumbPage, BreadcrumbSeparator } from '@/components/ui/breadcrumb'
 import { Separator } from '@/components/ui/separator'
 import { Card, CardHeader, CardTitle, CardDescription, CardAction, CardContent } from '@/components/ui/card'
-import { LandingPage } from './landing'
-import { ProjectServices, ServiceWorkspace } from './project-services'
-import { MonitoringPage } from './monitoring'
-import { PlatformOrganizations } from './platform-organizations'
-import { PlatformSettings } from './platform-settings'
-import { DockerPage } from './docker'
-import { ProjectList } from './project-list'
 import './index.css'
 import { Toaster } from '@/components/ui/sonner'
+
+const ProfilePage = lazy(() => import('./profile').then(module => ({ default: module.ProfilePage })))
+const LoginPage = lazy(() => import('./auth').then(module => ({ default: module.LoginPage })))
+const SecurityPage = lazy(() => import('./auth').then(module => ({ default: module.SecurityPage })))
+const TeamPage = lazy(() => import('./user-management').then(module => ({ default: module.TeamPage })))
+const AdminPage = lazy(() => import('./user-management').then(module => ({ default: module.AdminPage })))
+const ApiKeysPage = lazy(() => import('./api-keys').then(module => ({ default: module.ApiKeysPage })))
+const LandingPage = lazy(() => import('./landing').then(module => ({ default: module.LandingPage })))
+const ProjectServices = lazy(() => import('./project-services').then(module => ({ default: module.ProjectServices })))
+const ServiceWorkspace = lazy(() => import('./project-services').then(module => ({ default: module.ServiceWorkspace })))
+const MonitoringPage = lazy(() => import('./monitoring').then(module => ({ default: module.MonitoringPage })))
+const PlatformOrganizations = lazy(() => import('./platform-organizations').then(module => ({ default: module.PlatformOrganizations })))
+const PlatformSettings = lazy(() => import('./platform-settings').then(module => ({ default: module.PlatformSettings })))
+const DockerPage = lazy(() => import('./docker').then(module => ({ default: module.DockerPage })))
+const ProjectList = lazy(() => import('./project-list').then(module => ({ default: module.ProjectList })))
 
 function ErrorNotice({ message }: { message: string }) {
   return <Alert variant="destructive"><CircleAlert /><AlertTitle>Something needs attention</AlertTitle><AlertDescription>{message}</AlertDescription></Alert>
@@ -80,7 +84,7 @@ function Shell() {
     } catch (error) { setRefreshError(error instanceof Error ? error.message : 'Account operation failed.') }
     finally { setAccountBusy(false) }
   }
-  if (pathname === '/') return <Outlet />
+  if (pathname === '/') return <Suspense fallback={<Pending />}><Outlet /></Suspense>
   if (pathname === '/login' || pathname === '/signup') {
     if (account.data) return <Navigate to="/dashboard" replace />
     if (setup.data === null) return <main className="mx-auto max-w-md p-6"><ErrorNotice message={setup.error} /><Button onClick={refresh} disabled={refreshing}>Retry</Button></main>
@@ -99,7 +103,7 @@ function Shell() {
       <div className="flex min-w-0 flex-1 flex-col gap-6 p-4 pt-2 md:p-6 md:pt-2">
         {refreshError ? <ErrorNotice message={refreshError} /> : null}
         {organizations.error ? <ErrorNotice message={organizations.error} /> : null}
-        <WorkspaceRefresh.Provider value={refreshVersion}><WorkspaceReload.Provider value={refresh}><Outlet /></WorkspaceReload.Provider></WorkspaceRefresh.Provider>
+        <WorkspaceRefresh.Provider value={refreshVersion}><WorkspaceReload.Provider value={refresh}><Suspense fallback={<Pending />}><Outlet /></Suspense></WorkspaceReload.Provider></WorkspaceRefresh.Provider>
       </div>
     </SidebarInset>
   </SidebarProvider></TooltipProvider>
@@ -274,7 +278,7 @@ const adminRoute = createRoute({
       refreshVersion={refreshVersion} refresh={() => router.invalidate()} /> : null
   },
 })
-const router = createRouter({ routeTree: rootRoute.addChildren([landingRoute, loginRoute, signupRoute, homeRoute, projectsRoute, projectRoute, applicationRoute, serviceRoute, monitoringRoute, containersRoute, profileRoute, securityRoute, teamRoute, organizationMembersRoute, organizationInvitationsRoute, organizationSettingsRoute, platformSettingsRoute, platformOrganizationsRoute, apiKeysRoute, adminRoute]), defaultPendingMs: 150, defaultPendingMinMs: 200 })
+const router = createRouter({ routeTree: rootRoute.addChildren([landingRoute, loginRoute, signupRoute, homeRoute, projectsRoute, projectRoute, applicationRoute, serviceRoute, monitoringRoute, containersRoute, profileRoute, securityRoute, teamRoute, organizationMembersRoute, organizationInvitationsRoute, organizationSettingsRoute, platformSettingsRoute, platformOrganizationsRoute, apiKeysRoute, adminRoute]), defaultPendingComponent: Pending, defaultPendingMs: 150, defaultPendingMinMs: 200 })
 declare module '@tanstack/react-router' { interface Register { router: typeof router } }
 
-createRoot(document.getElementById('root')!).render(<StrictMode><RouterProvider router={router} /><Toaster /></StrictMode>)
+createRoot(document.getElementById('root')!).render(<StrictMode><Suspense fallback={<Pending />}><RouterProvider router={router} /></Suspense><Toaster /></StrictMode>)
