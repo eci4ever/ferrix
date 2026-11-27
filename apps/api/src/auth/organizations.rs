@@ -93,6 +93,7 @@ pub async fn invite(
         return Err(forbidden());
     }
     let email = accounts::email(&input.email)?;
+    accounts::throttle(&state.pool, &format!("invitation-email:{}", id.user_id), 30).await?;
     let token = token();
     let invite = Uuid::new_v4();
     let mut tx = state.pool.begin().await?;
@@ -101,7 +102,7 @@ pub async fn invite(
         return Err(forbidden());
     }
     sqlx::query("UPDATE auth_invitations SET expires_at=now() WHERE organization_id=$1 AND email=$2 AND accepted_at IS NULL").bind(id.organization_id).bind(&email).execute(&mut *tx).await?;
-    sqlx::query("INSERT INTO auth_invitations(id,organization_id,email,role,token_hash,invited_by) VALUES($1,$2,$3,$4,$5,$6)").bind(invite).bind(id.organization_id).bind(email).bind(input.role).bind(digest(&token)).bind(id.user_id).execute(&mut *tx).await?;
+    sqlx::query("INSERT INTO auth_invitations(id,organization_id,email,role,token_hash,invited_by) VALUES($1,$2,$3,$4,$5,$6)").bind(invite).bind(id.organization_id).bind(&email).bind(&input.role).bind(digest(&token)).bind(id.user_id).execute(&mut *tx).await?;
     log(
         &mut tx,
         id.user_id,
@@ -110,8 +111,17 @@ pub async fn invite(
     )
     .await?;
     tx.commit().await?;
+    let delivery = invitation_email::deliver(
+        &state,
+        invite,
+        id.organization_id,
+        &email,
+        &input.role,
+        &token,
+    )
+    .await;
     Ok(Json(
-        json!({"id":invite,"token":token,"expires_in_seconds":172800}),
+        json!({"id":invite,"token":token,"expires_in_seconds":172800,"email_delivery":delivery}),
     ))
 }
 pub async fn invitations(

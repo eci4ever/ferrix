@@ -478,6 +478,7 @@ async fn postgres_auth_security_and_tenant_isolation() {
         &owner,
     )
     .await;
+    assert_eq!(invite["email_delivery"], "not_configured");
     let invitation = invite["token"].as_str().unwrap();
     let acceptance = json!({"name":"Member","email":"member@example.com","password":PASSWORD,"token":invitation});
     let (status, _, member) = post(
@@ -2233,7 +2234,7 @@ async fn check_platform_settings(app: &axum::Router, pool: &sqlx::PgPool, owner:
     assert_eq!(get(app, endpoint, "").await.0, StatusCode::UNAUTHORIZED);
     let (code, settings, _) = get(app, endpoint, owner).await;
     assert_eq!(code, StatusCode::OK);
-    assert_eq!(settings["email_delivery_available"], false);
+    assert_eq!(settings["email_delivery_available"], true);
     assert_eq!(settings["social_login_available"], false);
     let timezone = format!("{endpoint}/timezone");
     assert_eq!(
@@ -2365,6 +2366,37 @@ async fn check_platform_settings(app: &axum::Router, pool: &sqlx::PgPool, owner:
         StatusCode::UNAUTHORIZED
     );
     sqlx::query("UPDATE auth_sessions SET authenticated_at=now() WHERE user_id=(SELECT id FROM auth_users WHERE email='owner@example.com')").execute(pool).await.unwrap();
+    // A refused local SMTP connection must not roll back the committed invitation.
+    assert_eq!(post(app,&email,json!({"revision":7,"values":{"provider":"smtp","host":"127.0.0.1","port":1,"username":"qa","from_address":"qa@example.com","password":"test-only"}}),owner).await.0,StatusCode::NO_CONTENT);
+    let (status, invitation, _) = post(
+        app,
+        "/api/v1/auth/invitations",
+        json!({"email":"email-failure@example.com","role":"member"}),
+        owner,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(invitation["email_delivery"], "failed");
+    let renewed = post(
+        app,
+        &format!(
+            "/api/v1/auth/invitations/{}/renew",
+            invitation["id"].as_str().unwrap()
+        ),
+        json!({}),
+        owner,
+    )
+    .await;
+    assert_eq!(renewed.0, StatusCode::OK);
+    assert_eq!(renewed.1["email_delivery"], "failed");
+    assert_ne!(invitation["token"], renewed.1["token"]);
+    let recipient = json!({"name":"Email fallback","email":"email-failure@example.com","password":PASSWORD,"token":renewed.1["token"]});
+    assert_eq!(
+        post(app, "/api/v1/auth/accept-invitation", recipient, "")
+            .await
+            .0,
+        StatusCode::OK
+    );
     sqlx::query("DELETE FROM platform_settings")
         .execute(pool)
         .await

@@ -507,10 +507,13 @@ pub async fn renew_invitation(
     id: Identity,
     Path(invite): Path<Uuid>,
 ) -> Result<Json<Value>, ApiError> {
+    id.manager()?;
+    id.fresh()?;
+    accounts::throttle(&state.pool, &format!("invitation-email:{}", id.user_id), 30).await?;
     let mut tx = state.pool.begin().await?;
     let role = authorize(&mut tx, &id, "manager").await?;
-    let invited:Option<String>=sqlx::query_scalar("SELECT role FROM auth_invitations WHERE id=$1 AND organization_id=$2 AND accepted_at IS NULL").bind(invite).bind(id.organization_id).fetch_optional(&mut *tx).await?;
-    match invited.as_deref() {
+    let invited:Option<(String,String)>=sqlx::query_as("SELECT role,email FROM auth_invitations WHERE id=$1 AND organization_id=$2 AND accepted_at IS NULL").bind(invite).bind(id.organization_id).fetch_optional(&mut *tx).await?;
+    match invited.as_ref().map(|(role, _)| role.as_str()) {
         Some("member") => {}
         Some("admin") if role == "owner" => {}
         _ => return Err(forbidden()),
@@ -525,7 +528,12 @@ pub async fn renew_invitation(
     )
     .await?;
     tx.commit().await?;
-    Ok(Json(json!({"token":value,"expires_in_seconds":172800})))
+    let (role, email) = invited.unwrap();
+    let delivery =
+        invitation_email::deliver(&state, invite, id.organization_id, &email, &role, &value).await;
+    Ok(Json(
+        json!({"token":value,"expires_in_seconds":172800,"email_delivery":delivery}),
+    ))
 }
 
 #[derive(Serialize, FromRow)]

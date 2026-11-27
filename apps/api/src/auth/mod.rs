@@ -1,5 +1,6 @@
 pub(crate) mod accounts;
 pub(crate) mod api_keys;
+mod invitation_email;
 mod login;
 mod management;
 mod organizations;

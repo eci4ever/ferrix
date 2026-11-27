@@ -433,9 +433,27 @@ does not grant access to installation settings or host mutations.
 Platform Settings (`/platform/settings`) stores an optional IANA timezone, Google App Password, Resend API key or SMTP
 configuration, and Google/GitHub client credentials. The timezone changes the shared
 server clock on refresh; it does not modify the OS timezone or backup schedules.
-Blank timezone uses the existing server default. Email and social credentials are
-configuration only in this version: invitation tokens are shared manually and OAuth
-sign-in remains unavailable. No email is sent when settings are saved.
+Blank timezone uses the existing server default. Saving settings does not send email.
+New and regenerated invitations use the selected email provider after the invitation
+transaction commits. Google uses `smtp.gmail.com:587` with required STARTTLS and the
+sender address as its username; enter a Google App Password. Resend uses the fixed
+`https://api.resend.com/emails` endpoint with a sender verified in Resend. Custom SMTP
+supports required STARTTLS or TLS with authentication and certificate verification.
+OAuth sign-in remains unavailable.
+
+Invitation responses include `email_delivery`: `sent` means the provider accepted
+the message (not proof of inbox delivery), `failed` means delivery could not be
+confirmed, and `not_configured` means sender/provider credentials are incomplete.
+All three return the invitation token for private sharing. Messages contain the
+organization name, role, two-day expiry, token and `${FERRIX_AUTH_ORIGIN}/signup`;
+tokens are not embedded in URLs. A production origin must be reachable by invitees.
+A new invitation or Regenerate attempts one send, bounded to 15 seconds, without
+holding the administrative transaction lock. No automatic retry queue is used;
+Regenerate invalidates the old token and sends the replacement. At most 30 create
+or regenerate attempts per user are allowed per 15 minutes. Provider failures do
+not roll back invitations. Resend requests use a per-token idempotency key and do
+not follow redirects. Logs contain the invitation ID and outcome, never provider
+bodies, credentials or tokens.
 
 `GET /api/v1/auth/platform-settings` is platform-admin-only and returns secret
 presence flags instead of saved values. `POST` to its `/timezone`, `/email` or

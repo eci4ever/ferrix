@@ -26,11 +26,15 @@ function Notice({ message }: { message: string }) { return message ? <Alert><Ale
 function Section({ title, description, children }: { title: string; description?: string; children: ReactNode }) { return <Card><CardHeader><CardTitle><h2>{title}</h2></CardTitle>{description ? <CardDescription>{description}</CardDescription> : null}</CardHeader><CardContent className="flex flex-col gap-4">{children}</CardContent></Card> }
 function Text({ name, label, type = 'text', required = true, maxLength = 254, defaultValue = '' }: { name: string; label: string; type?: string; required?: boolean; maxLength?: number; defaultValue?: string }) { const id = useId(); return <Field><FieldLabel htmlFor={id}>{label}</FieldLabel><Input id={id} name={name} type={type} required={required} maxLength={maxLength} defaultValue={defaultValue} /></Field> }
 function Choice({ label, value, onChange, options, disabled }: { label: string; value: string; onChange: (value: string) => void; options: [string, string][]; disabled?: boolean }) { const id = useId(); return <Field><FieldLabel htmlFor={id}>{label}</FieldLabel><NativeSelect id={id} value={value} onChange={event => onChange(event.target.value)} disabled={disabled}>{options.map(([value, label]) => <NativeSelectOption key={value} value={value}>{label}</NativeSelectOption>)}</NativeSelect></Field> }
+type ActionResult = { token?: string; email_delivery?: 'sent' | 'failed' | 'not_configured' }
+function deliveryMessage(result: ActionResult) {
+  return result.email_delivery === 'sent' ? 'Email accepted by the provider. The token is also available below.' : result.email_delivery === 'failed' ? 'Email delivery could not be confirmed. The invitation is valid; share the token privately or regenerate to send another email.' : 'Email is not configured. Share the invitation token privately.'
+}
 function useActions(refresh: Refresh) {
   const [busy, setBusy] = useState(false); const [message, setMessage] = useState('')
-  async function action(path: string, body = {}): Promise<{ token?: string } | null> {
+  async function action(path: string, body = {}): Promise<ActionResult | null> {
     setBusy(true); setMessage('')
-    try { const result = await request<{ token?: string } | undefined>(`/auth/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); await refresh(); return result ?? {} }
+    try { const result = await request<ActionResult | undefined>(`/auth/${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: path === 'invitations' || /^invitations\/[^/]+\/renew$/.test(path) ? AbortSignal.timeout(30_000) : undefined }); try { await refresh() } catch { setMessage('Saved, but workspace data could not be refreshed. Refresh workspace to try again.') }; return result ?? {} }
     catch (error) { setMessage(error instanceof Error ? error.message : 'The action could not be completed.'); return null }
     finally { setBusy(false) }
   }
@@ -110,6 +114,8 @@ export function TeamPage({ identity, members, invitations, refresh, refreshVersi
   const [token, setToken] = useState(''); const [invitationRole, setInvitationRole] = useState('member'); const [transferTo, setTransferTo] = useState('')
   const [inviting, setInviting] = useState(false)
   const [invitationToken, setInvitationToken] = useState('')
+  const [invitationDelivery, setInvitationDelivery] = useState('')
+  const [delivery, setDelivery] = useState('')
   const [operation, setOperation] = useState<Operation | null>(null)
   const { busy, message, setMessage, action } = useActions(async () => { await refresh(); setVersion(value => value + 1) })
   useEffect(() => {
@@ -150,18 +156,18 @@ export function TeamPage({ identity, members, invitations, refresh, refreshVersi
     ]} /></Section>
       </TabsContent>
       {manager ? <TabsContent value="invitations" forceMount className={tab === 'invitations' ? 'min-w-0' : 'hidden'}>
-    <Section title="Invitations" description="Tokens are bound to an email and expire after two days. Share generated tokens privately; email delivery is not configured.">
-      <FormDialog open={inviting} onOpenChange={open => { setInviting(open); setMessage(''); if (open) setInvitationRole('member') }} title={invitationToken ? 'Save invitation token' : 'Invite member'} description={invitationToken ? 'Share this token privately with the invited person. It expires after two days.' : 'Invite a member to this organization. Email delivery is not configured.'} busy={busy || !!invitationToken} trigger={<Button className="self-start" disabled={busy}>Invite member</Button>}>
+    <Section title="Invitations" description="Invitations expire after two days. Ferrix sends an email when a provider is configured in Platform Settings; the token is also available for private sharing.">
+      <FormDialog open={inviting} onOpenChange={open => { setInviting(open); setMessage(''); if (open) setInvitationRole('member') }} title={invitationToken ? 'Save invitation token' : 'Invite member'} description={invitationToken ? invitationDelivery : 'Invite a member to this organization. Ferrix will attempt to email the invitation using Platform Settings.'} busy={busy || !!invitationToken} trigger={<Button className="self-start" disabled={busy}>Invite member</Button>}>
         <Notice message={message} />
-        {invitationToken ? <><code className="break-all select-all rounded-md bg-muted p-3" aria-label="New invitation token">{invitationToken}</code><Button autoFocus onClick={() => { setInvitationToken(''); setInviting(false) }}>I saved the invitation token</Button></> : <form className="flex flex-col gap-4" onSubmit={async event => { const input = values(event); const result = await action('invitations', { ...input, role: invitationRole }); if (result?.token) setInvitationToken(result.token) }}>
+        {invitationToken ? <><code className="break-all select-all rounded-md bg-muted p-3" aria-label="New invitation token">{invitationToken}</code><Button autoFocus onClick={() => { setInvitationToken(''); setInviting(false) }}>I saved the invitation token</Button></> : <form className="flex flex-col gap-4" onSubmit={async event => { const input = values(event); const result = await action('invitations', { ...input, role: invitationRole }); if (result?.token) { setInvitationToken(result.token); setInvitationDelivery(deliveryMessage(result)) } }}>
           <fieldset disabled={busy}><FieldGroup><Text name="email" label="Invitation email" type="email" /><Choice label="Invitation role" value={invitationRole} onChange={setInvitationRole} options={identity.role === 'owner' ? [['member', 'Member'], ['admin', 'Admin']] : [['member', 'Member']]} /></FieldGroup></fieldset>
           <DialogFooter><Button type="button" variant="outline" disabled={busy} onClick={() => { setInviting(false); setMessage('') }}>Cancel</Button><Button type="submit" disabled={busy}>{busy ? 'Inviting…' : 'Invite member'}</Button></DialogFooter>
         </form>}
       </FormDialog>
-      {token ? <Alert><AlertTitle>Invitation token</AlertTitle><AlertDescription><code className="break-all select-all">{token}</code><Button type="button" variant="outline" onClick={() => setToken('')}>Dismiss token</Button></AlertDescription></Alert> : null}
+      {token ? <Alert><AlertTitle>Invitation token</AlertTitle><AlertDescription><p>{delivery}</p><code className="break-all select-all">{token}</code><Button type="button" variant="outline" onClick={() => setToken('')}>Dismiss token</Button></AlertDescription></Alert> : null}
       <DataTable label="Invitations" data={invitations} columns={[
         { id: 'email', label: 'Email', value: invite => invite.email }, { id: 'role', label: 'Role', value: invite => invite.role }, { id: 'expires', label: 'Expires', value: invite => invite.expires_at, cell: invite => <time dateTime={invite.expires_at}>{new Date(invite.expires_at).toLocaleString()}</time> },
-        { id: 'actions', label: 'Actions', cell: invite => <div className="flex flex-wrap gap-2">{invite.role === 'member' || identity.role === 'owner' ? <Button variant="outline" disabled={busy} onClick={() => open({ title: `Regenerate invitation for ${invite.email}?`, description: 'Invalidates the old token and creates a new token valid for two days.', path: `invitations/${invite.id}/renew`, kind: 'confirm' })}>Regenerate</Button> : null}<Button variant="outline" disabled={busy || (invite.role === 'admin' && identity.role !== 'owner')} onClick={() => open({ title: `Cancel invitation for ${invite.email}?`, description: 'The invitation token will stop working.', path: `invitations/${invite.id}/revoke`, kind: 'confirm' })}>Cancel invitation</Button></div> },
+        { id: 'actions', label: 'Actions', cell: invite => <div className="flex flex-wrap gap-2">{invite.role === 'member' || identity.role === 'owner' ? <Button variant="outline" disabled={busy} onClick={() => open({ title: `Regenerate invitation for ${invite.email}?`, description: 'Invalidates the old token, creates a new token valid for two days and attempts to email it.', path: `invitations/${invite.id}/renew`, kind: 'confirm' })}>Regenerate</Button> : null}<Button variant="outline" disabled={busy || (invite.role === 'admin' && identity.role !== 'owner')} onClick={() => open({ title: `Cancel invitation for ${invite.email}?`, description: 'The invitation token will stop working.', path: `invitations/${invite.id}/revoke`, kind: 'confirm' })}>Cancel invitation</Button></div> },
       ]} />
     </Section>
       </TabsContent> : null}
@@ -178,6 +184,6 @@ export function TeamPage({ identity, members, invitations, refresh, refreshVersi
     </Section>
       </TabsContent>
     </Tabs>
-    <OperationDialog operation={operation} busy={busy} message={message} close={() => setOperation(null)} submit={async body => { if (!operation) return; const result = await action(operation.path, body); if (result) { if (result.token) setToken(result.token); setOperation(null) } }} />
+    <OperationDialog operation={operation} busy={busy} message={message} close={() => setOperation(null)} submit={async body => { if (!operation) return; const result = await action(operation.path, body); if (result) { if (result.token) { setToken(result.token); setDelivery(deliveryMessage(result)) }; setOperation(null) } }} />
   </div>
 }
