@@ -291,11 +291,12 @@ pub async fn revoke_user_sessions(
         .bind(id.session_id)
         .execute(&mut *tx)
         .await?;
-    log(
+    log_target(
         &mut tx,
         id.user_id,
         id.organization_id,
         "admin.sessions_revoked",
+        target,
     )
     .await?;
     tx.commit().await?;
@@ -321,11 +322,12 @@ pub async fn issue_reset(
     }
     let token = token();
     sqlx::query("INSERT INTO auth_password_resets(user_id,token_hash) VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET token_hash=$2,expires_at=now()+interval '15 minutes'").bind(target).bind(digest(&token)).execute(&mut *tx).await?;
-    log(
+    log_target(
         &mut tx,
         id.user_id,
         id.organization_id,
         "admin.password_reset_issued",
+        target,
     )
     .await?;
     tx.commit().await?;
@@ -429,12 +431,15 @@ pub(crate) async fn save_profile(
             Ok(value.to_owned())
         })
         .transpose()?;
+    let mut tx = state.pool.begin().await?;
     sqlx::query("UPDATE auth_users SET name=$2,avatar=$3,avatar_url=$4 WHERE id=$1")
         .bind(id.user_id)
         .bind(name)
         .bind(input.avatar)
         .bind(avatar_url)
-        .execute(&state.pool)
+        .execute(&mut *tx)
         .await?;
+    log(&mut tx, id.user_id, id.organization_id, "profile.updated").await?;
+    tx.commit().await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }

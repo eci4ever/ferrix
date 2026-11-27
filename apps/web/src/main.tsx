@@ -31,6 +31,7 @@ import { Card, CardHeader, CardTitle, CardDescription, CardAction, CardContent }
 import './index.css'
 import { Toaster } from '@/components/ui/sonner'
 
+const ActivityPage = lazy(() => import('./activity').then(module => ({ default: module.ActivityPage })))
 const ProfilePage = lazy(() => import('./profile').then(module => ({ default: module.ProfilePage })))
 const LoginPage = lazy(() => import('./auth').then(module => ({ default: module.LoginPage })))
 const SecurityPage = lazy(() => import('./auth').then(module => ({ default: module.SecurityPage })))
@@ -91,7 +92,7 @@ function Shell() {
     return <LoginPage key={pathname} setupRequired={pathname === '/signup' && setup.data.setup_required} initialMode={pathname === '/signup' ? 'signup' : 'login'} refresh={() => router.invalidate()} />
   }
   if (!account.data) return <Navigate to="/login" replace />
-  const pageNames: Record<string, string> = { '/dashboard': 'Home', '/monitoring': 'Monitoring', '/projects': 'Projects', '/containers': 'Docker', '/profile': 'Profile', '/security': 'Security', '/api-keys': 'API keys', '/organization': 'Organization', '/admin': 'Users', '/platform/settings': 'Platform Settings', '/organization/members': 'Members', '/organization/invitations': 'Invitations', '/organization/settings': 'Overview', '/platform/organizations': 'Organizations' }
+  const pageNames: Record<string, string> = { '/activity': 'Activity', '/dashboard': 'Home', '/monitoring': 'Monitoring', '/projects': 'Projects', '/containers': 'Docker', '/profile': 'Profile', '/security': 'Security', '/api-keys': 'API keys', '/organization': 'Organization', '/admin': 'Users', '/platform/settings': 'Platform Settings', '/organization/members': 'Members', '/organization/invitations': 'Invitations', '/organization/settings': 'Overview', '/platform/organizations': 'Organizations' }
   return <TooltipProvider><SidebarProvider>
     <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:bg-background focus:p-4">Skip to content</a>
     <AppSidebar identity={account.data} organizations={organizations.data ?? []} theme={theme} busy={accountBusy} onSwitch={id => accountAction('organizations/switch', { organization_id: id })} onSignOut={() => accountAction('sign-out')} onToggleTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} version={status.data?.version} />
@@ -278,7 +279,8 @@ const adminRoute = createRoute({
       refreshVersion={refreshVersion} refresh={() => router.invalidate()} /> : null
   },
 })
-const router = createRouter({ routeTree: rootRoute.addChildren([landingRoute, loginRoute, signupRoute, homeRoute, projectsRoute, projectRoute, applicationRoute, serviceRoute, monitoringRoute, containersRoute, profileRoute, securityRoute, teamRoute, organizationMembersRoute, organizationInvitationsRoute, organizationSettingsRoute, platformSettingsRoute, platformOrganizationsRoute, apiKeysRoute, adminRoute]), defaultPendingComponent: Pending, defaultPendingMs: 150, defaultPendingMinMs: 200 })
+const activityRoute = createRoute({ getParentRoute: () => rootRoute, path: '/activity', component: function Activity() { const { account } = rootRoute.useLoaderData(); const version = useContext(WorkspaceRefresh); return account.data ? <ActivityPage key={account.data.organization_id} identity={account.data} refreshVersion={version} /> : null } })
+const router = createRouter({ routeTree: rootRoute.addChildren([activityRoute, landingRoute, loginRoute, signupRoute, homeRoute, projectsRoute, projectRoute, applicationRoute, serviceRoute, monitoringRoute, containersRoute, profileRoute, securityRoute, teamRoute, organizationMembersRoute, organizationInvitationsRoute, organizationSettingsRoute, platformSettingsRoute, platformOrganizationsRoute, apiKeysRoute, adminRoute]), defaultPendingComponent: Pending, defaultPendingMs: 150, defaultPendingMinMs: 200 })
 declare module '@tanstack/react-router' { interface Register { router: typeof router } }
 
 createRoot(document.getElementById('root')!).render(<StrictMode><Suspense fallback={<Pending />}><RouterProvider router={router} /></Suspense><Toaster /></StrictMode>)

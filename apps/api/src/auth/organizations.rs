@@ -58,10 +58,19 @@ pub async fn switch(
     id: Identity,
     Json(input): Json<Switch>,
 ) -> Result<StatusCode, ApiError> {
-    let count=sqlx::query("UPDATE auth_sessions SET active_organization_id=$1 WHERE id=$2 AND EXISTS(SELECT 1 FROM auth_members WHERE organization_id=$1 AND user_id=$3)").bind(input.organization_id).bind(id.session_id).bind(id.user_id).execute(&state.pool).await?.rows_affected();
+    let mut tx = state.pool.begin().await?;
+    let count=sqlx::query("UPDATE auth_sessions SET active_organization_id=$1 WHERE id=$2 AND EXISTS(SELECT 1 FROM auth_members WHERE organization_id=$1 AND user_id=$3)").bind(input.organization_id).bind(id.session_id).bind(id.user_id).execute(&mut *tx).await?.rows_affected();
     if count == 0 {
         return Err(forbidden());
     }
+    log(
+        &mut tx,
+        id.user_id,
+        id.organization_id,
+        "organization.switched",
+    )
+    .await?;
+    tx.commit().await?;
     Ok(StatusCode::NO_CONTENT)
 }
 pub async fn members(
@@ -256,11 +265,12 @@ pub async fn role(
         .bind(id.organization_id)
         .execute(&mut *tx)
         .await?;
-    log(
+    log_target(
         &mut tx,
         id.user_id,
         id.organization_id,
         "member.role_changed",
+        target,
     )
     .await?;
     tx.commit().await?;

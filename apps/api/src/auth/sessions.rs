@@ -139,7 +139,7 @@ pub async fn identify(State(state): State<AppState>, mut req: Request, next: Nex
         {
             return error.into_response();
         }
-        return next.run(req).await;
+        return super::activity::run(&state, req, next).await;
     }
     match resolve(&state, req.headers()).await {
         Ok(id) => {
@@ -154,7 +154,7 @@ pub async fn identify(State(state): State<AppState>, mut req: Request, next: Nex
                 return error.into_response();
             }
             req.extensions_mut().insert(id);
-            next.run(req).await
+            super::activity::run(&state, req, next).await
         }
         Err(error) => error.into_response(),
     }
@@ -173,7 +173,7 @@ pub async fn protect(State(state): State<AppState>, mut req: Request, next: Next
         {
             return error.into_response();
         }
-        return next.run(req).await;
+        return super::activity::run(&state, req, next).await;
     }
     let mut id = match resolve(&state, req.headers()).await {
         Ok(id) => id,
@@ -199,7 +199,7 @@ pub async fn protect(State(state): State<AppState>, mut req: Request, next: Next
         Err(e) => return ApiError::from(e).into_response(),
     };
     req.extensions_mut().insert(id);
-    let mut response = next.run(req).await;
+    let mut response = super::activity::run(&state, req, next).await;
     // Preserve explicit cookie clearing from logout/password change.
     if !response.headers().contains_key(header::SET_COOKIE)
         && let Some(cookie) = cookie
